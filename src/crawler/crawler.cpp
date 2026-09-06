@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 by-ty
 //
-// This file is part of luogu-export-next
-// (https://github.com/by-ty/luogu-export-next), a fork of luogu-export
+// This file is part of luogu-extract
+// (https://github.com/by-ty/luogu-extract), a fork of luogu-export
 // (https://github.com/sacharei/luogu-export) which is licensed under the
 // MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
 // section in the LICENSE file.
 //
-// luogu-export-next is free software: you can redistribute it and/or modify
+// luogu-extract is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or (at
 // your option) any later version. See the LICENSE file or
 // https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
 //
-// luogu-export-next is distributed in the hope that it will be useful, but
+// luogu-extract is distributed in the hope that it will be useful, but
 // WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
@@ -40,8 +40,8 @@
 #include <algorithm>
 #include <utility>
 #include <nlohmann/json.hpp>
-#include "luogu-export/crawler/crawler.h"
-#include "luogu-export/util/compat.h"
+#include "luogu-extract/crawler/crawler.h"
+#include "luogu-extract/util/compat.h"
 
 using nlohmann::json;
 
@@ -73,25 +73,26 @@ void print_success(const std::string &message)
     std::printf("%s%s%s\n", kColorGreen, message.c_str(), kColorReset);
 }
 
-// FNV-1a 64 位哈希（十六进制），用于给超长 URL 生成定长后缀
-std::string fnv1a_hex(const std::string &s)
+// FNV-1a 64 位哈希核心：以给定 seed 作为初始哈希值，逐字节异或后乘素数。
+// 官方偏移基数与素数分别作为两个种子，用于生成 128 位（32 位十六进制）哈希
+uint64_t fnv1a64(const std::string &s, uint64_t seed)
 {
-    uint64_t hash = 14695981039346656037ULL;
+    uint64_t hash = seed;
     for (unsigned char c : s)
     {
         hash ^= c;
         hash *= 1099511628211ULL;
     }
-    char buf[17];
-    snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
-    return buf;
+    return hash;
 }
 
-// URL -> 缓存文件名：完整链接做文件名（除字母数字 . - _ 外全部替换为 _），
-// 并始终附加完整 URL 的 64 位哈希：不同 URL 生成的文件名不会碰撞
-// （大小写不敏感文件系统、Unicode 全部替换为 _ 等情况下依然唯一）；
-// 扩展名取自 URL 路径并做白名单清洗（仅小写字母数字 1-5 位），
-// 非法/超长扩展名丢弃，避免 Windows 非法路径或超长路径
+// URL -> 缓存文件名：仅由哈希值与扩展名组成（不含 URL 原文）。
+// 哈希 = 双种子 FNV-1a 拼 128 位：分别以官方偏移基数
+// 0xcbf29ce484222325 与官方素数 0x100000001b3 为种子计算两路 64 位
+// FNV-1a，高 64 位在前、低 64 位在后拼接成 128 位，输出 32 位十六进制；
+// 不同 URL 生成的文件名不会碰撞（大小写不敏感文件系统、Unicode 等
+// 情况下依然唯一）；扩展名取自 URL 路径并做白名单清洗（仅小写字母数字
+// 1-5 位），非法/超长扩展名丢弃，避免 Windows 非法路径或超长路径
 std::string image_cache_filename(const std::string &url)
 {
     // 扩展名：URL 路径（忽略查询参数）最后一个 '.' 之后的字母数字串
@@ -123,25 +124,17 @@ std::string image_cache_filename(const std::string &url)
         }
     }
 
-    std::string name;
-    name.reserve(url.size());
-    for (char c : url)
-    {
-        const unsigned char uc = static_cast<unsigned char>(c);
-        if (std::isalnum(uc) || c == '.' || c == '-' || c == '_')
-            name += c;
-        else
-            name += '_';
-    }
+    // 双种子 FNV-1a：高 64 位以偏移基数为种子，低 64 位以素数为种子
+    const uint64_t kFnvOffsetBasis = 14695981039346656037ULL; // 0xcbf29ce484222325
+    const uint64_t kFnvPrime = 1099511628211ULL;              // 0x100000001b3
+    const uint64_t high = fnv1a64(url, kFnvOffsetBasis);
+    const uint64_t low = fnv1a64(url, kFnvPrime);
 
-    const std::string hash = fnv1a_hex(url);
-    // 总长度上限 200：给 "_" + 哈希（16 位）+ 扩展名留出空间
-    const size_t max_base = (hash.size() + ext.size() + 1 < 200)
-                                ? 200 - hash.size() - ext.size() - 1
-                                : 32;
-    if (name.size() > max_base)
-        name.resize(max_base);
-    return name + "_" + hash + ext;
+    char buf[33];
+    snprintf(buf, sizeof(buf), "%016llx%016llx",
+             static_cast<unsigned long long>(high),
+             static_cast<unsigned long long>(low));
+    return std::string(buf) + ext;
 }
 
 // 是否为洛谷图床（cdn.luogu.com.cn 等）的图片
@@ -342,24 +335,24 @@ std::filesystem::path crawler::get_cache_dir()
     // 解释，含中文用户名等的路径会被破坏
     const std::string xdg_cache_home = luogu::compat::getenv_utf8("XDG_CACHE_HOME");
     if (!xdg_cache_home.empty())
-        return luogu::compat::path_from_utf8(xdg_cache_home) / "luogu-export";
+        return luogu::compat::path_from_utf8(xdg_cache_home) / "luogu-extract";
 
     const std::string home_env = luogu::compat::getenv_utf8("HOME");
     if (!home_env.empty())
-        return luogu::compat::path_from_utf8(home_env) / ".cache" / "luogu-export";
+        return luogu::compat::path_from_utf8(home_env) / ".cache" / "luogu-extract";
 
 #ifdef _WIN32
     // Windows 下按惯例使用 %LOCALAPPDATA% 作为用户缓存根目录
     const std::string local_app_data = luogu::compat::getenv_utf8("LOCALAPPDATA");
     if (!local_app_data.empty())
-        return luogu::compat::path_from_utf8(local_app_data) / "luogu-export";
+        return luogu::compat::path_from_utf8(local_app_data) / "luogu-extract";
 #endif
 
     std::error_code ec;
     std::filesystem::path temp_dir = std::filesystem::temp_directory_path(ec);
     if (ec)
-        return std::filesystem::path(".cache") / "luogu-export";
-    return temp_dir / "luogu-export";
+        return std::filesystem::path(".cache") / "luogu-extract";
+    return temp_dir / "luogu-extract";
 }
 
 std::string crawler::get_html(const std::string &url, derror *error)
@@ -384,7 +377,7 @@ std::string crawler::get_html(const std::string &url, derror *error)
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-export/0.1");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
 
     CURLcode curl_res = curl_easy_perform(curl);
     long http_code = 0;
@@ -483,7 +476,7 @@ crawler::derror crawler::downloadFile(const std::string &url,
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-export/0.1");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
 
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);

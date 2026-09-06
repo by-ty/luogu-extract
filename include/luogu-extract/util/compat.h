@@ -1,31 +1,31 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 by-ty
 //
-// This file is part of luogu-export-next
-// (https://github.com/by-ty/luogu-export-next), a fork of luogu-export
+// This file is part of luogu-extract
+// (https://github.com/by-ty/luogu-extract), a fork of luogu-export
 // (https://github.com/sacharei/luogu-export) which is licensed under the
 // MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
 // section in the LICENSE file.
 //
-// luogu-export-next is free software: you can redistribute it and/or modify
+// luogu-extract is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or (at
 // your option) any later version. See the LICENSE file or
 // https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
 //
-// luogu-export-next is distributed in the hope that it will be useful, but
+// luogu-extract is distributed in the hope that it will be useful, but
 // WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// include/luogu-export/util/compat.h
+// include/luogu-extract/util/compat.h
 // 跨平台（Windows / macOS / Linux）兼容性工具：
 // - Windows 的 CRT fopen/gzopen/getenv 按 ANSI 代码页解释窄字符，
 //   这里统一提供按 UTF-8 处理路径的封装；
 // - POSIX getline 在 MSVC 上不存在，这里提供等价实现；
 // - Windows 传统控制台默认不解析 ANSI 转义序列，这里提供初始化封装。
-#ifndef LUOGU_EXPORT_UTIL_COMPAT_H
-#define LUOGU_EXPORT_UTIL_COMPAT_H
+#ifndef LUOGU_EXTRACT_UTIL_COMPAT_H
+#define LUOGU_EXTRACT_UTIL_COMPAT_H
 
 #include <atomic>
 #include <chrono>
@@ -122,4 +122,4 @@ namespace compat
 } // namespace compat
 } // namespace luogu
 
-#endif // LUOGU_EXPORT_UTIL_COMPAT_H
+#endif // LUOGU_EXTRACT_UTIL_COMPAT_H

@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 by-ty
 //
-// This file is part of luogu-export-next
-// (https://github.com/by-ty/luogu-export-next), a fork of luogu-export
+// This file is part of luogu-extract
+// (https://github.com/by-ty/luogu-extract), a fork of luogu-export
 // (https://github.com/sacharei/luogu-export) which is licensed under the
 // MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
 // section in the LICENSE file.
 //
-// luogu-export-next is free software: you can redistribute it and/or modify
+// luogu-extract is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or (at
 // your option) any later version. See the LICENSE file or
 // https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
 //
-// luogu-export-next is distributed in the hope that it will be useful, but
+// luogu-extract is distributed in the hope that it will be useful, but
 // WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
@@ -30,14 +30,14 @@
 #include <set>
 #include <string>
 #include <vector>
-#include "luogu-export/contents/article.h"
-#include "luogu-export/contents/problem.h"
-#include "luogu-export/crawler/crawler.h"
-#include "luogu-export/export/common.h"
-#include "luogu-export/export/latex.h"
-#include "luogu-export/export/latex_fonts.h"
-#include "luogu-export/util/compat.h"
-#include "luogu-export/util/problem_info.h"
+#include "luogu-extract/contents/article.h"
+#include "luogu-extract/contents/problem.h"
+#include "luogu-extract/crawler/crawler.h"
+#include "luogu-extract/export/common.h"
+#include "luogu-extract/export/latex.h"
+#include "luogu-extract/export/latex_fonts.h"
+#include "luogu-extract/util/compat.h"
+#include "luogu-extract/util/problem_info.h"
 
 namespace
 {
@@ -3731,11 +3731,11 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 封面标题：--set-cover-title 指定文字，--set-font-cover-page 指定字体
     // （未设置字体时保持原代码行为：不额外指定字体族）
     {
-        const std::string cover = opt.cover_title.empty() ? "luogu export" : opt.cover_title;
+        const std::string cover = opt.cover_title.empty() ? "luogu extract" : opt.cover_title;
         std::string cover_latex = escape_latex(cover);
         if (!opt.font_cover.empty())
             cover_latex = "{\\luogocoverfontall " + cover_latex + "}";
-        std::fprintf(out, "\\title{%s}\n\\author{luogu-export}\n\\date{\\today}\n",
+        std::fprintf(out, "\\title{%s}\n\\author{luogu-extract}\n\\date{\\today}\n",
                      cover_latex.c_str());
     }
 

@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 by-ty
 //
-// This file is part of luogu-export-next
-// (https://github.com/by-ty/luogu-export-next), a fork of luogu-export
+// This file is part of luogu-extract
+// (https://github.com/by-ty/luogu-extract), a fork of luogu-export
 // (https://github.com/sacharei/luogu-export) which is licensed under the
 // MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
 // section in the LICENSE file.
 //
-// luogu-export-next is free software: you can redistribute it and/or modify
+// luogu-extract is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or (at
 // your option) any later version. See the LICENSE file or
 // https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
 //
-// luogu-export-next is distributed in the hope that it will be useful, but
+// luogu-extract is distributed in the hope that it will be useful, but
 // WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// include/luogu-export/util/getopt_compat.h
+// include/luogu-extract/util/getopt_compat.h
 // 平台无关的 getopt / getopt_long 实现：Windows（MSVC/MinGW-w64）通常不提供
 // POSIX <getopt.h>，本头文件按 glibc 的实现语义移植了本程序用到的行为：
 //   - optstring 以 ':' 开头时不打印错误：未知选项返回 '?'，缺少参数返回 ':'
@@ -34,8 +34,8 @@
 //   - "--" 之后的内容全部视为裸参数；"--" 自身被交换到裸参数区之前
 // 非 Windows 平台默认用系统 <getopt.h>；定义 LUOGU_FORCE_COMPAT_GETOPT
 // 可强制使用本实现（用于测试）。
-#ifndef LUOGU_EXPORT_UTIL_GETOPT_COMPAT_H
-#define LUOGU_EXPORT_UTIL_GETOPT_COMPAT_H
+#ifndef LUOGU_EXTRACT_UTIL_GETOPT_COMPAT_H
+#define LUOGU_EXTRACT_UTIL_GETOPT_COMPAT_H
 
 #include <cstdio>
 #include <cstring>
@@ -423,4 +423,4 @@ inline int getopt(int argc, char *const argv[], const char *optstring) noexcept
 
 } // extern "C"
 
-#endif // LUOGU_EXPORT_UTIL_GETOPT_COMPAT_H
+#endif // LUOGU_EXTRACT_UTIL_GETOPT_COMPAT_H

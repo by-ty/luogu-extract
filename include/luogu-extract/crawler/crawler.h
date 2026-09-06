@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 by-ty
 //
-// This file is part of luogu-export-next
-// (https://github.com/by-ty/luogu-export-next), a fork of luogu-export
+// This file is part of luogu-extract
+// (https://github.com/by-ty/luogu-extract), a fork of luogu-export
 // (https://github.com/sacharei/luogu-export) which is licensed under the
 // MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
 // section in the LICENSE file.
 //
-// luogu-export-next is free software: you can redistribute it and/or modify
+// luogu-extract is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or (at
 // your option) any later version. See the LICENSE file or
 // https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
 //
-// luogu-export-next is distributed in the hope that it will be useful, but
+// luogu-extract is distributed in the hope that it will be useful, but
 // WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// include/luogu-export/crawler/crawler.h
-#ifndef LUOGU_EXPORT_CRAWLER_CRAWLER_H
-#define LUOGU_EXPORT_CRAWLER_CRAWLER_H
+// include/luogu-extract/crawler/crawler.h
+#ifndef LUOGU_EXTRACT_CRAWLER_CRAWLER_H
+#define LUOGU_EXTRACT_CRAWLER_CRAWLER_H
 
 #include <filesystem>
 #include <functional>
@@ -81,18 +81,19 @@ namespace crawler
     derror update_tags();
 
     /// 下载一批图片链接到缓存目录（<cache_dir>/images/）。
-    /// 文件名取完整链接（特殊字符替换为 _），避免不同图床同名互相覆盖；
+    /// 文件名由完整 URL 的双种子 FNV-1a 128 位哈希（32 位十六进制）
+    /// 与白名单扩展名组成（不含 URL 原文），避免不同图床同名互相覆盖；
     /// 已存在的文件直接跳过。
     /// @param urls 图片链接列表
     /// @return SUCCESS 或对应错误码（部分失败时返回第一个错误码）
     derror download_images(const std::vector<std::string> &urls);
 
     /// 返回图片 URL 在缓存中对应的文件路径（<cache_dir>/images/<文件名>）。
-    /// 文件名由完整链接生成，与 download_images 的落盘位置一致。
+    /// 文件名由完整 URL 的哈希生成，与 download_images 的落盘位置一致。
     std::filesystem::path image_cache_path(const std::string &url);
 
     /// @return SUCCESS 或对应错误码
     derror update();
 }
 
-#endif // LUOGU_EXPORT_CRAWLER_CRAWLER_H
+#endif // LUOGU_EXTRACT_CRAWLER_CRAWLER_H

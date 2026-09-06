@@ -1,9 +1,9 @@
-luogu-export-next
-================
+luogu-extract
+=============
 
 Copyright (C) 2026 by-ty
 
-This project (luogu-export-next) is licensed under the GNU Lesser General
+This project (luogu-extract) is licensed under the GNU Lesser General
 Public License version 3.0, or (at your option) any later version
 (SPDX: LGPL-3.0-or-later). The full license text is provided in the second
 half of this file, and is also available at
@@ -44,7 +44,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================
-GNU LESSER GENERAL PUBLIC LICENSE (luogu-export-next license)
+GNU LESSER GENERAL PUBLIC LICENSE (luogu-extract license)
 ================================================================
 
                    GNU LESSER GENERAL PUBLIC LICENSE

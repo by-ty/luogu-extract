@@ -1,8 +1,8 @@
-# luogu-export-next
+# luogu-extract
 
 一个用 C++17 编写的命令行工具，用于抓取 [洛谷](https://www.luogu.com.cn/) 的题目列表与标签，并按条件筛选题目，导出为 **Markdown** 或 **LaTeX** 文档（便于离线阅读、打印成题册）。
 
-> **luogu-export-next**（[github.com/by-ty/luogu-export-next](https://github.com/by-ty/luogu-export-next)）是 [luogu-export](https://github.com/sacharei/luogu-export)（MIT 协议）的派生项目，在原项目基础上进行了大量修改与增强（详见「[许可证](#许可证)」与「[鸣谢](#鸣谢)」）。
+> **luogu-extract**（[github.com/by-ty/luogu-extract](https://github.com/by-ty/luogu-extract)）是 [luogu-export](https://github.com/sacharei/luogu-export)（MIT 协议）的派生项目，在原项目基础上进行了大量修改与增强（详见「[许可证](#许可证)」与「[鸣谢](#鸣谢)」）。
 
 ## 功能特性
 
@@ -47,12 +47,12 @@ cmake CMakeLists.txt
 make
 ```
 
-构建产物为可执行文件 `luogu-export`。
+构建产物为可执行文件 `luogu-extract`。
 
 ## 使用方法
 
 ```
-Usage: luogu-export [options]
+Usage: luogu-extract [options]
 
 Options:
   -U, --update    Update the problem list and tag caches
@@ -100,23 +100,23 @@ LaTeX layout options (only effective with -L):
 
 ```bash
 # 1. 首次使用先更新题目列表与标签缓存
-luogu-export -U
+luogu-extract -U
 
 # 2. 导出全部题目为 Markdown（默认输出 problems.md）
-luogu-export -M
+luogu-extract -M
 
 # 3. 按标签与难度筛选后导出
-luogu-export -M --tag 模拟 贪心 --difficulty 3-5
+luogu-extract -M --tag 模拟 贪心 --difficulty 3-5
 
 # 4. 按类型和语言筛选，导出为 LaTeX（默认输出 problems.tex）
-luogu-export -L --type P --lang zh-CN --output 题册.tex
+luogu-extract -L --type P --lang zh-CN --output 题册.tex
 
 # 5. 查看所有标签及其数字 ID
-luogu-export --tags
+luogu-extract --tags
 
 # 6. 定制 LaTeX 排版：目录不带超链接、页码可跳回目录、
 #    封面标题改为「算法竞赛题册」并指定字体（系统字体名称或字体文件均可）
-luogu-export -L --no-toc-links --toc-backlinks \
+luogu-extract -L --no-toc-links --toc-backlinks \
     --set-cover-title "算法竞赛题册" \
     --set-font-cover-page "Noto Serif CJK SC" \
     --set-font-body-zh-CN "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc" \
@@ -127,13 +127,13 @@ luogu-export -L --no-toc-links --toc-backlinks \
     --no-bilibili-link
 
 # 7. Markdown 导出时自定义一级标题
-luogu-export -M --set-cover-title "洛谷竞赛题册（全量）"
+luogu-extract -M --set-cover-title "洛谷竞赛题册（全量）"
 
 # 8. 按题号导出指定题目（可重复 --pid 或空格分隔；题号必须存在于缓存）
-luogu-export -L --pid P1001 P1002 --pid P2000 --output 指定题目.tex
+luogu-extract -L --pid P1001 P1002 --pid P2000 --output 指定题目.tex
 
 # 9. 按题号范围导出（闭区间；可与标签/难度/类型组合）
-luogu-export -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5 \
+luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5 \
     --output 区间题册.tex
 ```
 
@@ -162,7 +162,7 @@ luogu-export -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5
 | `--set-font-title-zh-CN <font>` | 仅 `-L` 有效：设置题目大标题、小节标题、目录页标题与每页页眉标题中的中文字体（名称或字体文件地址） |
 | `--set-font-title-en-US <font>` | 仅 `-L` 有效：设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题西文跟随 `--set-font-body-en-US`（名称或字体文件地址） |
 | `--no-bilibili-link` | 仅 `-L` 有效：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接） |
-| `--set-cover-title <title>` | 设置封面标题（`-L`，默认 `luogu export`）或 Markdown 一级标题（`-M`，默认 `洛谷题目导出`） |
+| `--set-cover-title <title>` | 设置封面标题（`-L`，默认 `luogu extract`）或 Markdown 一级标题（`-M`，默认 `洛谷题目导出`） |
 | `-h, --help` | 显示帮助 |
 
 > `-M` 与 `-L` 不能同时使用；需要两种格式时请分两次执行。
@@ -180,10 +180,10 @@ luogu-export -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5
 
 缓存目录按以下顺序确定：
 
-1. 环境变量 `XDG_CACHE_HOME` 存在时 → `$XDG_CACHE_HOME/luogu-export`；
-2. 否则使用 `$HOME/.cache/luogu-export`；
-3. Windows 下若前两项均未设置，使用 `%LOCALAPPDATA%\luogu-export`；
-4. 否则使用系统临时目录下的 `luogu-export`。
+1. 环境变量 `XDG_CACHE_HOME` 存在时 → `$XDG_CACHE_HOME/luogu-extract`；
+2. 否则使用 `$HOME/.cache/luogu-extract`；
+3. Windows 下若前两项均未设置，使用 `%LOCALAPPDATA%\luogu-extract`；
+4. 否则使用系统临时目录下的 `luogu-extract`。
 
 缓存目录中的文件：
 
@@ -191,10 +191,10 @@ luogu-export -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5
 | --- | --- |
 | `latest.ndjson` | 全量题目列表（每行一个题目的 JSON），由 `-U` 下载并解压得到 |
 | `tags.json` | 标签对照表：`{"<数字ID>": {"name": "<名称>", "type": <分类>}}` |
-| `images/` | 图片缓存目录，文件名由完整 URL 生成 |
+| `images/` | 图片缓存目录：文件名 = 完整 URL 的双种子 FNV-1a 128 位哈希（32 位十六进制）+ 白名单扩展名 |
 | `fonts/` | 字体缓存目录：无扩展名的字体文件按格式识别后复制到此并补全扩展名 |
 
-图片文件名由完整链接生成（特殊字符替换为 `_`，过长时截断并附 FNV-1a 哈希），避免不同图床的同名图片互相覆盖；已存在的文件会跳过。下载时按 CPU 核心数并行，洛谷图床（`luogu.com.cn`）的图片会串行下载并保持 0.5~3 秒随机间隔，避免请求过快。
+图片文件名仅包含哈希值与扩展名：对完整 URL 分别以官方偏移基数（`0xcbf29ce484222325`）与官方素数（`0x100000001b3`）为种子计算两路 64 位 FNV-1a，拼成 128 位后输出 32 位十六进制作为文件名主体（不含 URL 原文，避免不同图床的同名图片互相覆盖）；扩展名取自 URL 路径并做白名单清洗，非法/超长扩展名丢弃。已存在的文件会跳过。下载时按 CPU 核心数并行，洛谷图床（`luogu.com.cn`）的图片会串行下载并保持 0.5~3 秒随机间隔，避免请求过快。
 
 ## 导出格式说明
 
@@ -220,7 +220,7 @@ luogu-export -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5
 
 ## 许可证
 
-本项目（**luogu-export-next**）以 **GNU Lesser General Public License v3.0 或任何更新版本**（SPDX: `LGPL-3.0-or-later`）授权发布，版权 © 2026 by-ty，完整许可文本见 [LICENSE](LICENSE)。
+本项目（**luogu-extract**）以 **GNU Lesser General Public License v3.0 或任何更新版本**（SPDX: `LGPL-3.0-or-later`）授权发布，版权 © 2026 by-ty，完整许可文本见 [LICENSE](LICENSE)。
 
 本项目派生自以 MIT 协议发布的 [luogu-export](https://github.com/sacharei/luogu-export)（Copyright © 2026 sacharei）。按 MIT 协议要求，原版权与许可声明完整保留于 LICENSE 文件「Original MIT License」一节。
 

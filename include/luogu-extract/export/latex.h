@@ -1,32 +1,32 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 // Copyright (C) 2026 by-ty
 //
-// This file is part of luogu-export-next
-// (https://github.com/by-ty/luogu-export-next), a fork of luogu-export
+// This file is part of luogu-extract
+// (https://github.com/by-ty/luogu-extract), a fork of luogu-export
 // (https://github.com/sacharei/luogu-export) which is licensed under the
 // MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
 // section in the LICENSE file.
 //
-// luogu-export-next is free software: you can redistribute it and/or modify
+// luogu-extract is free software: you can redistribute it and/or modify
 // it under the terms of the GNU Lesser General Public License as published
 // by the Free Software Foundation, either version 3 of the License, or (at
 // your option) any later version. See the LICENSE file or
 // https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
 //
-// luogu-export-next is distributed in the hope that it will be useful, but
+// luogu-extract is distributed in the hope that it will be useful, but
 // WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
 // or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
 // License for more details.
 
-// include/luogu-export/export/latex.h
-#ifndef LUOGU_EXPORT_LATEX_H
-#define LUOGU_EXPORT_LATEX_H
+// include/luogu-extract/export/latex.h
+#ifndef LUOGU_EXTRACT_LATEX_H
+#define LUOGU_EXTRACT_LATEX_H
 
 #include <filesystem>
 #include <string>
-#include "luogu-export/contents/article.h"
-#include "luogu-export/contents/problem.h"
-#include "luogu-export/export/common.h"
+#include "luogu-extract/contents/article.h"
+#include "luogu-extract/contents/problem.h"
+#include "luogu-extract/export/common.h"
 
 namespace latex
 {
@@ -57,7 +57,7 @@ namespace latex
         std::string font_title_en; // 小节标题/目录/页眉西文字体（--set-font-title-en-US；
                                     // 题目大标题西文跟随 font_body_en）
 
-        // 封面标题文字（--set-cover-title；空串表示默认 "luogu export"）
+        // 封面标题文字（--set-cover-title；空串表示默认 "luogu extract"）
         std::string cover_title;
     };
 
@@ -91,4 +91,4 @@ namespace latex
                       const Options &opt = {});
 }
 
-#endif // LUOGU_EXPORT_LATEX_H
+#endif // LUOGU_EXTRACT_LATEX_H
