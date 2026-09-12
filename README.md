@@ -19,11 +19,12 @@
 - **LaTeX 排版定制**（均仅对 `-L` 生效）：
   - `--no-toc-links`：目录条目不带跳转到对应题目页的超链接（默认带超链接）；
   - `--toc-backlinks`：每页页眉的页码变成跳回目录页的超链接（默认无超链接）；
-  - `--set-font-cover-page` / `--set-font-body-zh-CN` / `--set-font-body-en-US` / `--set-font-body-codes` / `--set-font-title-zh-CN` / `--set-font-title-en-US`：分别设置封面标题、正文中文、正文及题目大标题西文（不含公式）、代码块、标题中文（大标题、小节、目录与页眉）、标题西文（小节、目录与页眉；大标题西文随正文西文）的字体，参数既可填**系统已安装的字体名称**，也可填**字体文件地址**；
+  - `--set-font-cover-page` / `--set-font-body-zh-CN` / `--set-font-body-en-US` / `--set-font-body-codes` / `--set-font-title-zh-CN` / `--set-font-title-en-US`：分别设置封面标题、正文中文、正文及题目大标题西文（不含公式）、代码块与正文黑体部分西文、标题中文（大标题、小节、目录与页眉）、标题西文（小节、目录与页眉；大标题西文随正文西文）的字体，参数既可填**系统已安装的字体名称**，也可填**字体文件地址**；
   - `--no-bilibili-link`：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接）；
   - `--set-cover-title`：自定义封面标题（`-M` 下对应一级标题）。
-- **LaTeX 默认字体方案**：`-L` 生成文档时使用 ctex 宏包的 `fontset=` 机制选择整套中文字体——Windows 用 `fontset=windows`，macOS 用 `fontset=mac`；Linux 在程序运行阶段解析 `/etc/os-release`，Ubuntu / Kubuntu 等 Ubuntu 系列发行版用 `fontset=ubuntu`，其他发行版用 `fontset=fandol`。正文与题目大标题默认使用 fontset 预设的正文字体，小节标题默认使用预设黑体；代码块中的西文按 **Consolas → Menlo → DejaVu Sans Mono** 的顺序回退。
-- **标签字体自动选择**：题目标签（来源/年份/地区/特殊属性，以及未来可能展示的算法标签共用同一徽章字体）的默认字体按操作系统选择——**Windows / macOS 用思源黑体（Noto Sans CJK SC）**，**Linux 用文泉驿微米黑（WenQuanYi Micro Hei）**；导出时用 `\IfFontExistsTF` 在编译期检测字体是否安装，未安装时自动回退到正文 CJK 字体，避免编译报错。
+- **LaTeX 默认字体方案**：`-L` 生成文档时使用 ctex 宏包的 `fontset=` 机制选择整套中文字体——Windows 用 `fontset=windows`，macOS 用 `fontset=mac`；Linux 在程序运行阶段解析 `/etc/os-release`，Ubuntu / Kubuntu 等 Ubuntu 系列发行版用 `fontset=ubuntu`，其他发行版用 `fontset=fandol`。正文与题目大标题默认使用 fontset 预设的正文字体，小节标题的中文默认使用预设黑体、西文（不含公式）则与代码块使用同一字体。
+- **代码字体回退链**：代码块西文，以及正文中黑体部分的西文，按 **Consolas → Menlo → DejaVu Sans Mono** 的顺序回退（`--set-font-body-codes` 可统一指定该字体）；中文字体仍由 ctex fontset 的黑体方案控制，不受影响。三种等宽字体都不存在时保留 fontspec 默认等宽字体（小标题西文则沿用正文字体）。
+- **标签字体跟随正文**：题目标签使用正文中西文字体，`--set-font-body-zh-CN` / `--set-font-body-en-US` 会同步作用于标签文字。
 - **跨平台兼容**：兼容 **Windows、macOS、Linux** 的主流现代版本：
   - Windows 下输出/缓存路径按 UTF-8（宽字符）处理，支持中文文件名（如 `--output 题册.tex`）与含中文用户名的缓存目录；
   - Windows 传统控制台自动启用 ANSI 转义解析，彩色与进度输出不乱码；
@@ -158,7 +159,7 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 | `--set-font-cover-page <font>` | 仅 `-L` 有效：设置封面标题字体；`<font>` 为系统已安装的字体名称或字体文件地址 |
 | `--set-font-body-zh-CN <font>` | 仅 `-L` 有效：设置题面正文中文字符的字体（名称或字体文件地址） |
 | `--set-font-body-en-US <font>` | 仅 `-L` 有效：设置题面正文及题目大标题中的西文字符字体（名称或字体文件地址；不作用于公式） |
-| `--set-font-body-codes <font>` | 仅 `-L` 有效：设置代码块西文字体（名称或字体文件地址；默认按 `Consolas` → `Menlo` → `DejaVu Sans Mono` 回退） |
+| `--set-font-body-codes <font>` | 仅 `-L` 有效：设置代码块西文，以及正文黑体部分西文的字体（名称或字体文件地址；默认按 `Consolas` → `Menlo` → `DejaVu Sans Mono` 回退） |
 | `--set-font-title-zh-CN <font>` | 仅 `-L` 有效：设置题目大标题、小节标题、目录页标题与每页页眉标题中的中文字体（名称或字体文件地址） |
 | `--set-font-title-en-US <font>` | 仅 `-L` 有效：设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题西文跟随 `--set-font-body-en-US`（名称或字体文件地址） |
 | `--no-bilibili-link` | 仅 `-L` 有效：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接） |
@@ -173,7 +174,7 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 - **字体文件地址**：填字体文件的路径（支持相对路径与绝对路径），如 `fonts/source-han-serif.ttc`、`/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc`；程序会校验该文件是否存在，存在时在生成的 `.tex` 中引用其绝对路径；
 - 含路径分隔符或以 `.ttf`/`.otf`/`.ttc` 等常见字体扩展名结尾的值一律按**字体文件地址**处理，文件不存在时会报错并拒绝执行；其余值按**字体名称**处理；
 - `--set-font-*` 系列参数的优先级最高：只要传入对应参数，生成的 `.tex` 就会用参数指定的字体覆盖 ctex fontset 中的默认值；未传入的参数一律使用上述 ctex fontset / 代码字体回退链的默认方案；
-- 不传 `--set-font-body-codes` 时，代码块西文按 `Consolas` → `Menlo` → `DejaVu Sans Mono` 回退；三种字体都不可用时保留 fontspec 默认等宽字体；
+- 不传 `--set-font-body-codes` 时，代码块西文与正文黑体部分的西文按 `Consolas` → `Menlo` → `DejaVu Sans Mono` 回退；三种字体都不可用时保留 fontspec 默认等宽字体；
 - 不传 `--set-font-body-zh-CN` / `--set-font-title-zh-CN` 等参数时，正文与标题直接使用 ctex fontset 预设的中西文字体，不再额外指定 `SimHei` 或等宽标题字体。
 
 ## 缓存机制
@@ -199,7 +200,7 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 ## 导出格式说明
 
 - **Markdown**：文件头包含题目总数与筛选条件；每道题以 `---` 分隔，`# <题号> <标题>` 为章节，随后是难度、标签、时空限制，以及各题面小节与样例代码块。一级标题可用 `--set-cover-title` 自定义；
-- **LaTeX**：生成完整可编译文档，带目录、页眉页脚、章节无序号（`secnumdepth=-1`），并内置多种自定义命令与颜色别名以兼容洛谷题面。洛谷的**表格合并**语法（单元格内容恰为 `^` 时向上合并、恰为 `<` 时向左合并）会转换为 `\multirow` / `\multicolumn`；无法用矩形表达的交叉合并会安全退化为空单元格。题目小节标题以及 Markdown 题面中的 `##` / `###` / `####` 小标题默认使用 ctex fontset 预设的黑体（`\heiti`）；图片仅在缓存中存在时通过 `\IfFileExists` 引用，缺失图片不会导致编译失败，超宽或超高的图片会按 `keepaspectratio` 缩小到版心内，小图片保持原始大小；GIF/WebP/SVG/BMP/ICO 等 xelatex 无法加载的格式会被跳过，视频（Bilibili 等）只输出链接（`--no-bilibili-link` 时输出为普通文本）。目录超链接由 hyperref 的 `linktoc` 选项控制（`--no-toc-links` 关闭）；`--toc-backlinks` 会在目录标题处放置 `\hypertarget{luogotoc}` 锚点，并把页眉页码改为跳回该锚点的超链接；`\usepackage[UTF8,fontset=...]{ctex}` 提供默认中文字体方案（Windows/macOS 在程序编译时确定，Linux 在运行阶段解析 `/etc/os-release`）；`--set-font-*` 参数通过 `fontspec`/xeCJK 的 `\setmainfont`、`\setCJKmainfont`、`\setmonofont`、`\newfontfamily`、`\newCJKfontfamily` 实现，且仅在传入参数时写入对应命令，优先级高于 fontset 默认值。数学公式由 `unicode-math` + `Latin Modern Math` 统一处理。标签字体默认按操作系统选择（Windows/macOS 思源黑体 Noto Sans CJK SC、Linux 文泉驿微米黑），并通过 `\IfFontExistsTF` 在字体未安装时回退到正文 CJK 字体。
+- **LaTeX**：生成完整可编译文档，带目录、页眉页脚、章节无序号（`secnumdepth=-1`），并内置多种自定义命令与颜色别名以兼容洛谷题面。洛谷的**表格合并**语法（单元格内容恰为 `^` 时向上合并、恰为 `<` 时向左合并）会转换为 `\multirow` / `\multicolumn`；无法用矩形表达的交叉合并会安全退化为空单元格。题目小节标题以及 Markdown 题面中的 `##` / `###` / `####` 小标题默认使用 ctex fontset 预设的黑体（`\heiti`），其西文部分使用代码块字体（`\luogoheadinglatin`，即 `--set-font-body-codes` 或 Consolas → Menlo → DejaVu Sans Mono 回退链）；图片仅在缓存中存在时通过 `\IfFileExists` 引用，缺失图片不会导致编译失败，超宽或超高的图片会按 `keepaspectratio` 缩小到版心内，小图片保持原始大小；GIF/WebP/SVG/BMP/ICO 等 xelatex 无法加载的格式会被跳过，视频（Bilibili 等）只输出链接（`--no-bilibili-link` 时输出为普通文本）。目录超链接由 hyperref 的 `linktoc` 选项控制（`--no-toc-links` 关闭）；`--toc-backlinks` 会在目录标题处放置 `\hypertarget{luogotoc}` 锚点，并把页眉页码改为跳回该锚点的超链接；`\usepackage[UTF8,fontset=...]{ctex}` 提供默认中文字体方案（Windows/macOS 在程序编译时确定，Linux 在运行阶段解析 `/etc/os-release`）；`--set-font-*` 参数通过 `fontspec`/xeCJK 的 `\setmainfont`、`\setCJKmainfont`、`\setmonofont`、`\newfontfamily`、`\newCJKfontfamily` 实现，且仅在传入参数时写入对应命令，优先级高于 fontset 默认值。数学公式由 `unicode-math` + `Latin Modern Math` 统一处理。标签文字使用正文中西文字体（受 `--set-font-body-zh-CN` / `--set-font-body-en-US` 控制）。此外，题面文本中缺少字形的 Unicode 标点（如中文破折号 `――`，U+2015）会转换为等价的 LaTeX 命令（`\textemdash`），避免编译时被静默丢弃。
 
 > [!IMPORTANT]
 > 导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译。

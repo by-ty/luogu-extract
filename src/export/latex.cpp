@@ -1445,8 +1445,80 @@ std::string sanitize_math(std::string s)
             "lgom", "lgon", "lgop", "lgoq", "lgos", "lgot", "lgou", "lgov",
             "lgow", "lgox", "lgoy",
         };
+        // 以 kSafeSplit 中某个短命令开头、但本身是完整命令名的命令
+        // （如 \leqslant 以 \leq 开头）。整词匹配时必须原样保留，否则会
+        // 被拆成 \leq{}slant（P4381 的公式曾因此编译出错）；后跟变量时
+        // （如 \leqslantN）仍按“命令 + 后续字符”拆开。
+        // 名单取自 LaTeX 内核 / amsmath / amssymb / mathtools / unicode-math
+        // 中被引用的西文命令，新增命令时在此补充。
+        static const std::set<std::string> kKnownFullCommands = {
+            // le / ge：小于等于、大于等于、大小关系
+            "leq", "leqq", "leqqslant", "leqslant", "lescc", "lesdot", "lesdoto",
+            "lesdotor", "lesges", "less", "lessapprox", "lessdot", "lesseqgtr",
+            "lesseqqgtr", "lessgtr", "lesssim", "approxeq", "approxeqq",
+            "approxident", "geq", "geqq", "geqqslant", "geqslant", "gescc", "gesdot",
+            "gesdoto", "gesdotol", "gesles", "gneq", "gneqq", "gnsim", "gvertneqq",
+            "gtrapprox", "gtrarr", "gtrdot", "gtreqless", "gtreqqless", "gtrless",
+            "gtrsim", "gtcc", "gtcir", "gtlpar", "gtquest",
+            // le / ge：箭头与左向符号
+            "leadsto", "leftarrowtail", "leftharpoonaccent", "leftharpoondown",
+            "leftharpoondownbar", "leftharpoonsupdown", "leftharpoonup",
+            "leftharpoonupbar", "leftharpoonupdash", "leftleftarrows", "leftmoon",
+            "leftouterjoin", "leftrightarrow", "leftrightarrowcircle",
+            "leftrightarrows", "leftrightarrowtriangle", "leftrightharpoondowndown",
+            "leftrightharpoondownup", "leftrightharpoons", "leftrightharpoonsdown",
+            "leftrightharpoonsup", "leftrightharpoonupdown", "leftrightharpoonupup",
+            "leftrightsquigarrow", "leftsquigarrow", "lefttail", "leftthreearrows",
+            "leftthreetimes", "leftwavearrow", "leftwhitearrow", "rightarrowtail",
+            "rightarrowapprox", "rightarrowbackapprox", "rightarrowbar",
+            "rightarrowbsimilar", "rightarrowdiamond", "rightarrowgtr",
+            "rightarrowonoplus", "rightarrowplus", "rightarrowshortleftarrow",
+            "rightarrowsimilar", "rightarrowsupset", "rightarrowtriangle",
+            "rightarrowx", "nearrow", "neovnwarrow", "neovsearrow", "nequiv",
+            "neswarrow", "neuter", "uparrowbarred", "uparrowoncircle",
+            "updownarrowbar", "updownarrows",
+            // lt / ln / lg、gt：大小关系与对数
+            "ltimes", "ltcc", "ltcir", "ltlarr", "ltquest", "ltrivb", "lneq", "lneqq",
+            "lnsim", "lnapprox", "lvertneqq", "lgE", "lgblkcircle", "lgblksquare",
+            "lgwhtcircle", "lgwhtsquare",
+            // in / int / sup / sub / sum：积分与上下限
+            "intercal", "interleave", "intextender", "intBar", "intbar", "intbottom",
+            "intcap", "intclockwise", "intcup", "intlarhk", "intprod", "intprodr",
+            "inttop", "intx", "intop", "intertext", "increment", "inversebullet",
+            "inversewhitecircle", "invlazys", "invnot", "invwhitelowerhalfcircle",
+            "invwhiteupperhalfcircle", "subsetneq", "subsetneqq", "subseteqq",
+            "subsetapprox", "subsetcirc", "subsetdot", "subsetplus", "supsetneq",
+            "supsetneqq", "supseteqq", "supsetapprox", "supsetcirc", "supsetdot",
+            "supsetplus", "supsim", "supsub", "supsup", "supdsub", "supedot",
+            "suphsol", "suphsub", "suplarr", "supmult", "sumbottom", "sumint",
+            "sumtop", "niobar", "nis", "nisd",
+            // mid / parallel / not / mod
+            "middle", "midbarvee", "midbarwedge", "midcir", "parallelogram",
+            "parallelogramblack", "perps", "notag", "notni", "models", "modtwosum",
+            // cdot / circ / cup / cap / oplus 等算子
+            "cdotp", "circeq", "circlearrowleft", "circlearrowright",
+            "circlebottomhalfblack", "circledS", "circledast", "circledbullet",
+            "circledcirc", "circleddash", "circledequal", "circledownarrow",
+            "circledparallel", "circledrightdot", "circledstar", "circledtwodots",
+            "circledvert", "circledwhitebullet", "circlehbar", "circlelefthalfblack",
+            "circlellquad", "circlelrquad", "circleonleftarrow", "circleonrightarrow",
+            "circlerighthalfblack", "circletophalfblack", "circleulquad",
+            "circleurquad", "circleurquadblack", "circlevertfill", "cupbarcap",
+            "cupdot", "cupleftarrow", "cupovercap", "cupvee", "capbarcup", "capdot",
+            "capovercup", "capwedge", "opluslhrim", "oplusrhrim", "otimeshat",
+            "otimeslhrim", "otimesrhrim", "divideontimes", "divslash", "timesbar",
+            "pmb", "asteq", "asteraccent", "astrosun",
+            // dots / wedge / vee 等
+            "dotsb", "dotsc", "dotsi", "dotsm", "dotso", "dotsim", "dotsminusdots",
+            "ddotseq", "wedgebar", "wedgedot", "wedgedoublebar", "wedgemidvert",
+            "wedgeodot", "wedgeonwedge", "wedgeq", "veebar", "veedot", "veedoublebar",
+            "veeeq", "veemidvert", "veeodot", "veeonvee", "veeonwedge", "vertoverlay",
+            // 文档命令与本项目预置的兼容命令（\providecommand）
+            "newcommand", "renewcommand", "providecommand", "infin", "circledR",
+        };
         auto is_known = [&](const std::string &w) {
             return kKnownPrefixes.count(w) != 0 ||
+                   kKnownFullCommands.count(w) != 0 ||
                    (w.size() > 3 && w.compare(0, 3, "lgo") == 0);
         };
         // 只有这些“短命令”允许被拆开（\leN → \le{}N）。
@@ -1484,7 +1556,8 @@ std::string sanitize_math(std::string s)
                 const std::string word = s.substr(p + 1, w - p - 1);
                 // 整词不是已知命令时（\leN、\qquad第），按最长已知前缀拆开，
                 // 在命令后补空组，避免后续字母被并入命令名；
-                // 整词是已知命令（\operatornamewithlimits、\frac12 等）则不动
+                // 整词是已知命令（\operatornamewithlimits、\frac12、
+                // \leqslant 等）则不动
                 if (!is_known(word))
                 {
                     size_t best = std::string::npos;
@@ -1492,7 +1565,8 @@ std::string sanitize_math(std::string s)
                         if (is_known(word.substr(0, len)))
                             best = len;
                     if (best != std::string::npos &&
-                        kSafeSplit.count(word.substr(0, best)))
+                        (kSafeSplit.count(word.substr(0, best)) ||
+                         kKnownFullCommands.count(word.substr(0, best))))
                     {
                         t += "\\" + word.substr(0, best) + "{}" +
                              word.substr(best);
@@ -1627,6 +1701,26 @@ std::string escape_latex(std::string s)
         case '<': out += "\\textless{}"; break;
         case '>': out += "\\textgreater{}"; break;
         default: out += c;
+        }
+    }
+
+    // 部分 Unicode 标点在常用西文字体（Latin Modern 等）中没有字形，
+    // 而 xeCJK 也不会把它们交给中文字体，编译时会被静默丢弃：例如洛谷
+    // 题面里的中文破折号“――”用的是 U+2015 HORIZONTAL BAR，P1131 中
+    // 会整段消失（日志只报 "Missing character"）。这里在文本模式把这些
+    // 字符换成等价的 LaTeX 命令，任何字体方案下都能正常排版。
+    static const std::pair<const char *, const char *> kTextFallbacks[] = {
+        {"\u2015", "\\textemdash{}"}, // ― 水平杠（中文破折号）
+        {"\u2012", "\\textendash{}"}, // ‒ figure dash（数字宽的短横）
+    };
+    for (const auto &kv : kTextFallbacks)
+    {
+        const std::string ch = kv.first;
+        size_t p = 0;
+        while ((p = out.find(ch, p)) != std::string::npos)
+        {
+            out.replace(p, ch.size(), kv.second);
+            p += std::strlen(kv.second);
         }
     }
     return out;
@@ -3024,7 +3118,9 @@ std::string latex::markdown_to_latex(const std::string &markdown)
                                               "paragraph*", "subparagraph*"};
                 if (in_quote_like || n > 5)
                 {
-                    out += "\\textbf{" + title + "}\n\n";
+                    // 这些 # 标题同样按“正文黑体部分”处理：中文黑体、西文
+                    // 与代码块同字体（\luogomarkdownheading）
+                    out += "\\textbf{{\\luogomarkdownheading " + title + "}}\n\n";
                 }
                 else if (n >= 2 && n <= 4)
                 {
@@ -3101,7 +3197,10 @@ std::string latex::markdown_to_latex(const std::string &markdown)
                     size_t n = 0;
                     while (n < body.size() && body[n] == '#')
                         ++n;
-                    groups.push_back({{"\\textbf{" + inline_to_latex(trim(body.substr(n))) + "}", false}});
+                    // 引用块内的 # 标题：中文黑体、西文与代码块同字体
+                    groups.push_back({{"\\textbf{{\\luogomarkdownheading " +
+                                        inline_to_latex(trim(body.substr(n))) + "}}",
+                                        false}});
                 }
                 else
                 {
@@ -3548,14 +3647,16 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     //    保持普通正文 CJK 字体。西文直接跟随正文主字体，因此
     //    --set-font-body-en-US 通过 \setmainfont 自动生效；不使用黑体。
     // 2) 小节标题（\subsection / \subsubsection，对应固定小节和 Markdown
-    //    的 ## / ###）：中文默认使用 ctex 预设黑体 \heiti；用户指定标题
+    //    的 ## / ###）：中文默认使用 ctex 预设黑体 \heiti；西文默认使用
+    //    代码块字体 \luogoheadinglatin（--set-font-body-codes 或
+    //    Consolas -> Menlo -> DejaVu Sans Mono 回退链）。用户指定标题
     //    中西文字体时优先使用 --set-font-title-zh-CN / -en-US。
     const std::string section_title_font_zh =
         opt.font_title_zh.empty() ? "" : "\\luogotitlezh";
     const std::string subsection_title_font_zh =
         opt.font_title_zh.empty() ? "\\heiti" : "\\luogotitlezh";
     const std::string subsection_title_font_en =
-        opt.font_title_en.empty() ? "" : "\\luogotitleen";
+        opt.font_title_en.empty() ? "\\luogoheadinglatin" : "\\luogotitleen";
 
     std::fprintf(out, "\\titleformat{\\section}\n{%s\\Large}\n{}\n{0em}{}\n",
                  section_title_font_zh.c_str());
@@ -3677,6 +3778,11 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\providecommand{\\argmax}{\\operatorname*{arg\\,max}}\n", out);
     std::fputs("\\providecommand{\\argmin}{\\operatorname*{arg\\,min}}\n", out);
     std::fputs("\\providecommand{\\ctg}{\\cot}\n", out);
+    // amssymb 的 \circledR / \circledS 未被 unicode-math 收录，而本模板不加载
+    // amssymb；洛谷题面（KaTeX 支持这两个命令）用到时补齐为等价符号，
+    // 避免 Undefined control sequence。
+    std::fputs("\\providecommand{\\circledR}{\\text{\\textregistered}}\n", out);
+    std::fputs("\\providecommand{\\circledS}{\\text{\\textcircled{S}}}\n", out);
     // 部分洛谷题面使用 \bold2 / \bold{x} 表示粗体数学字符；LaTeX 标准
     // 没有 \bold，补齐为 \mathbf 别名，避免编译时 Undefined control sequence。
     std::fputs("\\providecommand{\\bold}[1]{\\ifmmode\\mathbf{#1}\\else\\textbf{#1}\\fi}\n", out);

@@ -189,45 +189,42 @@ void write_font_setup(FILE *out, const Options &opt)
     if (!opt.font_body_zh.empty())
         std::fprintf(out, "\\setCJKmainfont%s\n", font_argument(opt.font_body_zh).c_str());
 
-    // 2. 代码块西文等宽字体。默认按“Consolas -> Menlo -> DejaVu Sans Mono”
-    //    顺序回退：Windows 常见 Consolas，macOS 常见 Menlo，Linux TeX Live
-    //    几乎必带 DejaVu Sans Mono；三个都不存在时保留 fontspec 默认等宽字体。
+    // 2. 代码块西文等宽字体与“正文黑体部分”（Markdown 的 # 小标题、
+    //    “题目描述”“输入输出样例”等固定小标题）的西文字体使用同一套
+    //    选择逻辑：默认按“Consolas -> Menlo -> DejaVu Sans Mono”顺序
+    //    回退（Windows 常见 Consolas，macOS 常见 Menlo，Linux TeX Live
+    //    几乎必带 DejaVu Sans Mono），三个都不存在时保留 fontspec 默认
+    //    等宽字体；用户传 --set-font-body-codes 时两者都用该字体。
+    //    \luogoheadinglatin 用 \newfontfamily 定义，只切换西文字族，
+    //    中文字体仍由 \heiti 等 CJK 字体命令控制，逻辑不变。
     if (opt.font_code.empty())
     {
         std::fputs(
             "\\IfFontExistsTF{Consolas}%\n"
-            "  {\\setmonofont{Consolas}}%\n"
+            "  {\\setmonofont{Consolas}\\newfontfamily{\\luogoheadinglatin}{Consolas}}%\n"
             "  {\\IfFontExistsTF{Menlo}%\n"
-            "    {\\setmonofont{Menlo}}%\n"
+            "    {\\setmonofont{Menlo}\\newfontfamily{\\luogoheadinglatin}{Menlo}}%\n"
             "    {\\IfFontExistsTF{DejaVu Sans Mono}%\n"
-            "      {\\setmonofont{DejaVu Sans Mono}}%\n"
-            "      {}}}\n",
+            "      {\\setmonofont{DejaVu Sans Mono}\\newfontfamily{\\luogoheadinglatin}{DejaVu Sans Mono}}%\n"
+            "      {\\global\\let\\luogoheadinglatin\\relax}}}\n",
             out);
     }
     else
     {
-        std::fprintf(out, "\\setmonofont%s\n", font_argument(opt.font_code).c_str());
+        const std::string code_font = font_argument(opt.font_code);
+        std::fprintf(out, "\\setmonofont%s\n", code_font.c_str());
+        std::fprintf(out, "\\newfontfamily{\\luogoheadinglatin}%s\n", code_font.c_str());
     }
 
     // CJK 等宽字体不再单独强制 SimHei：ctex fontset 已经设置了与当前
     // 中文字体方案匹配的 \CJKmonofont，避免重新定义 CJKttdefault 的警告，
     // 也让 Linux/Windows/macOS 的默认行为各自一致。
 
-    // 3. 标签徽章字体：仍按操作系统选择默认值；缺失时回退到 ctex 正文
-    //    中文字体。用户目前没有专门针对标签徽章的字体参数，因此独立于
-    //    --set-font-* 的处理。
-#if defined(_WIN32) || defined(__APPLE__)
-    const char *kTagBadgeFont = "Noto Sans CJK SC";
-#else
-    const char *kTagBadgeFont = "WenQuanYi Micro Hei";
-#endif
-    std::fprintf(out,
-                 "\\IfFontExistsTF{%s}\n"
-                 "  {\\newfontfamily{\\tagsfontswestern}{%s}%%\n"
-                 "   \\newCJKfontfamily{\\tagsfontscjk}{%s}}\n"
-                 "  {\\let\\tagsfontswestern\\relax\\let\\tagsfontscjk\\relax}\n"
-                 "\\newcommand{\\tagsfonts}{\\tagsfontswestern\\tagsfontscjk}\n",
-                 kTagBadgeFont, kTagBadgeFont, kTagBadgeFont);
+    // 3. 标签徽章字体跟随正文字体：不再按操作系统单独指定思源黑体 /
+    //    文泉驿微米黑，标签直接使用当前正文中西文字体（可由
+    //    --set-font-body-zh-CN / --set-font-body-en-US 指定）。
+    //    \tagsfonts 保留为空定义，标签渲染代码无需改动。
+    std::fputs("\\newcommand{\\tagsfonts}{}\n", out);
 
     // 4. 用户指定的封面 / 标题字体。命令在标题格式中按需展开。
     if (!opt.font_cover.empty())
@@ -251,11 +248,12 @@ void write_font_setup(FILE *out, const Options &opt)
                      font_argument(opt.font_title_en).c_str());
 
     // Markdown ## / ### / #### 小标题：中文默认使用 ctex fontset 预设黑体；
-    // 若用户传了 --set-font-title-zh-CN / --set-font-title-en-US，则按
-    // 对应维度改用用户字体，维持 --set-font-* 系列参数的最高优先级。
+    // 西文默认与代码块同字体（\luogoheadinglatin）；若用户传了
+    // --set-font-title-zh-CN / --set-font-title-en-US，则按对应维度改用
+    // 用户标题字体，维持 --set-font-* 系列参数的最高优先级。
     std::fprintf(out, "\\newcommand{\\luogomarkdownheading}{%s%s}\n",
                  opt.font_title_zh.empty() ? "\\heiti" : "\\luogotitlezh",
-                 opt.font_title_en.empty() ? "" : "\\luogotitleen");
+                 opt.font_title_en.empty() ? "\\luogoheadinglatin" : "\\luogotitleen");
 }
 
 } // namespace latex

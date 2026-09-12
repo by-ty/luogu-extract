@@ -51,7 +51,8 @@ namespace latex
         std::string font_body_zh;  // 正文中文字体（--set-font-body-zh-CN）
         std::string font_body_en;  // 正文及题目大标题西文字体，不作用于公式
                                     // （--set-font-body-en-US）
-        std::string font_code;     // 代码块字体（--set-font-body-codes）
+        std::string font_code;     // 代码块，以及正文黑体部分（小标题）西文字体
+                                    // （--set-font-body-codes）
         std::string font_title_zh; // 题目大标题/小节标题/目录/页眉中文字体
                                     // （--set-font-title-zh-CN）
         std::string font_title_en; // 小节标题/目录/页眉西文字体（--set-font-title-en-US；
@@ -63,7 +64,8 @@ namespace latex
 
     // 把一段 markdown / HTML 文本转换为 LaTeX。
     // 标题映射为 \section 及更低层级；小节中文标题默认使用 ctex 预设
-    // 黑体 \heiti（含 Markdown 的 ## / ### / ####）。图片链接映射为缓存中的文件
+    // 黑体 \heiti（含 Markdown 的 ## / ### / ####），其西文使用代码块字体
+    // （见 latex_fonts.h 的 write_font_setup）。图片链接映射为缓存中的文件
     // （crawler::image_cache_path），超宽/超高图片按比例缩小到版心内，小图片
     // 不放大；视频（Bilibili 等）只输出链接；
     // 数学公式原样保留。
