@@ -34,16 +34,22 @@ find_package(ZLIB REQUIRED)
 file(GLOB_RECURSE LUOGU_EXTRACT_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
 
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/include/luogu-extract/util/version.h.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/luogu-extract/version_config.h"
+    @ONLY)
+
 add_executable(luogu-extract ${LUOGU_EXTRACT_SOURCES})
 
 target_compile_features(luogu-extract PRIVATE cxx_std_17)
 
 target_include_directories(luogu-extract PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
 
 target_compile_options(luogu-extract PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra>
-    $<$<CXX_COMPILER_ID:MSVC>:/W4>)
+    $<$<CXX_COMPILER_ID:MSVC>:/W4 /utf-8>)
 
 target_link_libraries(luogu-extract PRIVATE
     CURL::libcurl

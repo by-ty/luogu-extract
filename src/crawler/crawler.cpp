@@ -62,8 +62,8 @@ void print_error(const std::string &message)
 {
     std::lock_guard<std::mutex> lock(print_mutex());
     fflush(stdout);
-    // 颜色复位放在具体消息之前：只有 "error:" 用红色，消息保持默认色
-    std::fprintf(stderr, "%serror:%s %s\n", kColorRed, kColorReset, message.c_str());
+    // 颜色复位放在具体消息之前：只有 "错误：" 用红色，消息保持默认色
+    std::fprintf(stderr, "%s错误：%s %s\n", kColorRed, kColorReset, message.c_str());
 }
 
 void print_success(const std::string &message)
@@ -363,7 +363,7 @@ std::string crawler::get_html(const std::string &url, derror *error)
     CURL *curl = curl_easy_init();
     if (!curl)
     {
-        print_error("Failed to initialize libcurl while fetching " + url);
+        print_error("初始化 libcurl 失败（抓取 " + url + "）");
         if (error) *error = INIT_ERROR;
         return "";
     }
@@ -386,25 +386,25 @@ std::string crawler::get_html(const std::string &url, derror *error)
 
     if (curl_res == CURLE_WRITE_ERROR && http_code == 200)
     {
-        print_error("Failed to fetch " + url + ": response too large");
+        print_error("抓取 " + url + " 失败：响应内容过大");
         if (error) *error = DOWNLOAD_FAIL;
         return "";
     }
     if (curl_res != CURLE_OK)
     {
-        print_error("Failed to fetch " + url + ": " + curl_easy_strerror(curl_res));
+        print_error("抓取 " + url + " 失败：libcurl 报告错误 " + curl_easy_strerror(curl_res));
         if (error) *error = DOWNLOAD_FAIL;
         return "";
     }
     if (http_code != 200)
     {
-        print_error("Failed to fetch " + url + ": HTTP status code " + std::to_string(http_code));
+        print_error("抓取 " + url + " 失败：HTTP 状态码 " + std::to_string(http_code));
         if (error) *error = HTTP_ERROR;
         return "";
     }
     if (response.data.empty())
     {
-        print_error("Failed to fetch " + url + ": empty response");
+        print_error("抓取 " + url + " 失败：响应内容为空");
         if (error) *error = EMPTY_RESPONSE;
         return "";
     }
@@ -422,8 +422,8 @@ crawler::derror crawler::downloadFile(const std::string &url,
         std::filesystem::create_directories(parent, ec);
         if (ec)
         {
-            print_error("Failed to create directory '" + luogu::compat::path_to_utf8(parent) +
-                        "': " + ec.message());
+            print_error("无法创建目录 '" + luogu::compat::path_to_utf8(parent) +
+                        "'：" + ec.message());
             return CANT_CREAT_FILE;
         }
     }
@@ -431,15 +431,15 @@ crawler::derror crawler::downloadFile(const std::string &url,
     FILE *out_file = luogu::compat::fopen(fpath, "wb");
     if (!out_file)
     {
-        print_error("Failed to open file '" + luogu::compat::path_to_utf8(fpath) +
-                    "' for writing");
+        print_error("无法打开文件 '" + luogu::compat::path_to_utf8(fpath) +
+                    "'（写入）");
         return CANT_CREAT_FILE;
     }
 
     CURL *curl = curl_easy_init();
     if (!curl)
     {
-        print_error("Failed to initialize libcurl while downloading " + url);
+        print_error("初始化 libcurl 失败（下载 " + url + "）");
         std::fclose(out_file);
         // 初始化失败时删除空文件：否则下一次 download_images 看到
         // exists 会把它当成已缓存图片跳过
@@ -493,21 +493,21 @@ crawler::derror crawler::downloadFile(const std::string &url,
     {
         std::error_code ec;
         std::filesystem::remove(fpath, ec);
-        print_error("Failed to download " + url + ": file too large");
+        print_error("下载 " + url + " 失败：文件过大");
         return DOWNLOAD_FAIL;
     }
     if (res != CURLE_OK)
     {
         std::error_code ec;
         std::filesystem::remove(fpath, ec);
-        print_error("Failed to download " + url + ": " + curl_easy_strerror(res));
+        print_error("下载 " + url + " 失败：libcurl 报告错误 " + curl_easy_strerror(res));
         return DOWNLOAD_FAIL;
     }
     if (http_code != 200)
     {
         std::error_code ec;
         std::filesystem::remove(fpath, ec);
-        print_error("Failed to download " + url + ": HTTP status code " + std::to_string(http_code));
+        print_error("下载 " + url + " 失败：HTTP 状态码 " + std::to_string(http_code));
         return HTTP_ERROR;
     }
 
@@ -519,7 +519,7 @@ std::string crawler::get_html_prob(std::string p, derror *error)
     if (error) *error = SUCCESS;
     if (p.empty())
     {
-        print_error("Invalid problem id: expected a non-empty string");
+        print_error("题号不合法：题号不能为空字符串");
         if (error) *error = INVALID_ARGUMENT;
         return "";
     }
@@ -529,7 +529,7 @@ std::string crawler::get_html_prob(std::string p, derror *error)
     std::string html = crawler::get_html(url, &fetch_error);
     if (fetch_error != SUCCESS)
     {
-        print_error("Failed to fetch problem page for '" + p + "'");
+        print_error("无法获取题目页面（题号 '" + p + "'）");
         if (error) *error = fetch_error;
         return "";
     }
@@ -541,7 +541,7 @@ std::string crawler::get_html_article(std::string id, derror *error)
     if (error) *error = SUCCESS;
     if (id.empty())
     {
-        print_error("Invalid article id: expected a non-empty string");
+        print_error("题解编号不合法：题解编号不能为空字符串");
         if (error) *error = INVALID_ARGUMENT;
         return "";
     }
@@ -551,7 +551,7 @@ std::string crawler::get_html_article(std::string id, derror *error)
     std::string html = crawler::get_html(url, &fetch_error);
     if (fetch_error != SUCCESS)
     {
-        print_error("Failed to fetch article page for '" + id + "'");
+        print_error("无法获取题解页面（编号 '" + id + "'）");
         if (error) *error = fetch_error;
         return "";
     }
@@ -565,21 +565,21 @@ crawler::derror crawler::update_tags()
     std::filesystem::create_directories(cache_dir, ec);
     if (ec)
     {
-        print_error("Failed to create cache directory '" +
-                    luogu::compat::path_to_utf8(cache_dir) + "': " + ec.message());
+        print_error("无法创建缓存目录 '" +
+                    luogu::compat::path_to_utf8(cache_dir) + "'：" + ec.message());
         return ENV_ERROR;
     }
 
     // 官方标签接口（题目列表页中通过 __luoguTagRequest 暴露）
     const std::string url = "https://www.luogu.com.cn/_lfe/tags/zh-CN";
     derror fetch_error = SUCCESS;
-    printf("Downloading tags: ");
+    printf("正在下载标签缓存：");
     std::string body = get_html(url, &fetch_error);
     printf("\n");
 
     if (fetch_error != SUCCESS)
     {
-        print_error("Failed to update the tag cache (download failed)");
+        print_error("标签缓存更新失败（下载失败）");
         return fetch_error;
     }
 
@@ -588,7 +588,7 @@ crawler::derror crawler::update_tags()
         json data = json::parse(body);
         if (!data.contains("tags") || !data["tags"].is_array())
         {
-            print_error("Failed to update the tag cache (unexpected response format)");
+            print_error("标签缓存更新失败（接口返回的数据格式不符合预期）");
             return EMPTY_RESPONSE;
         }
 
@@ -624,7 +624,7 @@ crawler::derror crawler::update_tags()
 
         if (entries.empty())
         {
-            print_error("Failed to update the tag cache (no valid tags found)");
+            print_error("标签缓存更新失败（没有解析出任何有效标签）");
             return EMPTY_RESPONSE;
         }
         std::sort(entries.begin(), entries.end(),
@@ -648,8 +648,8 @@ crawler::derror crawler::update_tags()
         FILE *out = luogu::compat::fopen(tmp_path, "w");
         if (!out)
         {
-            print_error("Failed to open '" + luogu::compat::path_to_utf8(tmp_path) +
-                        "' for writing");
+            print_error("无法打开文件 '" + luogu::compat::path_to_utf8(tmp_path) +
+                        "'（写入）");
             return CANT_CREAT_FILE;
         }
         const std::string dump = tag_map.dump(4);
@@ -662,25 +662,25 @@ crawler::derror crawler::update_tags()
         {
             std::error_code rm_ec;
             std::filesystem::remove(tmp_path, rm_ec);
-            print_error("Failed to write '" + luogu::compat::path_to_utf8(save_path) + "'");
+            print_error("写入文件 '" + luogu::compat::path_to_utf8(save_path) + "' 失败");
             return CANT_CREAT_FILE;
         }
         std::filesystem::rename(tmp_path, save_path, ec);
         if (ec)
         {
             std::filesystem::remove(tmp_path, ec);
-            print_error("Failed to write '" + luogu::compat::path_to_utf8(save_path) +
-                        "': " + ec.message());
+            print_error("写入文件 '" + luogu::compat::path_to_utf8(save_path) +
+                        "'：" + ec.message());
             return CANT_CREAT_FILE;
         }
     }
     catch (const std::exception &e)
     {
-        print_error(std::string("Failed to parse tag data: ") + e.what());
+        print_error(std::string("解析标签数据失败：") + e.what());
         return EMPTY_RESPONSE;
     }
 
-    print_success("Tag cache updated successfully");
+    print_success("标签缓存更新成功");
     return SUCCESS;
 }
 
@@ -692,8 +692,8 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
     std::filesystem::create_directories(image_dir, ec);
     if (ec)
     {
-        print_error("Failed to create image cache directory '" +
-                    luogu::compat::path_to_utf8(image_dir) + "': " + ec.message());
+        print_error("无法创建图片缓存目录 '" +
+                    luogu::compat::path_to_utf8(image_dir) + "'：" + ec.message());
         return ENV_ERROR;
     }
 
@@ -710,7 +710,7 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
 
     // 直接在同一行显示完整进度，避免与其他保存/恢复光标的序列冲突。
     // 先打印前缀，监视线程每次使用 '\r' 回到行首并重写整行内容。
-    printf("Downloading image(s): ");
+    printf("正在下载图片：");
 
     // 并行下载：多个 worker 通过原子索引领取 URL，洛谷图床下载串行化并保持随机间隔
     std::atomic<size_t> next_index{0};
@@ -729,14 +729,14 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
             // 使用浮点计算并四舍五入，避免长时间为 0 的地板除
             int cur = total > 0 ? static_cast<int>(std::floor((static_cast<double>(d) * 100.0) / static_cast<double>(total) + 0.5)) : 100;
             // 回到行首并清除到行尾，重写完整前缀 + 进度
-            printf("\rDownloading image(s): %3d %% (%d/%d).\033[K", cur, d, total);
+            printf("\r正在下载图片：%3d %% (%d/%d).\033[K", cur, d, total);
             fflush(stdout);
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
         // 结束前再做一次最终输出并换行
         int d = downloaded.load();
         int cur = total > 0 ? static_cast<int>(std::floor((static_cast<double>(d) * 100.0) / static_cast<double>(total) + 0.5)) : 100;
-        printf("\rDownloading image(s): %3d %% (%d/%d), done.\033[K\n", cur, d, total);
+        printf("\r正在下载图片：%3d %% (%d/%d)，完成。\033[K\n", cur, d, total);
         fflush(stdout);
     });
 
@@ -821,7 +821,7 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
 
     if (downloaded == 0 && skipped == 0)
     {
-        print_error("No images to download");
+        print_error("没有需要下载的图片");
         return first_error != SUCCESS ? first_error : EMPTY_RESPONSE;
     }
     return first_error;
@@ -839,21 +839,21 @@ crawler::derror crawler::update()
     std::filesystem::create_directories(cache_dir, ec);
     if (ec)
     {
-        print_error("Failed to create cache directory '" +
-                    luogu::compat::path_to_utf8(cache_dir) + "': " + ec.message());
+        print_error("无法创建缓存目录 '" +
+                    luogu::compat::path_to_utf8(cache_dir) + "'：" + ec.message());
         return ENV_ERROR;
     }
 
     std::string url = "https://cdn.luogu.com.cn/problemset-open/latest.ndjson.gz";
     std::filesystem::path save_path = cache_dir / "latest.ndjson.gz";
     std::filesystem::path extract_path = cache_dir / "latest.ndjson";
-    printf("Downloading problems: ");
+    printf("正在下载题目列表：");
     derror result = downloadFile(url, save_path);
     printf("\n");
 
     if (result != SUCCESS)
     {
-        print_error("Failed to update the problem list cache (download failed)");
+        print_error("题目列表缓存更新失败（下载失败）");
         return result;
     }
 
@@ -864,7 +864,7 @@ crawler::derror crawler::update()
     if (!decompress_gzip_file(save_path, tmp_extract))
     {
         std::filesystem::remove(tmp_extract, ec);
-        print_error("Failed to decompress the downloaded file '" +
+        print_error("解压下载的文件 '" +
                     luogu::compat::path_to_utf8(save_path) + "'");
         return DECOMPRESS_ERROR;
     }
@@ -872,12 +872,12 @@ crawler::derror crawler::update()
     if (ec)
     {
         std::filesystem::remove(tmp_extract, ec);
-        print_error("Failed to write '" + luogu::compat::path_to_utf8(extract_path) +
-                    "': " + ec.message());
+        print_error("写入文件 '" + luogu::compat::path_to_utf8(extract_path) +
+                    "'：" + ec.message());
         return CANT_CREAT_FILE;
     }
 
-    print_success("Problem list cache updated successfully");
+    print_success("题目列表缓存更新成功");
 
     // 题目列表更新成功后，顺带更新标签缓存（保存为 tags.json）
     return crawler::update_tags();

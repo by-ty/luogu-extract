@@ -38,6 +38,7 @@
 #include "luogu-extract/export/latex_fonts.h"
 #include "luogu-extract/util/compat.h"
 #include "luogu-extract/util/problem_info.h"
+#include "luogu-extract/util/version.h"
 
 namespace
 {
@@ -2708,6 +2709,9 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
             if (hend[r][c] >= 0)
                 hlen = static_cast<size_t>(hend[r][c]) - c + 1;
             std::string content = inline_to_latex(cell);
+            // 表头（表格第一行）加粗：\luogotablehead 同时加粗文字与公式
+            if (r == 0 && !content.empty())
+                content = "\\luogotablehead{" + content + "}";
             if (vlen > 1)
                 content = "\\multirow{" + std::to_string(vlen) + "}{*}{" +
                           content + "}";
@@ -3501,7 +3505,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     if (!luogu::select_problems(filter, problems, &resolved_tags, error))
         return false;
 
-    // 检查图片是否都已下载到缓存；缺失时在终端用英文询问是否下载。
+    // 检查图片是否都已下载到缓存；缺失时在终端用中文询问是否下载。
     // 同一 URL 跨题目去重，避免重复下载与并发写同一缓存文件
     std::vector<std::string> missing;
     {
@@ -3526,7 +3530,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     }
     if (!missing.empty())
     {
-        std::printf("%zu image(s) referenced by the selected problems are not downloaded yet.\nDownload them now? [y/N] ", missing.size());
+        std::printf("筛选出的题目共引用了 %zu 张尚未下载的图片。\n现在下载吗？[y/N] ", missing.size());
         fflush(stdout);
         char answer_buf[16];
         if (!fgets(answer_buf, sizeof(answer_buf), stdin))
@@ -3537,13 +3541,14 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
             const crawler::derror download_result = crawler::download_images(missing);
             if (download_result != crawler::SUCCESS)
             {
-                std::printf("Some images failed to download; missing images will be "
-                            "skipped during compilation (\\IfFileExists).\n");
+                std::printf("部分图片下载失败；缺失的图片将在编译时被跳过"
+                            "（\\IfFileExists）。\n");
             }
         }
         else
         {
-            std::printf("Skipped. Missing images will be skipped during compilation (\\IfFileExists).\n");
+            std::printf("已跳过下载；缺失的图片将在编译时被跳过"
+                        "（\\IfFileExists）。\n");
         }
     }
 
@@ -3608,6 +3613,12 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 显式选择随 TeX Live / MacTeX / MiKTeX 分发的 OpenType 数学字体，
     // 避免不同平台上 unicode-math 默认数学字体不一致。
     std::fputs("\\setmathfont{Latin Modern Math}\n", out);
+    // 表头加粗用的粗体数学版本：Latin Modern Math 本身没有粗体字形，
+    // 用 fontspec 的 FakeBold（XeTeX 的 embolden）合成粗体，
+    // 使表头里的公式（如 $n\\leq$）与文字一并加粗。
+    std::fputs("\\setmathfont[version=bold, FakeBold=2]{Latin Modern Math}\n", out);
+    // 表格表头：\textbf 加粗文字，\boldmath 切换上面定义的粗体数学版本
+    std::fputs("\\newcommand{\\luogotablehead}[1]{\\textbf{\\boldmath #1}}\n", out);
     std::fputs("\\newcommand{\\bm}{\\symbfit}\n", out);
     std::fputs("\\renewcommand{\\boldsymbol}{\\symbfit}\n", out);
     std::fputs("\\usepackage{xcolor}\n", out);
@@ -3835,14 +3846,18 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("morestring=[b]\"\n", out);
     std::fputs("}\n", out);
     // 封面标题：--set-cover-title 指定文字，--set-font-cover-page 指定字体
-    // （未设置字体时保持原代码行为：不额外指定字体族）
+    // （未设置字体时保持原代码行为：不额外指定字体族）；
+    // 作者处的项目名带指向项目仓库的超链接（hyperref 已在上方加载）
     {
         const std::string cover = opt.cover_title.empty() ? "luogu extract" : opt.cover_title;
         std::string cover_latex = escape_latex(cover);
         if (!opt.font_cover.empty())
             cover_latex = "{\\luogocoverfontall " + cover_latex + "}";
-        std::fprintf(out, "\\title{%s}\n\\author{luogu-extract}\n\\date{\\today}\n",
-                     cover_latex.c_str());
+        std::fprintf(out,
+                     "\\title{%s}\n\\author{\\href{%s}{%s}}\n\\date{\\today}\n",
+                     cover_latex.c_str(),
+                     LUOGU_EXTRACT_REPOSITORY_URL,
+                     LUOGU_EXTRACT_PROJECT_NAME);
     }
 
     // 字体设置已集中到 latex_fonts.cpp：ctex fontset 预设负责默认中西文
@@ -3905,15 +3920,15 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         // total == 0（筛选结果为空）时不做百分比计算，避免整数除零崩溃
         if (total > 0)
         {
-            std::printf("\rExporting: %3d %% (%d/%d). ", cnt * 100 / total, cnt, total);
+            std::printf("\r正在导出：%3d %% (%d/%d)。 ", cnt * 100 / total, cnt, total);
             fflush(stdout);
         }
     }
     // total == 0 时输出固定的完成提示（不计算百分比）
     if (total > 0)
-        std::printf("\rExporting: %3d %% (%d/%d), done.\n", cnt * 100 / total, cnt, total);
+        std::printf("\r正在导出：%3d %% (%d/%d)，完成。\n", cnt * 100 / total, cnt, total);
     else
-        std::printf("\rExporting: done. (0 problems)\n");
+        std::printf("\r正在导出：完成（共 0 道题）。\n");
     fflush(stdout);
 
     std::fputs("\\end{document}\n", out);

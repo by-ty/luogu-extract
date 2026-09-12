@@ -45,7 +45,7 @@ article::Article::Article(std::string html)
 
     if (html.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
     {
-        std::fprintf(stderr, "HTML content is too large to parse\n");
+        std::fprintf(stderr, "HTML 内容过大，无法解析\n");
         return;
     }
 
@@ -146,7 +146,7 @@ article::Article::Article(std::string html)
     catch (const std::exception &e)
     {
         // JSON 解析失败，保留默认值
-        std::fprintf(stderr, "Failed to parse JSON: %s\n", e.what());
+        std::fprintf(stderr, "解析 JSON 失败：%s\n", e.what());
     }
 }
 
@@ -157,16 +157,16 @@ std::vector<std::string> Article::image_urls() const
 
 void Article::print()
 {
-    printf("lid: %s  title: %s\n", lid.c_str(), title.c_str());
-    printf("category: %d  time: %lld\n", category, time);
-    printf("author uid: %d  author name: %s\n\n", author_uid, author_name.c_str());
+    printf("题解编号：%s  标题：%s\n", lid.c_str(), title.c_str());
+    printf("分类：%d  发布时间：%lld\n", category, time);
+    printf("作者 UID：%d  作者昵称：%s\n\n", author_uid, author_name.c_str());
 
-    printf("upvote: %d  replyCount: %d  favorCount: %d\n", upvote, reply_count, favor_count);
-    printf("status: %d  promoteStatus: %d\n", status, promote_status);
+    printf("点赞数：%d  回复数：%d  收藏数：%d\n", upvote, reply_count, favor_count);
+    printf("状态：%d  推荐状态：%d\n", status, promote_status);
 
     if(!solution_pid.empty())
-        printf("solutionFor pid: %s  type: %s  name: %s  difficulty: %d\n\n",
+        printf("对应题解：题号 %s  类型 %s  名称 %s  难度 %d\n\n",
                solution_pid.c_str(), solution_type.c_str(), solution_name.c_str(), solution_difficulty);
 
-    printf("content:\n%s\n", content.c_str());
+    printf("正文：\n%s\n", content.c_str());
 }

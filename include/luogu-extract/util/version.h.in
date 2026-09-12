@@ -1,0 +1,34 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (C) 2026 by-ty
+//
+// This file is part of luogu-extract
+// (https://github.com/by-ty/luogu-extract), a fork of luogu-export
+// (https://github.com/sacharei/luogu-export) which is licensed under the
+// MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
+// section in the LICENSE file.
+//
+// luogu-extract is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Lesser General Public License as published
+// by the Free Software Foundation, either version 3 of the License, or (at
+// your option) any later version. See the LICENSE file or
+// https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
+//
+// luogu-extract is distributed in the hope that it will be useful, but
+// WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+// or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+// License for more details.
+
+// include/luogu-extract/util/version.h.in
+//
+// 版本号配置模板：由 CMake 在配置阶段根据 CMakeLists.txt 中
+// project(luogu-extract VERSION ...) 的版本号生成
+// <构建目录>/generated/luogu-extract/version_config.h。
+// 程序通过 luogu-extract/util/version.h 引用生成的头文件，
+// 在编译期即可拿到版本号（无需运行时解析任何文件）。
+#pragma once
+
+// 项目版本号（取自 CMakeLists.txt 的 project(... VERSION x.y.z)）
+#define LUOGU_EXTRACT_VERSION "@PROJECT_VERSION@"
+#define LUOGU_EXTRACT_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
+#define LUOGU_EXTRACT_VERSION_MINOR @PROJECT_VERSION_MINOR@
+#define LUOGU_EXTRACT_VERSION_PATCH @PROJECT_VERSION_PATCH@

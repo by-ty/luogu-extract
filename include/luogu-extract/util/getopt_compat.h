@@ -190,7 +190,7 @@ namespace detail
             {
                 if (print_errors)
                 {
-                    std::fprintf(stderr, "%s: option '--%.*s' is ambiguous; possibilities: %s\n",
+                    std::fprintf(stderr, "%s: 长选项 '--%.*s' 存在歧义，可能是：%s\n",
                                  argv[0], static_cast<int>(name_len), name,
                                  ambig_list.c_str());
                 }
@@ -205,7 +205,7 @@ namespace detail
         if (pfound == nullptr)
         {
             if (print_errors)
-                std::fprintf(stderr, "%s: unrecognized option '--%.*s'\n",
+                std::fprintf(stderr, "%s: 无法识别的长选项 '--%.*s'\n",
                              argv[0], static_cast<int>(name_len), name);
             st.nextchar = nullptr;
             ++optind;
@@ -225,7 +225,7 @@ namespace detail
             else
             {
                 if (print_errors)
-                    std::fprintf(stderr, "%s: option '--%s' doesn't allow an argument\n",
+                    std::fprintf(stderr, "%s: 长选项 '--%s' 不接受参数值\n",
                                  argv[0], pfound->name);
                 optopt = pfound->val;
                 return '?';
@@ -241,7 +241,7 @@ namespace detail
             else
             {
                 if (print_errors)
-                    std::fprintf(stderr, "%s: option '--%s' requires an argument\n",
+                    std::fprintf(stderr, "%s: 长选项 '--%s' 需要参数值\n",
                                  argv[0], pfound->name);
                 optopt = pfound->val;
                 return optstring[0] == ':' ? ':' : '?';
@@ -367,7 +367,7 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
         if (temp == nullptr || c == ':' || c == ';')
         {
             if (should_print_errors(optstring))
-                std::fprintf(stderr, "%s: invalid option -- '%c'\n", av[0], c);
+                std::fprintf(stderr, "%s: 无效的选项 -- '%c'\n", av[0], c);
             optopt = c;
             return '?';
         }
@@ -399,7 +399,7 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
                 else if (optind >= argc)
                 {
                     if (should_print_errors(optstring))
-                        std::fprintf(stderr, "%s: option requires an argument -- '%c'\n",
+                        std::fprintf(stderr, "%s: 选项缺少参数值 -- '%c'\n",
                                      av[0], c);
                     optopt = c;
                     return colon_mode ? ':' : '?';

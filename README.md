@@ -16,6 +16,7 @@
   - 按**题面语言**筛选（`zh-CN` / `en`，英文缺失时自动回退中文）。
 - **导出 Markdown**（`-M`）：每题一个章节，包含难度、标签、时空限制、题目背景、题目描述、输入/输出格式、样例、说明/提示；一级标题可用 `--set-cover-title` 自定义。
 - **导出 LaTeX**（`-L`）：生成可直接用 `xelatex` 编译的完整 `.tex` 文档（含文档类、宏包、目录、页眉、标签样式等），并内置大量针对洛谷题面公式/格式「坑」的自动修复。
+- **版本信息**（`-V, --version`）：输出项目简介、版本号、版权声明与项目仓库链接。
 - **LaTeX 排版定制**（均仅对 `-L` 生效）：
   - `--no-toc-links`：目录条目不带跳转到对应题目页的超链接（默认带超链接）；
   - `--toc-backlinks`：每页页眉的页码变成跳回目录页的超链接（默认无超链接）；
@@ -53,48 +54,61 @@ make
 ## 使用方法
 
 ```
-Usage: luogu-extract [options]
+用法：luogu-extract [选项]
 
-Options:
-  -U, --update    Update the problem list and tag caches
-  -M, --markdown  Export problems to a markdown file (all problems if no filter given)
-  -L, --latex     Export problems to a LaTeX document file (all problems if no filter given)
-      --tags              List all tags with their numeric IDs, grouped by category
-      --tag <name|ID>...  Filter by tag (a problem must contain all given tags)
-      --difficulty <spec> Filter by difficulty: numbers 0-8, ranges like 1-4
-      --type <B|P>        Filter by problem type (repeatable; empty means all types)
-      --pid <pid>...      Filter by problem id (repeatable or space separated).
-                          Cannot be combined with --tag / --difficulty / --type;
-                          every id must exist in the problem list cache
-      --pid-range <a>-<b> Filter by inclusive problem id range (repeatable or space
-                          separated). Both endpoints must exist in the cache and
-                          belong to the same problem set (e.g. P1001-P1010).
-                          May be combined with --tag / --difficulty / --type
-      --lang <zh-CN|en>   Problem statement language (default: zh-CN)
-      --show <NN>         Show flags for -M only: first bit = difficulty, second bit = tags
-      --output <file>     Output file (default: problems.md / problems.tex)
+选项：
+  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）
+  -M, --markdown        筛选并导出 Markdown（默认输出 problems.md）
+  -L, --latex           筛选并导出 LaTeX（默认输出 problems.tex）
+                        （-M 与 -L 不能同时使用）
+      --tags            按官方分类打印标签 ID 对照表（可与 -h 组合使用）
+      --tag <name|ID>...
+                        按标签筛选；多个值可用空格分隔或重复 --tag，题目须包含全部标签；
+                        引号整体恰好等于已知标签名（如 "NOIP 普及组"）时按一个标签处理
+      --difficulty <spec>
+                        按难度（0~8）筛选；支持区间写法（如 1-4），多组值可用空格
+                        分隔或重复 --difficulty
+      --type <B|P>      按题目类型筛选（可重复，空表示全部类型）
+      --pid <pid>...    按题号精确筛选；多个值可用空格分隔或重复 --pid。
+                        不能与 --tag、--difficulty、--type 同时使用，
+                        且每个题号必须存在于题目列表缓存中
+      --pid-range <a>-<b>
+                        按题号闭区间筛选；多组值可用空格分隔或重复 --pid-range。
+                        一组范围两端必须为同一题库（如都为 P 题库或都为 B 题库，
+                        多组范围间可不为同一题库），且两端点均须存在于缓存中。
+                        可与 --tag、--difficulty、--type 同时使用
+      --lang <zh-CN|en> 题面语言（默认 zh-CN；en 缺失时回退中文）
+      --show <NN>       仅 -M 有效：第 1 位=是否显示难度，第 2 位=是否显示标签
+                        （默认 11）；隐藏标签仅隐藏「算法」类标签，其他类型始终显示
+      --output <file>   输出文件路径（默认 problems.md / problems.tex）
 
-LaTeX layout options (only effective with -L):
-      --no-toc-links      Remove the hyperlinks on table-of-contents entries
-      --toc-backlinks     Make the page number in each header a hyperlink back
-                          to the table of contents
+LaTeX 排版选项（仅在使用 -L 时有效）：
+      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）
+      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）
       --set-font-cover-page <font>
-                          Set the font of the cover title
+                        设置封面标题字体；<font> 为系统已安装的字体名称或字体文件地址
       --set-font-body-zh-CN <font>
-                          Set the font of CJK characters in problem statements
+                        设置题面正文中文字符的字体（名称或字体文件地址）
       --set-font-body-en-US <font>
-                          Set the font of western characters in problem
-                          statements (math formulas are not affected)
+                        设置题面正文及题目大标题中的西文字符字体
+                        （名称或字体文件地址；不作用于公式）
       --set-font-body-codes <font>
-                          Set the font of code blocks
+                        设置代码块西文，以及正文黑体部分西文的字体（名称或字体文件地址；
+                        默认按 Consolas → Menlo → DejaVu Sans Mono 回退）
       --set-font-title-zh-CN <font>
-                          Set the font of CJK characters in problem titles
+                        设置题目大标题、小节标题、目录页标题与每页页眉标题中的中文字体
+                        （名称或字体文件地址）
       --set-font-title-en-US <font>
-                          Set the font of western characters in problem titles
-      --no-bilibili-link  Print bilibili video URLs as plain text
+                        设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题
+                        西文跟随 --set-font-body-en-US（名称或字体文件地址）
+      --no-bilibili-link
+                        bilibili 视频 URL 输出为普通文本而非超链接（默认超链接）
       --set-cover-title <title>
-                          Set the cover title (-L) / top-level heading (-M)
-  -h, --help      Show this help message
+                        设置封面标题（-L，默认 luogu extract）或 Markdown 一级标题
+                        （-M，默认 洛谷题目导出）
+  -h, --help            显示帮助
+  -V, --version         显示项目简介、版本号、版权声明与项目仓库链接
+                        （不能与其他参数同时使用）
 ```
 
 ### 示例
@@ -164,7 +178,8 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 | `--set-font-title-en-US <font>` | 仅 `-L` 有效：设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题西文跟随 `--set-font-body-en-US`（名称或字体文件地址） |
 | `--no-bilibili-link` | 仅 `-L` 有效：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接） |
 | `--set-cover-title <title>` | 设置封面标题（`-L`，默认 `luogu extract`）或 Markdown 一级标题（`-M`，默认 `洛谷题目导出`） |
-| `-h, --help` | 显示帮助 |
+| `-h, --help` | 显示帮助（文本与上表内容一致） |
+| `-V, --version` | 显示项目简介、版本号、版权声明与项目仓库链接；版本号在编译期由 CMake 从 `CMakeLists.txt` 中的 `project(luogu-extract VERSION ...)` 取得；不能与其他参数同时使用 |
 
 > `-M` 与 `-L` 不能同时使用；需要两种格式时请分两次执行。
 
@@ -199,11 +214,33 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 
 ## 导出格式说明
 
-- **Markdown**：文件头包含题目总数与筛选条件；每道题以 `---` 分隔，`# <题号> <标题>` 为章节，随后是难度、标签、时空限制，以及各题面小节与样例代码块。一级标题可用 `--set-cover-title` 自定义；
-- **LaTeX**：生成完整可编译文档，带目录、页眉页脚、章节无序号（`secnumdepth=-1`），并内置多种自定义命令与颜色别名以兼容洛谷题面。洛谷的**表格合并**语法（单元格内容恰为 `^` 时向上合并、恰为 `<` 时向左合并）会转换为 `\multirow` / `\multicolumn`；无法用矩形表达的交叉合并会安全退化为空单元格。题目小节标题以及 Markdown 题面中的 `##` / `###` / `####` 小标题默认使用 ctex fontset 预设的黑体（`\heiti`），其西文部分使用代码块字体（`\luogoheadinglatin`，即 `--set-font-body-codes` 或 Consolas → Menlo → DejaVu Sans Mono 回退链）；图片仅在缓存中存在时通过 `\IfFileExists` 引用，缺失图片不会导致编译失败，超宽或超高的图片会按 `keepaspectratio` 缩小到版心内，小图片保持原始大小；GIF/WebP/SVG/BMP/ICO 等 xelatex 无法加载的格式会被跳过，视频（Bilibili 等）只输出链接（`--no-bilibili-link` 时输出为普通文本）。目录超链接由 hyperref 的 `linktoc` 选项控制（`--no-toc-links` 关闭）；`--toc-backlinks` 会在目录标题处放置 `\hypertarget{luogotoc}` 锚点，并把页眉页码改为跳回该锚点的超链接；`\usepackage[UTF8,fontset=...]{ctex}` 提供默认中文字体方案（Windows/macOS 在程序编译时确定，Linux 在运行阶段解析 `/etc/os-release`）；`--set-font-*` 参数通过 `fontspec`/xeCJK 的 `\setmainfont`、`\setCJKmainfont`、`\setmonofont`、`\newfontfamily`、`\newCJKfontfamily` 实现，且仅在传入参数时写入对应命令，优先级高于 fontset 默认值。数学公式由 `unicode-math` + `Latin Modern Math` 统一处理。标签文字使用正文中西文字体（受 `--set-font-body-zh-CN` / `--set-font-body-en-US` 控制）。此外，题面文本中缺少字形的 Unicode 标点（如中文破折号 `――`，U+2015）会转换为等价的 LaTeX 命令（`\textemdash`），避免编译时被静默丢弃。
+### Markdown（`-M`）
+
+| 项目 | 说明 |
+| --- | --- |
+| 文件头 | 题目总数与筛选条件 |
+| 题目分节 | 每道题以 `---` 分隔，以 `# <题号> <标题>` 作为章节标题 |
+| 单题内容 | 难度、标签、时空限制，以及题目背景、题目描述、输入格式、输出格式、输入输出样例、说明/提示 |
+| 一级标题 | 可用 `--set-cover-title` 自定义（默认 `洛谷题目导出`） |
+
+### LaTeX（`-L`）
+
+| 项目 | 说明 |
+| --- | --- |
+| 文档结构 | 完整可编译的 `.tex` 文档：封面、目录、页眉页码，章节不编号 |
+| 封面 | 标题可用 `--set-cover-title` 自定义（默认 `luogu extract`）；作者「luogu-extract」带有指向项目仓库的超链接 |
+| 数学公式 | 由 `unicode-math` + `Latin Modern Math` 统一排版 |
+| 表格 | 自动转换洛谷的合并语法（单元格恰为 `^` 时向上合并、恰为 `<` 时向左合并）；表头自动加粗，表头中的公式同样加粗 |
+| 图片 | 只引用缓存中已有的图片，缺失的图片会被跳过而不影响编译；过大的图片自动缩小到版心内，小图片保持原始大小；xelatex 无法加载的格式（GIF/WebP/SVG/BMP/ICO 等）会被跳过 |
+| 视频 | 只输出链接；加 `--no-bilibili-link` 后输出为普通文本 |
+| 目录 | 目录条目默认可跳转到对应题目；加 `--no-toc-links` 后不带超链接 |
+| 页眉页码 | 加 `--toc-backlinks` 后，每页页眉的页码可跳回目录页 |
+| 默认字体 | 按系统自动选择中文字体方案（Windows / macOS / Linux 各有对应方案） |
+| 自定义字体 | `--set-font-*` 可分别设置封面标题、正文中文、正文西文、代码、标题中文、标题西文的字体，填系统已安装的字体名称或字体文件地址均可 |
+| 标签字体 | 跟随正文中西文字体，随 `--set-font-body-zh-CN` / `--set-font-body-en-US` 一起变化 |
 
 > [!IMPORTANT]
-> 导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译。
+> LaTex 导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译。
 
 ## 参数错误处理
 
@@ -212,6 +249,7 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 - 字体类参数（`--set-font-*`）后未接字体名称或字体文件地址；
 - 字体类参数被识别为字体文件地址，但对应文件不存在；
 - 选择了 `-M`（Markdown）导出，却使用了仅 `-L`（LaTeX）支持的设置参数；
+- `-V` / `--version` 与其他参数（含 `-h`、`--tags`、`-M`、`-L` 等）或多余的位置参数同时使用（该参数必须单独使用）；
 - 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）。
 
 ## 待添加功能

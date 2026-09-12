@@ -44,6 +44,7 @@
 #include "luogu-extract/export/markdown.h"
 #include "luogu-extract/util/compat.h"
 #include "luogu-extract/util/tag_cache.h"
+#include "luogu-extract/util/version.h"
 
 namespace
 {
@@ -56,6 +57,7 @@ struct Options
     bool latex = false;     // -L, --latex
     bool list_tags = false; // --tags
     bool help = false;      // -h, --help
+    bool version = false;   // -V, --version
     bool show_explicit = false; // 是否显式给了 --show
     std::string output;     // --output（空则按模式取默认 problems.md / problems.tex）
 
@@ -141,77 +143,85 @@ inline std::string option_argument_hint(const std::string &token)
     return "";
 }
 
+// -h, --help 的帮助信息。文本与 README.md「参数说明」表格保持一致，
+// 新增参数时请同步更新 README.md。
 const char *kUsage =
-    "Usage: luogu-extract [options]\n"
+    "用法：luogu-extract [选项]\n"
     "\n"
-    "Options:\n"
-    "  -U, --update    Update the problem list and tag caches\n"
-    "  -M, --markdown  Export problems to a markdown file (all problems if no filter given)\n"
-    "  -L, --latex     Export problems to a LaTeX document file (all problems if no filter given)\n"
-    "                  (only one of -M / -L may be given per run)\n"
-    "      --tags              List all tags with their numeric IDs, grouped by category\n"
-    "                          (an info command like -h; can be combined: -h --tags)\n"
-    "      --tag <name|ID>...  Filter by tag; multiple values may be separated by spaces\n"
-    "                          or by repeating --tag (a problem must contain all given tags)\n"
-    "                          A quoted value that exactly matches a known tag name\n"
-    "                          (e.g. \"NOIP 普及组\") is treated as one tag; otherwise\n"
-    "                          spaces separate multiple tags\n"
-    "      --difficulty <spec> Filter by difficulty: numbers 0-8, ranges like 1-4,\n"
-    "                          separated by spaces or by repeating --difficulty (any match is enough)\n"
-    "      --type <B|P>        Filter by problem type (repeatable; empty means all types)\n"
-    "      --pid <pid>...      Filter by problem id (repeatable or space separated).\n"
-    "                          Cannot be combined with --tag / --difficulty / --type;\n"
-    "                          each id must exist in the problem list cache\n"
-    "      --pid-range <a>-<b> Filter by inclusive problem id range (repeatable or space\n"
-    "                          separated; both endpoints included). Both endpoints must\n"
-    "                          exist in the problem list cache and belong to the same\n"
-    "                          problem set (e.g. P1001-P1010). May be combined with\n"
-    "                          --tag / --difficulty / --type\n"
-    "      --lang <zh-CN|en>   Problem statement language (default: zh-CN)\n"
-    "      --show <NN>         Show flags for -M only: first bit = difficulty, second bit = tags;\n"
-    "                          1 shows, 0 hides (default: 11). Hiding tags only hides\n"
-    "                          algorithm-type tags, other types are always shown\n"
-    "      --output <file>     Output file (default: problems.md / problems.tex)\n"
+    "选项：\n"
+    "  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）\n"
+    "  -M, --markdown        筛选并导出 Markdown（默认输出 problems.md）\n"
+    "  -L, --latex           筛选并导出 LaTeX（默认输出 problems.tex）\n"
+    "                        （-M 与 -L 不能同时使用）\n"
+    "      --tags            按官方分类打印标签 ID 对照表（可与 -h 组合使用）\n"
+    "      --tag <name|ID>...\n"
+    "                        按标签筛选；多个值可用空格分隔或重复 --tag，题目须包含全部标签；\n"
+    "                        引号整体恰好等于已知标签名（如 \"NOIP 普及组\"）时按一个标签处理\n"
+    "      --difficulty <spec>\n"
+    "                        按难度（0~8）筛选；支持区间写法（如 1-4），多组值可用空格\n"
+    "                        分隔或重复 --difficulty\n"
+    "      --type <B|P>      按题目类型筛选（可重复，空表示全部类型）\n"
+    "      --pid <pid>...    按题号精确筛选；多个值可用空格分隔或重复 --pid。\n"
+    "                        不能与 --tag、--difficulty、--type 同时使用，\n"
+    "                        且每个题号必须存在于题目列表缓存中\n"
+    "      --pid-range <a>-<b>\n"
+    "                        按题号闭区间筛选；多组值可用空格分隔或重复 --pid-range。\n"
+    "                        一组范围两端必须为同一题库（如都为 P 题库或都为 B 题库，\n"
+    "                        多组范围间可不为同一题库），且两端点均须存在于缓存中。\n"
+    "                        可与 --tag、--difficulty、--type 同时使用\n"
+    "      --lang <zh-CN|en> 题面语言（默认 zh-CN；en 缺失时回退中文）\n"
+    "      --show <NN>       仅 -M 有效：第 1 位=是否显示难度，第 2 位=是否显示标签\n"
+    "                        （默认 11）；隐藏标签仅隐藏「算法」类标签，其他类型始终显示\n"
+    "      --output <file>   输出文件路径（默认 problems.md / problems.tex）\n"
     "\n"
-    "LaTeX layout options (only effective with -L):\n"
-    "      --no-toc-links      Remove the hyperlinks on table-of-contents entries\n"
-    "                          (by default each entry links to its problem page)\n"
-    "      --toc-backlinks     Make the page number in each header a hyperlink back to\n"
-    "                          the table of contents (disabled by default)\n"
+    "LaTeX 排版选项（仅在使用 -L 时有效）：\n"
+    "      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）\n"
+    "      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）\n"
     "      --set-font-cover-page <font>\n"
-    "                          Set the font of the cover title. <font> is either the\n"
-    "                          name of a font installed on the system, or a path to a\n"
-    "                          font file (e.g. .ttf / .otf / .ttc)\n"
+    "                        设置封面标题字体；<font> 为系统已安装的字体名称或字体文件地址\n"
     "      --set-font-body-zh-CN <font>\n"
-    "                          Set the font of CJK characters in problem statements\n"
-    "                          (<font>: installed font name or font file path)\n"
+    "                        设置题面正文中文字符的字体（名称或字体文件地址）\n"
     "      --set-font-body-en-US <font>\n"
-    "                          Set the font of western characters in problem statements;\n"
-    "                          math formulas are not affected\n"
+    "                        设置题面正文及题目大标题中的西文字符字体\n"
+    "                        （名称或字体文件地址；不作用于公式）\n"
     "      --set-font-body-codes <font>\n"
-    "                          Set the font of code blocks and of western characters\n"
-    "                          in bold/heading text (default: Consolas)\n"
+    "                        设置代码块西文，以及正文黑体部分西文的字体（名称或字体文件地址；\n"
+    "                        默认按 Consolas → Menlo → DejaVu Sans Mono 回退）\n"
     "      --set-font-title-zh-CN <font>\n"
-    "                          Set the font of CJK characters in problem titles,\n"
-    "                          including titles in the table of contents and page headers\n"
+    "                        设置题目大标题、小节标题、目录页标题与每页页眉标题中的中文字体\n"
+    "                        （名称或字体文件地址）\n"
     "      --set-font-title-en-US <font>\n"
-    "                          Set the font of western characters in problem titles,\n"
-    "                          including titles in the table of contents and page headers\n"
-    "      --no-bilibili-link  Print bilibili video URLs as plain text instead of\n"
-    "                          hyperlinks (hyperlinks are enabled by default)\n"
+    "                        设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题\n"
+    "                        西文跟随 --set-font-body-en-US（名称或字体文件地址）\n"
+    "      --no-bilibili-link\n"
+    "                        bilibili 视频 URL 输出为普通文本而非超链接（默认超链接）\n"
     "      --set-cover-title <title>\n"
-    "                          Set the cover title (-L) or the top-level heading (-M);\n"
-    "                          default: luogu extract (-L) / 洛谷题目导出 (-M)\n"
-    "  -h, --help      Show this help message\n";
+    "                        设置封面标题（-L，默认 luogu extract）或 Markdown 一级标题\n"
+    "                        （-M，默认 洛谷题目导出）\n"
+    "  -h, --help            显示帮助\n"
+    "  -V, --version         显示项目简介、版本号、版权声明与项目仓库链接\n"
+    "                        （不能与其他参数同时使用）\n";
 
 void printUsage()
 {
     std::printf("%s", kUsage);
 }
 
+// -V, --version：项目简介 + 版本号 + 版权声明 + 项目仓库链接
+void printVersion()
+{
+    std::printf("%s %s\n", LUOGU_EXTRACT_PROJECT_NAME, LUOGU_EXTRACT_VERSION);
+    std::printf("抓取洛谷题目列表与标签，按标签、难度、类型、题号筛选后，\n"
+                "导出为 Markdown 或 LaTeX 文档的命令行工具。\n\n");
+    std::printf("%s\n", LUOGU_EXTRACT_COPYRIGHT);
+    std::printf("以 %s 许可证发布，本程序不提供任何担保。\n",
+                LUOGU_EXTRACT_LICENSE_NAME);
+    std::printf("项目仓库：%s\n", LUOGU_EXTRACT_REPOSITORY_URL);
+}
+
 inline void printError(const std::string &message)
 {
-    std::fprintf(stderr, "\033[1;31merror: \033[0m%s\n", message.c_str());
+    std::fprintf(stderr, "\033[1;31m错误：\033[0m%s\n", message.c_str());
 }
 
 inline void printSuccess(const std::string &message)
@@ -501,7 +511,7 @@ inline bool print_tag_list()
             continue;
         std::sort(groups[g].begin(), groups[g].end());
         const char *label = (g == kKnownTypes) ? "其他" : kTypeLabels[g];
-        std::printf("【%s】(type %d) %zu 个\n", label, g, groups[g].size());
+        std::printf("【%s】（分类 %d）%zu 个\n", label, g, groups[g].size());
         for (int id : groups[g])
             std::printf("  %-6d %s\n", id, cache.id_to_name.at(id).c_str());
         std::printf("\n");
@@ -553,15 +563,21 @@ int main(int argc, char *argv[])
         {"pid",                  required_argument, nullptr, OPT_PID},
         {"pid-range",            required_argument, nullptr, OPT_PID_RANGE},
         {"help",       no_argument,       nullptr, 'h'},
+        {"version",    no_argument,       nullptr, 'V'},
         {nullptr,      0,                 nullptr, 0},
     };
 
     Options options;
     int opt;
+    // -V, --version 必须单独使用：统计除 -V 之外出现的选项个数，
+    // 与位置参数（optind）一起判断是否属于参数使用错误
+    int other_option_count = 0;
     // 短选项串以 ':' 开头：getopt 出错时不打印英文提示，
     // 由下面的 '?' / ':' 分支输出统一的中文错误信息
-    while ((opt = getopt_long(arg_count, arg_vector, ":UMLh", kLongOptions, nullptr)) != -1)
+    while ((opt = getopt_long(arg_count, arg_vector, ":UMLhV", kLongOptions, nullptr)) != -1)
     {
+        if (opt != 'V')
+            ++other_option_count;
         switch (opt)
         {
         case 'U':
@@ -597,7 +613,9 @@ int main(int argc, char *argv[])
             {
                 if (!parse_difficulty_spec(spec, options.filter.difficulties))
                 {
-                    printError("invalid difficulty spec: '" + spec + "' (expected 0-8 or a range like 1-4)");
+                    printError("参数 '--difficulty' 的值 '" + spec +
+                               "' 不是合法的难度；正确用法："
+                               "--difficulty <spec>，spec 为 0~8 的数字或闭区间（如 1-4）");
                     return 1;
                 }
             }
@@ -618,7 +636,9 @@ int main(int argc, char *argv[])
                 c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             if (t != "B" && t != "P")
             {
-                printError("invalid type: '" + std::string(optarg) + "' (expected B or P)");
+                printError("参数 '--type' 的值 '" + std::string(optarg) +
+                           "' 不是合法的题目类型；正确用法：--type <B|P>"
+                           "（B 表示基础题，P 表示普通题）");
                 return 1;
             }
             options.filter.types.push_back(t);
@@ -629,7 +649,8 @@ int main(int argc, char *argv[])
             std::string lang = optarg;
             if (lang != "zh-CN" && lang != "zh" && lang != "en")
             {
-                printError("invalid lang: '" + std::string(optarg) + "' (expected zh-CN or en)");
+                printError("参数 '--lang' 的值 '" + std::string(optarg) +
+                           "' 不是合法的题面语言；正确用法：--lang <zh-CN|en>");
                 return 1;
             }
             options.filter.lang = lang;
@@ -643,7 +664,10 @@ int main(int argc, char *argv[])
                 (s[0] != '0' && s[0] != '1') ||
                 (s[1] != '0' && s[1] != '1'))
             {
-                printError("invalid show: '" + std::string(optarg) + "' (expected two bits, e.g. 11 / 01 / 10 / 00)");
+                printError("参数 '--show' 的值 '" + std::string(optarg) +
+                           "' 不是合法的显示开关；正确用法：--show <NN>，"
+                           "NN 为两位 0/1（如 11 / 10 / 01 / 00），"
+                           "第 1 位控制是否显示难度，第 2 位控制是否显示标签");
                 return 1;
             }
             options.filter.show = s;
@@ -744,6 +768,9 @@ int main(int argc, char *argv[])
         case 'h':
             options.help = true;
             break;
+        case 'V':
+            options.version = true;
+            break;
         case '?':
         {
             // 未知参数：提示程序没有此参数，并提示使用 -h, --help 查看帮助
@@ -771,6 +798,21 @@ int main(int argc, char *argv[])
         }
     }
 
+    // -V / --version 属于「单独使用」的信息类参数：与其他任何参数
+    // （含 -h、--tags、-M、-L 等）或多余的位置参数同时出现即为参数使用错误
+    if (options.version)
+    {
+        if (other_option_count > 0 || optind < arg_count)
+        {
+            printError("参数 -V, --version 不能与其他参数同时使用；"
+                       "正确用法：luogu-extract -V（或 luogu-extract --version），"
+                       "单独执行该参数即可查看项目简介、版本号、版权声明与项目仓库链接");
+            return 1;
+        }
+        printVersion();
+        return 0;
+    }
+
     if (options.help)
     {
         printUsage();
@@ -782,8 +824,9 @@ int main(int argc, char *argv[])
 
     if (options.latex && options.show_explicit)
     {
-        printError("option --show is only supported with -M (-L 始终不显示难度，"
-                   "且仅隐藏算法类标签)");
+        printError("参数 --show 仅在使用 -M（导出 Markdown）时有效；"
+                   "-L（导出 LaTeX）始终不显示难度，且仅隐藏「算法」类标签。"
+                   "请移除 --show，或改用 -M 导出");
         return 1;
     }
 
@@ -823,7 +866,9 @@ int main(int argc, char *argv[])
     {
         if (!options.markdown && !options.latex)
         {
-            printError("unexpected argument: " + std::string(arg_vector[optind]));
+            printError("多余的参数 '" + std::string(arg_vector[optind]) +
+                       "'：该参数不是任何选项的值；请检查命令行，"
+                       "或使用 -h, --help 查看帮助信息");
             printUsage();
             return 1;
         }
@@ -880,13 +925,15 @@ int main(int argc, char *argv[])
 
     if (!options.update && !options.markdown && !options.latex)
     {
-        printError("no operation specified (use -h for help)");
+        printError("未指定任何操作；请至少使用 -U（更新缓存）、-M（导出 Markdown）、"
+                   "-L（导出 LaTeX）或 --tags（查看标签对照表）之一，"
+                   "并可用 -h, --help 查看帮助信息");
         return 1;
     }
 
     if (curl_global_init(CURL_GLOBAL_ALL) != CURLE_OK)
     {
-        printError("failed to initialize libcurl");
+        printError("初始化 libcurl 失败；请检查网络相关运行库是否安装完整");
         return 1;
     }
 
@@ -910,7 +957,8 @@ int main(int argc, char *argv[])
             options.output.empty() ? "problems.md" : options.output);
         std::string error;
         if (markdown::export_markdown(options.filter, out_path, error, options.cover_title))
-            printSuccess("Exported matching problems to '" + luogu::compat::path_to_utf8(out_path) + "'");
+            printSuccess("已把筛选出的题目导出到 '" +
+                         luogu::compat::path_to_utf8(out_path) + "'");
         else
         {
             printError(error);
