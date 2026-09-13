@@ -3457,11 +3457,11 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     if(!tagsalgo.empty() || !tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\hspace{5.78pt}标签：";
     // 标签名来自 tags.json / 缓存，可能含 LaTeX 特殊字符（如 %、#、_），
     // 必须转义后才能放进 \textcolor/\colorbox 参数，否则编译失败或注入宏
-    for(auto &tag : tagsalgo) tag = "\\textcolor{white}{\\colorbox[HTML]{2949b4}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsfrom) tag = "\\textcolor{white}{\\colorbox[HTML]{13c2c2}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsdata) tag = "\\textcolor{white}{\\colorbox[HTML]{3498db}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsarea) tag = "\\textcolor{white}{\\colorbox[HTML]{53c41a}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsspec) tag = "\\textcolor{white}{\\colorbox[HTML]{f39c11}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
+    for(auto &tag : tagsalgo) tag = "\\textcolor{white}{\\colorbox[HTML]{2949b4}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
+    for(auto &tag : tagsfrom) tag = "\\textcolor{white}{\\colorbox[HTML]{13c2c2}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
+    for(auto &tag : tagsdata) tag = "\\textcolor{white}{\\colorbox[HTML]{3498db}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
+    for(auto &tag : tagsarea) tag = "\\textcolor{white}{\\colorbox[HTML]{53c41a}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
+    for(auto &tag : tagsspec) tag = "\\textcolor{white}{\\colorbox[HTML]{f39c11}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
     if(!tagsalgo.empty()) out += join_strings(tagsalgo, " \\ ") + " \\ ";
     if(!tagsfrom.empty()) out += join_strings(tagsfrom, " \\ ") + " \\ ";
     if(!tagsdata.empty()) out += join_strings(tagsdata, " \\ ") + " \\ ";
