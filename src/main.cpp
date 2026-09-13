@@ -65,6 +65,12 @@ struct Options
     bool no_toc_links = false;      // --no-toc-links：目录条目不带跳转超链接（仅 -L）
     bool toc_backlinks = false;     // --toc-backlinks：页码为跳回目录的超链接（仅 -L）
     bool no_bilibili_link = false;  // --no-bilibili-link：bilibili URL 输出为普通文本（仅 -L）
+    // ---- 题目内容显示开关（均仅 -L）----
+    bool no_show_source_tags = false;   // --no-show-source-tags：不显示来源/时间/区域/特殊标签
+    bool show_algorithm_tags = false;   // --show-algorithm-tags：显示算法标签
+    bool show_difficulty_tags = false;  // --show-difficulty-tags：显示题目难度
+    // --show-contents-difficulty-tags：目录中的题目标题按难度着色
+    bool show_contents_difficulty_tags = false;
     std::string font_cover;         // --set-font-cover-page（仅 -L）
     std::string font_body_zh;       // --set-font-body-zh-CN（仅 -L）
     std::string font_body_en;       // --set-font-body-en-US（仅 -L）
@@ -88,6 +94,10 @@ enum
     OPT_TAGS,
     OPT_NO_TOC_LINKS,
     OPT_TOC_BACKLINKS,
+    OPT_NO_SHOW_SOURCE_TAGS,
+    OPT_SHOW_ALGORITHM_TAGS,
+    OPT_SHOW_DIFFICULTY_TAGS,
+    OPT_SHOW_CONTENTS_DIFFICULTY_TAGS,
     OPT_FONT_COVER,
     OPT_FONT_BODY_ZH,
     OPT_FONT_BODY_EN,
@@ -177,6 +187,14 @@ const char *kUsage =
     "LaTeX 排版选项（仅在使用 -L 时有效）：\n"
     "      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）\n"
     "      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）\n"
+    "      --no-show-source-tags\n"
+    "                        不显示来源、时间、区域、特殊题目标签（默认显示）\n"
+    "      --show-algorithm-tags\n"
+    "                        显示算法标签（默认不显示）\n"
+    "      --show-difficulty-tags\n"
+    "                        显示题目难度（默认不显示）\n"
+    "      --show-contents-difficulty-tags\n"
+    "                        目录中的题目标题按题目难度着色\n"
     "      --set-font-cover-page <font>\n"
     "                        设置封面标题字体；<font> 为系统已安装的字体名称或字体文件地址\n"
     "      --set-font-body-zh-CN <font>\n"
@@ -552,6 +570,10 @@ int main(int argc, char *argv[])
         {"tags",       no_argument,       nullptr, OPT_TAGS},
         {"no-toc-links",         no_argument,       nullptr, OPT_NO_TOC_LINKS},
         {"toc-backlinks",        no_argument,       nullptr, OPT_TOC_BACKLINKS},
+        {"no-show-source-tags",  no_argument,       nullptr, OPT_NO_SHOW_SOURCE_TAGS},
+        {"show-algorithm-tags",  no_argument,       nullptr, OPT_SHOW_ALGORITHM_TAGS},
+        {"show-difficulty-tags", no_argument,       nullptr, OPT_SHOW_DIFFICULTY_TAGS},
+        {"show-contents-difficulty-tags", no_argument, nullptr, OPT_SHOW_CONTENTS_DIFFICULTY_TAGS},
         {"set-font-cover-page",  required_argument, nullptr, OPT_FONT_COVER},
         {"set-font-body-zh-CN",  required_argument, nullptr, OPT_FONT_BODY_ZH},
         {"set-font-body-en-US",  required_argument, nullptr, OPT_FONT_BODY_EN},
@@ -681,6 +703,18 @@ int main(int argc, char *argv[])
             break;
         case OPT_TOC_BACKLINKS:
             options.toc_backlinks = true;
+            break;
+        case OPT_NO_SHOW_SOURCE_TAGS:
+            options.no_show_source_tags = true;
+            break;
+        case OPT_SHOW_ALGORITHM_TAGS:
+            options.show_algorithm_tags = true;
+            break;
+        case OPT_SHOW_DIFFICULTY_TAGS:
+            options.show_difficulty_tags = true;
+            break;
+        case OPT_SHOW_CONTENTS_DIFFICULTY_TAGS:
+            options.show_contents_difficulty_tags = true;
             break;
         case OPT_NO_BILIBILI_LINK:
             options.no_bilibili_link = true;
@@ -844,6 +878,10 @@ int main(int argc, char *argv[])
         std::vector<std::string> latex_only;
         if (options.no_toc_links) latex_only.push_back("--no-toc-links");
         if (options.toc_backlinks) latex_only.push_back("--toc-backlinks");
+        if (options.no_show_source_tags) latex_only.push_back("--no-show-source-tags");
+        if (options.show_algorithm_tags) latex_only.push_back("--show-algorithm-tags");
+        if (options.show_difficulty_tags) latex_only.push_back("--show-difficulty-tags");
+        if (options.show_contents_difficulty_tags) latex_only.push_back("--show-contents-difficulty-tags");
         if (!options.font_cover.empty()) latex_only.push_back("--set-font-cover-page");
         if (!options.font_body_zh.empty()) latex_only.push_back("--set-font-body-zh-CN");
         if (!options.font_body_en.empty()) latex_only.push_back("--set-font-body-en-US");
@@ -977,6 +1015,10 @@ int main(int argc, char *argv[])
         latex_opt.toc_links = !options.no_toc_links;
         latex_opt.toc_backlinks = options.toc_backlinks;
         latex_opt.bilibili_links = !options.no_bilibili_link;
+        latex_opt.source_tags = !options.no_show_source_tags;
+        latex_opt.algorithm_tags = options.show_algorithm_tags;
+        latex_opt.difficulty = options.show_difficulty_tags;
+        latex_opt.toc_difficulty = options.show_contents_difficulty_tags;
         latex_opt.font_cover = options.font_cover;
         latex_opt.font_body_zh = options.font_body_zh;
         latex_opt.font_body_en = options.font_body_en;

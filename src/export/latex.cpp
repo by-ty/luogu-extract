@@ -3416,25 +3416,53 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     // 题目标题进入 PDF 书签与目录：unicode-math 的数学符号无法转成书签
     // 字符串，用 \texorpdfstring 提供去数学的纯文本备用标题
     const std::string section_title = p.pid + " " + field("title", p.name);
-    out += "\\section{\\texorpdfstring{" + inline_to_latex(section_title) + "}{" +
-           escape_latex(strip_math_for_bookmark(section_title)) + "}}\n\n";
+    const std::string section_title_latex = "\\texorpdfstring{" +
+                                            inline_to_latex(section_title) + "}{" +
+                                            escape_latex(strip_math_for_bookmark(section_title)) +
+                                            "}";
+    // --show-contents-difficulty-tags：目录中的题目标题按难度着色
+    // （\luogotocsection 只给写进目录的标题文字上色，正文标题、页眉、
+    //   PDF 书签与目录中的引导点/页码都保持黑色）
+    if (opt.toc_difficulty)
+        out += "\\luogotocsection{" +
+               std::string(luogu::difficulty_color(p.difficulty)) + "}{" +
+               section_title_latex + "}\n\n";
+    else
+        out += "\\section{" + section_title_latex + "}\n\n";
 
     // 标签 / 时空限制
     out += "\\begin{center}\n\\begin{tabularx}{\\textwidth}{XX}\n";
     const auto limits = luogu::format_limits(p.time, p.memory);
     out += "时间限制: " + limits.first + " & 内存限制: " + limits.second + " \\\\\n";
     out += "\\end{tabularx}\n\\end{center}\n";
-    auto tagsfrom = luogu::filter_tags_by_type(p.tags, 3);
-    auto tagsdata = luogu::filter_tags_by_type(p.tags, 4);
-    auto tagsarea = luogu::filter_tags_by_type(p.tags, 1);
-    auto tagsspec = luogu::filter_tags_by_type(p.tags, 5);
-    if(!tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\hspace{5.78pt}标签：";
+    // 难度：位于时间/内存限制之下、标签之上（--show-difficulty-tags）。
+    // 难度文字的颜色与洛谷网页一致
+    if (opt.difficulty)
+        out += "\\hspace{5.78pt}难度：\\textcolor[HTML]{" +
+               std::string(luogu::difficulty_color(p.difficulty)) + "}{" +
+               escape_latex(luogu::difficulty_label(p.difficulty)) + "}\n\n";
+    // 算法（type 2）标签默认隐藏，--show-algorithm-tags 时显示，使用蓝色背景
+    // rgb(41,73,180)，并排在其他标签之前
+    auto tagsalgo = opt.algorithm_tags ? luogu::filter_tags_by_type(p.tags, 2)
+                                       : std::vector<std::string>();
+    auto tagsfrom = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 3)
+                                    : std::vector<std::string>();
+    auto tagsdata = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 4)
+                                    : std::vector<std::string>();
+    auto tagsarea = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 1)
+                                    : std::vector<std::string>();
+    auto tagsspec = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 5)
+                                    : std::vector<std::string>();
+    // 算法与来源/时间/区域/特殊标签都不显示时，不输出「标签」一栏
+    if(!tagsalgo.empty() || !tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\hspace{5.78pt}标签：";
     // 标签名来自 tags.json / 缓存，可能含 LaTeX 特殊字符（如 %、#、_），
     // 必须转义后才能放进 \textcolor/\colorbox 参数，否则编译失败或注入宏
+    for(auto &tag : tagsalgo) tag = "\\textcolor{white}{\\colorbox[HTML]{2949b4}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
     for(auto &tag : tagsfrom) tag = "\\textcolor{white}{\\colorbox[HTML]{13c2c2}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
     for(auto &tag : tagsdata) tag = "\\textcolor{white}{\\colorbox[HTML]{3498db}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
     for(auto &tag : tagsarea) tag = "\\textcolor{white}{\\colorbox[HTML]{53c41a}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
     for(auto &tag : tagsspec) tag = "\\textcolor{white}{\\colorbox[HTML]{f39c11}{\\tagsfonts\\small\\vphantom{草}" + escape_latex(tag) + "}}";
+    if(!tagsalgo.empty()) out += join_strings(tagsalgo, " \\ ") + " \\ ";
     if(!tagsfrom.empty()) out += join_strings(tagsfrom, " \\ ") + " \\ ";
     if(!tagsdata.empty()) out += join_strings(tagsdata, " \\ ") + " \\ ";
     if(!tagsarea.empty()) out += join_strings(tagsarea, " \\ ") + " \\ ";
@@ -3552,7 +3580,9 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         }
     }
 
-    Options opt_lang;
+    // 逐题渲染用的显示选项：语言以筛选参数为准，其余（标签/难度/目录着色
+    // 等显示开关）沿用本次导出的设置
+    Options opt_lang = opt;
     opt_lang.lang = filter.lang;
     // opt_lang.show 保持默认 "00"：-L 不再支持 --show，默认不显示难度和标签
 
@@ -3675,6 +3705,23 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
                  subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
     std::fprintf(out, "\\titleformat{\\subsubsection}\n{%s%s\\color{gray}}\n{}\n{1em}{}\n",
                  subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
+
+    // --show-contents-difficulty-tags 用的 \luogotocsection{<HTML 颜色>}{<标题>}：
+    // 相当于 \section，但把写进 .toc 的目录项文字包进 \textcolor，使目录里的
+    // 题目标题按难度着色。只替换本次调用中的 \addcontentsline（hyperref 写入
+    // 的目录超链接锚点因此照常保留），且只影响目录项中的标题文字：引导点、页码、
+    // 正文标题、页眉与 PDF 书签都保持原样。未启用该参数时不写入这段定义，
+    // 生成的文档与启用前完全一致。
+    if (opt.toc_difficulty)
+    {
+        std::fputs("\\newcommand{\\luogotocsection}[2]{%\n", out);
+        std::fputs("  \\begingroup\n", out);
+        std::fputs("    \\let\\luogotocaddcontentsline\\addcontentsline\n", out);
+        std::fputs("    \\renewcommand{\\addcontentsline}[3]{%\n", out);
+        std::fputs("      \\luogotocaddcontentsline{##1}{##2}{\\textcolor[HTML]{#1}{##3}}}%\n", out);
+        std::fputs("    \\section{#2}%\n", out);
+        std::fputs("  \\endgroup}\n", out);
+    }
 
     std::fputs("\\lstset{\n", out);
     std::fputs("    breaklines=true,\n", out);

@@ -46,6 +46,28 @@ namespace luogu
         }
     }
 
+    // 洛谷网页题目难度对应的字体颜色（HTML 十六进制，与洛谷网页一致）：
+    // 暂无评定 rgb(191,191,191)、入门 rgb(254,76,97)、普及− rgb(243,156,17)、
+    // 普及 rgb(255,193,22)、普及+/提高− rgb(83,196,26)、提高 rgb(19,194,194)、
+    // 提高+/省选− rgb(52,152,219)、省选/NOI− rgb(156,61,207)、
+    // NOI/NOI+/CTS rgb(14,29,105)；未知难度返回黑色。
+    inline const char *difficulty_color(int difficulty)
+    {
+        switch (difficulty)
+        {
+        case 0: return "bfbfbf";
+        case 1: return "fe4c61";
+        case 2: return "f39c11";
+        case 3: return "ffc116";
+        case 4: return "53c41a";
+        case 5: return "13c2c2";
+        case 6: return "3498db";
+        case 7: return "9c3dcf";
+        case 8: return "0e1d69";
+        default: return "000000";
+        }
+    }
+
     // 时空限制文本：多组限制取最小-最大范围，单组输出单个值
     // 时间单位 ms；内存单位 MiB（缓存里的 KB 值除以 1024）
     // latex_math 为 true 时范围用 $\sim$ 连接（LaTeX 语法），

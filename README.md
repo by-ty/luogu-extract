@@ -20,6 +20,10 @@
 - **LaTeX 排版定制**（均仅对 `-L` 生效）：
   - `--no-toc-links`：目录条目不带跳转到对应题目页的超链接（默认带超链接）；
   - `--toc-backlinks`：每页页眉的页码变成跳回目录页的超链接（默认无超链接）；
+  - `--no-show-source-tags`：不显示来源、时间、区域、特殊题目标签（默认显示）；
+  - `--show-algorithm-tags`：显示算法标签（默认不显示）；
+  - `--show-difficulty-tags`：显示难度（默认不显示）；
+  - `--show-contents-difficulty-tags`：目录中的题目标题按题目难度着色；
   - `--set-font-cover-page` / `--set-font-body-zh-CN` / `--set-font-body-en-US` / `--set-font-body-codes` / `--set-font-title-zh-CN` / `--set-font-title-en-US`：分别设置封面标题、正文中文、正文及题目大标题西文（不含公式）、代码块与正文黑体部分西文、标题中文（大标题、小节、目录与页眉）、标题西文（小节、目录与页眉；大标题西文随正文西文）的字体，参数既可填**系统已安装的字体名称**，也可填**字体文件地址**；
   - `--no-bilibili-link`：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接）；
   - `--set-cover-title`：自定义封面标题（`-M` 下对应一级标题）。
@@ -85,6 +89,14 @@ make
 LaTeX 排版选项（仅在使用 -L 时有效）：
       --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）
       --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）
+      --no-show-source-tags
+                        不显示来源、时间、区域、特殊题目标签（默认显示）
+      --show-algorithm-tags
+                        显示算法标签（默认不显示）
+      --show-difficulty-tags
+                        显示题目难度（默认不显示）
+      --show-contents-difficulty-tags
+                        目录中的题目标题按题目难度着色
       --set-font-cover-page <font>
                         设置封面标题字体；<font> 为系统已安装的字体名称或字体文件地址
       --set-font-body-zh-CN <font>
@@ -150,6 +162,13 @@ luogu-extract -L --pid P1001 P1002 --pid P2000 --output 指定题目.tex
 # 9. 按题号范围导出（闭区间；可与标签/难度/类型组合）
 luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5 \
     --output 区间题册.tex
+
+# 10. 显示题目难度、算法标签，并让目录中的题目标题按难度着色
+luogu-extract -L --show-difficulty-tags --show-algorithm-tags \
+    --show-contents-difficulty-tags --output 题册.tex
+
+# 11. 只保留算法标签（隐藏来源、时间、区域、特殊题目标签）
+luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 ```
 
 ### 参数说明
@@ -170,6 +189,10 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 | `--output <file>` | 输出文件路径（默认 `problems.md` / `problems.tex`） |
 | `--no-toc-links` | 仅 `-L` 有效：目录条目不带跳转到对应题目页的超链接（默认带超链接） |
 | `--toc-backlinks` | 仅 `-L` 有效：每页页眉处的页码为跳回目录页的超链接（默认无超链接） |
+| `--no-show-source-tags` | 仅 `-L` 有效：不显示来源、时间、区域、特殊题目标签（默认显示） |
+| `--show-algorithm-tags` | 仅 `-L` 有效：显示算法标签（默认不显示） |
+| `--show-difficulty-tags` | 仅 `-L` 有效：显示难度（默认不显示） |
+| `--show-contents-difficulty-tags` | 仅 `-L` 有效：目录中的题目标题按难度着色 |
 | `--set-font-cover-page <font>` | 仅 `-L` 有效：设置封面标题字体；`<font>` 为系统已安装的字体名称或字体文件地址 |
 | `--set-font-body-zh-CN <font>` | 仅 `-L` 有效：设置题面正文中文字符的字体（名称或字体文件地址） |
 | `--set-font-body-en-US <font>` | 仅 `-L` 有效：设置题面正文及题目大标题中的西文字符字体（名称或字体文件地址；不作用于公式） |
@@ -233,7 +256,9 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 | 表格 | 自动转换洛谷的合并语法（单元格恰为 `^` 时向上合并、恰为 `<` 时向左合并）；表头自动加粗，表头中的公式同样加粗 |
 | 图片 | 只引用缓存中已有的图片，缺失的图片会被跳过而不影响编译；过大的图片自动缩小到版心内，小图片保持原始大小；xelatex 无法加载的格式（GIF/WebP/SVG/BMP/ICO 等）会被跳过 |
 | 视频 | 只输出链接；加 `--no-bilibili-link` 后输出为普通文本 |
-| 目录 | 目录条目默认可跳转到对应题目；加 `--no-toc-links` 后不带超链接 |
+| 难度 | 默认不显示；加 `--show-difficulty-tags` 后在时间限制、内存限制下方显示「难度：<难度>」，`<难度>` 的字体颜色与洛谷网页一致 |
+| 标签 | 默认显示来源、时间、区域、特殊题目标签；加 `--show-algorithm-tags` 后算法标签显示在最前；加 `--no-show-source-tags` 后不显示来源、时间、区域、特殊题目标签；两类标签都不显示时没有「标签」一栏 |
+| 目录 | 目录条目默认可跳转到对应题目；加 `--no-toc-links` 后不带超链接；加 `--show-contents-difficulty-tags` 后目录中的题目标题按难度着色 |
 | 页眉页码 | 加 `--toc-backlinks` 后，每页页眉的页码可跳回目录页 |
 | 默认字体 | 按系统自动选择中文字体方案（Windows / macOS / Linux 各有对应方案） |
 | 自定义字体 | `--set-font-*` 可分别设置封面标题、正文中文、正文西文、代码、标题中文、标题西文的字体，填系统已安装的字体名称或字体文件地址均可 |
@@ -253,7 +278,6 @@ luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-
 - 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）。
 
 ## 待添加功能
-- [ ] 导出 LaTex 文档时可选是否带题目难度和标签；
 - [ ] 导出相应题解；
 - [ ] 简易命令行交互程序，通过交互设置下载参数。
 

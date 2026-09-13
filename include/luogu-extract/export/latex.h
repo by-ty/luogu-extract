@@ -45,6 +45,21 @@ namespace latex
         // bilibili 视频 URL 是否输出为超链接（--no-bilibili-link 置为 false；默认 true）
         bool bilibili_links = true;
 
+        // 来源（竞赛来源 type 3）、时间（年份 type 4）、区域（地区/赛区 type 1）、
+        // 特殊题目（type 5）标签是否显示（--no-show-source-tags 置为 false；
+        // 默认 true）。上述四类标签与算法标签都隐藏时不输出「标签：」一栏。
+        bool source_tags = true;
+        // 算法（type 2）标签是否显示（--show-algorithm-tags 置为 true；
+        // 默认 false）。显示时使用蓝色背景 rgb(41,73,180)，并排在其他标签之前。
+        bool algorithm_tags = false;
+        // 是否在时间限制、内存限制之下显示「难度：<难度>」
+        // （--show-difficulty-tags 置为 true；默认 false）。
+        // <难度> 的字体颜色与洛谷网页一致（luogu::difficulty_color）。
+        bool difficulty = false;
+        // 目录中的题目标题是否按难度着色（--show-contents-difficulty-tags
+        // 置为 true；默认 false，即黑色）。与 difficulty 相互独立。
+        bool toc_difficulty = false;
+
         // 字体设置：空串表示使用 ctex fontset / 代码字体回退链给出的默认字体。
         // 值既可以是系统已安装的字体名称，也可以是字体文件地址（main 中已规范化）。
         std::string font_cover;    // 封面标题字体（--set-font-cover-page）
