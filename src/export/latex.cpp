@@ -550,6 +550,84 @@ std::string sanitize_math(std::string s)
         }
     }
 
+    // 公式里的中文全角标点：xelatex 的数学字体（Latin Modern Math 等）没有这些
+    // 字形，会逐字报 Missing character（如 U+FF0C），换成半角英文标点即可正常
+    // 排版。本函数只会收到 $...$ / $$...$$ / \[...\] 的内容，因此只影响公式，
+    // 公式外的正文不受影响；LaTeX 里有特殊含义的 ASCII 字符（% # & _ $ { } \）
+    // 用转义写法，避免破坏公式
+    static const std::map<std::string, std::string> kFullWidthPunct = {
+        {"\uff0c", ","},          // ，
+        {"\u3001", ","},          // 、
+        {"\u3002", "."},          // 。
+        {"\uff0e", "."},          // ．
+        {"\uff1b", ";"},          // ；
+        {"\uff1a", ":"},          // ：
+        {"\uff01", "!"},          // ！
+        {"\uff1f", "?"},          // ？
+        {"\uff08", "("},          // （
+        {"\uff09", ")"},          // ）
+        {"\uff3b", "["},          // ［
+        {"\uff3d", "]"},          // ］
+        {"\u3010", "["},          // 【
+        {"\u3011", "]"},          // 】
+        {"\u3014", "["},          // 〔
+        {"\u3015", "]"},          // 〕
+        {"\u300a", "<"},          // 《
+        {"\u300b", ">"},          // 》
+        {"\u3008", "\\langle"},   // 〈
+        {"\u3009", "\\rangle"},   // 〉
+        {"\u201c", "\\text{``}"},  // “
+        {"\u201d", "\\text{''}"},  // ”
+        {"\u2018", "\\text{`}"},   // ‘
+        {"\u2019", "\\text{'}"},   // ’
+        {"\u300c", "\\text{``}"},  // 「
+        {"\u300d", "\\text{''}"},  // 」
+        {"\uff1c", "<"},          // ＜
+        {"\uff1e", ">"},          // ＞
+        {"\uff1d", "="},          // ＝
+        {"\uff0b", "+"},          // ＋
+        {"\uff0d", "-"},          // －
+        {"\uff0a", "*"},          // ＊
+        {"\uff0f", "/"},          // ／
+        {"\uff5c", "|"},          // ｜
+        {"\uff20", "@"},          // ＠
+        {"\uff3e", "^"},          // ＾
+        {"\uff5e", "\\sim"},      // ～
+        {"\u301c", "\\sim"},      // 〜
+        {"\u2014", "-"},          // —
+        {"\u2013", "-"},          // –
+        {"\u2026", "\\dots"},     // …
+        {"\u30fb", "\\cdot"},     // ・
+        {"\u3000", " "},          // 全角空格
+        {"\uff05", "\\%"},        // ％
+        {"\uff03", "\\#"},        // ＃
+        {"\uff06", "\\&"},        // ＆
+        {"\uff3f", "\\_"},        // ＿
+        {"\uff04", "\\$"},        // ＄
+        {"\uff5b", "\\{"},        // ｛
+        {"\uff5d", "\\}"},        // ｝
+        {"\uff3c", "\\backslash"},// ＼
+    };
+    // 中文省略号「……」是两个 U+2026，先合并成一个 \dots（半角省略号），
+    // 否则会输出两个 \dots（渲染成六点，间距也偏大）
+    {
+        size_t p = 0;
+        while ((p = s.find("\u2026\u2026", p)) != std::string::npos)
+        {
+            s.replace(p, 6, "\\dots");
+            p += 5;
+        }
+    }
+    for (const auto &kv : kFullWidthPunct)
+    {
+        size_t p = 0;
+        while ((p = s.find(kv.first, p)) != std::string::npos)
+        {
+            s.replace(p, kv.first.size(), kv.second);
+            p += kv.second.size();
+        }
+    }
+
     // 公式末尾悬空的 ^ / _（如“……则省略 ^”）：没有指数/下标参数，
     // 直接当成符号输出，避免 Missing { inserted（已转义的 \_ 不受影响）
     static const std::regex kTrailingCaret(R"((^|[^\\])[\^_](?=\s*\$?\s*$))");
@@ -3436,9 +3514,11 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     out += "时间限制: " + limits.first + " & 内存限制: " + limits.second + " \\\\\n";
     out += "\\end{tabularx}\n\\end{center}\n";
     // 难度：位于时间/内存限制之下、标签之上（--show-difficulty-tags）。
-    // 难度文字的颜色与洛谷网页一致
+    // 难度文字的颜色与洛谷网页一致。\noindent 与 5.78pt 缩进和上面的
+    // 时间/内存限制（\tabcolsep = 6pt）对齐；下面的标签行同样用 \noindent，
+    // 否则它会作为新段落额外获得首行缩进，与难度行错开
     if (opt.difficulty)
-        out += "\\hspace{5.78pt}难度：\\textcolor[HTML]{" +
+        out += "\\noindent\\hspace{5.78pt}难度：\\textcolor[HTML]{" +
                std::string(luogu::difficulty_color(p.difficulty)) + "}{" +
                escape_latex(luogu::difficulty_label(p.difficulty)) + "}\n\n";
     // 算法（type 2）标签默认隐藏，--show-algorithm-tags 时显示，使用蓝色背景
@@ -3453,8 +3533,10 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
                                     : std::vector<std::string>();
     auto tagsspec = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 5)
                                     : std::vector<std::string>();
-    // 算法与来源/时间/区域/特殊标签都不显示时，不输出「标签」一栏
-    if(!tagsalgo.empty() || !tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\hspace{5.78pt}标签：";
+    // 算法与来源/时间/区域/特殊标签都不显示时，不输出「标签」一栏。
+    // \noindent：与难度行（以及没有难度时紧跟在上方居中表格之后的情况）
+    // 保持同一缩进，避免作为新段落被额外缩进首行
+    if(!tagsalgo.empty() || !tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\noindent\\hspace{5.78pt}标签：";
     // 标签名来自 tags.json / 缓存，可能含 LaTeX 特殊字符（如 %、#、_），
     // 必须转义后才能放进 \textcolor/\colorbox 参数，否则编译失败或注入宏
     for(auto &tag : tagsalgo) tag = "\\textcolor{white}{\\colorbox[HTML]{2949b4}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
