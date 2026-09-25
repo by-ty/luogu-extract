@@ -18,15 +18,16 @@
   - 按**题号**筛选（`--pid`，多个取「或」；先在题目列表缓存中校验题号是否存在）；
   - 按**题号范围**筛选（`--pid-range <题号>-<题号>`（闭区间）；先校验两端点存在于缓存且属于同一题库，可与标签/难度/类型条件组合）；
   - 按**题面语言**筛选（`zh-CN` / `en`，英文缺失时自动回退中文）。
-- **导出 Markdown**（`-M`）：每题一个章节，包含难度、标签、时空限制、题目背景、题目描述、输入/输出格式、样例、说明/提示；一级标题可用 `--set-cover-title` 自定义。
+- **导出 Markdown**（`-M`）：每题一个章节，包含时空限制、题目背景、题目描述、输入/输出格式、样例、说明/提示；难度与标签的显示由下方「题目信息显示」开关控制；一级标题可用 `--set-cover-title` 自定义。
 - **导出 LaTeX**（`-L`）：生成可直接用 `xelatex` 编译的完整 `.tex` 文档（含文档类、宏包、目录、页眉、标签样式等），并内置大量针对洛谷题面公式/格式「坑」的自动修复。
 - **版本信息**（`-V, --version`）：输出项目简介、版本号、版权声明与项目仓库链接。
+- **题目信息显示**（`-M` 与 `-L` 均生效，默认显示来源类标签、隐藏算法标签与难度）：
+  - `--no-show-source-tags`：不显示来源、时间、区域、特殊题目标签（默认显示）；
+  - `--show-algorithm-tags`：显示算法标签（默认不显示）；
+  - `--show-difficulty-tags`：显示难度（默认不显示）。
 - **LaTeX 排版定制**（均仅对 `-L` 生效）：
   - `--no-toc-links`：目录条目不带跳转到对应题目页的超链接（默认带超链接）；
   - `--toc-backlinks`：每页页眉的页码变成跳回目录页的超链接（默认无超链接）；
-  - `--no-show-source-tags`：不显示来源、时间、区域、特殊题目标签（默认显示）；
-  - `--show-algorithm-tags`：显示算法标签（默认不显示）；
-  - `--show-difficulty-tags`：显示难度（默认不显示）；
   - `--show-contents-difficulty-tags`：目录中的题目标题按题目难度着色；
   - `--set-font-cover-page` / `--set-font-body-zh-CN` / `--set-font-body-en-US` / `--set-font-body-codes` / `--set-font-title-zh-CN` / `--set-font-title-en-US`：分别设置封面标题、正文中文、正文及题目大标题西文（不含公式）、代码块与正文黑体部分西文、标题中文（大标题、小节、目录与页眉）、标题西文（小节、目录与页眉；大标题西文随正文西文）的字体，参数既可填**系统已安装的字体名称**，也可填**字体文件地址**；
   - `--no-bilibili-link`：题面中的 B 站视频补全为完整网址后输出为普通文本而非超链接（默认超链接）；
@@ -97,19 +98,19 @@ make
                         多组范围间可不为同一题库），且两端点均须存在于缓存中。
                         可与 --tag、--difficulty、--type 同时使用
       --lang <zh-CN|en> 题面语言（默认 zh-CN；en 缺失时回退中文）
-      --show <NN>       仅 -M 有效：第 1 位=是否显示难度，第 2 位=是否显示标签
-                        （默认 11）；隐藏标签仅隐藏「算法」类标签，其他类型始终显示
       --output <file>   输出文件路径（默认 problems.md / problems.tex）
 
-LaTeX 排版选项（仅在使用 -L 时有效）：
-      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）
-      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）
+题目信息显示选项（-M / -L 均有效）：
       --no-show-source-tags
                         不显示来源、时间、区域、特殊题目标签（默认显示）
       --show-algorithm-tags
                         显示算法标签（默认不显示）
       --show-difficulty-tags
                         显示题目难度（默认不显示）
+
+LaTeX 排版选项（仅在使用 -L 时有效）：
+      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）
+      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）
       --show-contents-difficulty-tags
                         目录中的题目标题按题目难度着色
       --set-font-cover-page <font>
@@ -186,15 +187,19 @@ luogu-extract -L --show-difficulty-tags --show-algorithm-tags \
 # 11. 只保留算法标签（隐藏来源、时间、区域、特殊题目标签）
 luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 
-# 12. 先更新缓存再导出（-U 与下载题目的参数一起使用时，先更新再下载，
+# 12. Markdown 导出同样支持这三个显示开关（与 -L 语义一致）
+luogu-extract -M --show-difficulty-tags --show-algorithm-tags --output 题册.md
+luogu-extract -M --no-show-source-tags --output 仅题面.md
+
+# 13. 先更新缓存再导出（-U 与下载题目的参数一起使用时，先更新再下载，
 #     与参数位置无关；下面两条命令效果相同）
 luogu-extract -U -L --tag 模拟 --output 题册.tex
 luogu-extract -L --tag 模拟 --output 题册.tex -U
 
-# 13. 重新下载题面图片（不使用之前缓存的图片；下载失败时保留原有缓存）
+# 14. 重新下载题面图片（不使用之前缓存的图片；下载失败时保留原有缓存）
 luogu-extract -L -RD --pid P1001 P1002 --output 指定题目.tex
 
-# 14. 清除缓存（清除类参数都只能单独使用）
+# 15. 清除缓存（清除类参数都只能单独使用）
 luogu-extract -C          # 清空整个 luogu-extract 缓存文件夹
 luogu-extract -CIMG       # 只清除 images/ 下的图片缓存
 luogu-extract -CP         # 只清除题面缓存（latest.ndjson 与 latest.ndjson.gz）
@@ -218,13 +223,12 @@ luogu-extract -CP         # 只清除题面缓存（latest.ndjson 与 latest.ndj
 | `--pid <pid>...` | 按题号精确筛选；多个值可用空格分隔或重复 `--pid`。不能与 `--tag`、`--difficulty`、`--type` 同时使用 |
 | `--pid-range <a>-<b>` | 按题号闭区间筛选；多组值可用空格分隔或重复 `--pid-range`。一组范围两端必须为同一题库（如都为 `P` 题库或都为 `B` 题库，多组范围间可不为同一题库）。可与 `--tag`、`--difficulty`、`--type` 同时使用 |
 | `--lang <zh-CN\|en>` | 题面语言（默认 `zh-CN`；`en` 缺失时回退中文） |
-| `--show <NN>` | 仅 `-M` 有效：第 $1$ 位=是否显示难度，第 $2$ 位=是否显示标签（默认 `11`）；隐藏标签仅隐藏「算法」类标签，其他类型始终显示 |
 | `--output <file>` | 输出文件路径（默认 `problems.md` / `problems.tex`） |
+| `--no-show-source-tags` | `-M` / `-L` 均有效：不显示来源、时间、区域、特殊题目标签（默认显示） |
+| `--show-algorithm-tags` | `-M` / `-L` 均有效：显示算法标签（默认不显示） |
+| `--show-difficulty-tags` | `-M` / `-L` 均有效：显示难度（默认不显示） |
 | `--no-toc-links` | 仅 `-L` 有效：目录条目不带跳转到对应题目页的超链接（默认带超链接） |
 | `--toc-backlinks` | 仅 `-L` 有效：每页页眉处的页码为跳回目录页的超链接（默认无超链接） |
-| `--no-show-source-tags` | 仅 `-L` 有效：不显示来源、时间、区域、特殊题目标签（默认显示） |
-| `--show-algorithm-tags` | 仅 `-L` 有效：显示算法标签（默认不显示） |
-| `--show-difficulty-tags` | 仅 `-L` 有效：显示难度（默认不显示） |
 | `--show-contents-difficulty-tags` | 仅 `-L` 有效：目录中的题目标题按难度着色 |
 | `--set-font-cover-page <font>` | 仅 `-L` 有效：设置封面标题字体；`<font>` 为系统已安装的字体名称或字体文件地址 |
 | `--set-font-body-zh-CN <font>` | 仅 `-L` 有效：设置题面正文中文字符的字体（名称或字体文件地址） |
@@ -284,9 +288,11 @@ luogu-extract -CP         # 只清除题面缓存（latest.ndjson 与 latest.ndj
 
 | 项目 | 说明 |
 | --- | --- |
-| 文件头 | 题目总数与筛选条件 |
+| 文件头 | 题目总数与筛选条件（含「不显示难度 / 不显示算法类标签 / 不显示来源类标签」等显示设置说明） |
 | 题目分节 | 每道题以 `---` 分隔，以 `# <题号> <标题>` 作为章节标题 |
-| 单题内容 | 难度、标签、时空限制，以及题目背景、题目描述、输入格式、输出格式、输入输出样例、说明/提示 |
+| 单题内容 | 标签、时空限制，以及题目背景、题目描述、输入格式、输出格式、输入输出样例、说明/提示 |
+| 难度 | 默认不显示；加 `--show-difficulty-tags` 后在标题下方显示「难度：<难度>」 |
+| 标签 | 默认显示算法标签以外的标签（来源、时间、区域、特殊等，保持缓存中的原顺序）；加 `--show-algorithm-tags` 后连同算法标签一起显示；加 `--no-show-source-tags` 后不显示算法标签以外的标签；两类标签都不显示时没有「标签」一栏 |
 | 一级标题 | 可用 `--set-cover-title` 自定义（默认 `洛谷题目导出`） |
 
 ### LaTeX（`-L`）

@@ -21,6 +21,7 @@
 // src/export/markdown.cpp
 #include <cstdio>
 #include <filesystem>
+#include <set>
 #include <string>
 #include <vector>
 #include <nlohmann/json.hpp>
@@ -55,12 +56,42 @@ std::string safe_string(const json &j, const char *key)
     return j[key].get<std::string>();
 }
 
+// 按显示开关从题目标签中筛出要输出的标签：
+// 算法（官方 type 2）标签仅在 show_algorithm 时显示，其余标签（来源、时间、
+// 区域、特殊题目等）仅在 show_others 时显示；结果保持缓存中的原顺序。
+// 标签类型来自 -U 生成的 tags.json，缓存缺失时按“非算法标签”处理。
+std::vector<std::string> visible_tags(const std::vector<std::string> &tags,
+                                      bool show_algorithm, bool show_others)
+{
+    if (!show_algorithm && !show_others)
+        return {};
+
+    const std::vector<std::string> algorithm =
+        show_algorithm ? luogu::filter_tags_by_type(tags, 2)
+                       : std::vector<std::string>();
+    const std::vector<std::string> others =
+        show_others ? luogu::filter_display_tags(tags, false)
+                    : std::vector<std::string>();
+
+    std::set<std::string> visible(algorithm.begin(), algorithm.end());
+    visible.insert(others.begin(), others.end());
+
+    std::vector<std::string> out;
+    for (const auto &t : tags)
+    {
+        if (visible.count(t))
+            out.push_back(t);
+    }
+    return out;
+}
+
 } // namespace
 
 bool markdown::export_markdown(const luogu::ExportFilter &filter,
                                const std::filesystem::path &output_path,
                                std::string &error,
-                               const std::string &cover_title)
+                               const std::string &cover_title,
+                               const luogu::DisplayOptions &display)
 {
     error.clear();
 
@@ -70,9 +101,11 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
     if (!luogu::select_problems(filter, problems, &resolved_tags, error))
         return false;
 
-    // 显示开关：第 1 位 = 难度，第 2 位 = 标签
-    const bool show_difficulty = (filter.show.size() >= 2 && filter.show[0] == '1');
-    const bool show_tags = (filter.show.size() >= 2 && filter.show[1] == '1');
+    // 显示开关（与 -L 共用同一组参数）：
+    // --show-difficulty-tags 显示难度（默认不显示）；
+    // --show-algorithm-tags 显示算法（type 2）标签（默认隐藏）；
+    // --no-show-source-tags 隐藏算法以外的标签（来源/时间/区域/特殊等，默认显示）
+    const bool show_difficulty = display.difficulty;
     const bool use_en = (filter.lang == "en");
 
     // 输出采用“临时文件 + fsync + rename”的原子写：
@@ -102,7 +135,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
     const std::string cover = cover_title.empty() ? "洛谷题目导出" : cover_title;
     std::fprintf(out, "# %s（共 %zu 道题）\n\n", cover.c_str(), problems.size());
 
-    const std::string conds = luogu::describe_filter(filter, resolved_tags);
+    const std::string conds = luogu::describe_filter(filter, resolved_tags, display);
     std::fputs("筛选条件：", out);
     if (!write_str(conds.empty() ? "无（导出全部题目）" : conds))
         return fail_write();
@@ -148,8 +181,11 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         if (show_difficulty)
             std::fprintf(out, "难度：%s\n\n", luogu::difficulty_label(p.difficulty));
 
-        // 标签：--show 末位为 0 时仅隐藏“算法”类（type 2）标签，其余类型始终显示
-        std::vector<std::string> shown_tags = luogu::filter_display_tags(p.tags, show_tags);
+        // 标签：算法（type 2）标签默认隐藏（--show-algorithm-tags 时显示），
+        // 其余标签默认显示（--no-show-source-tags 时隐藏）；两类都不显示时
+        // 不输出「标签」一栏
+        const std::vector<std::string> shown_tags =
+            visible_tags(p.tags, display.algorithm_tags, display.source_tags);
         if (!shown_tags.empty())
             std::fprintf(out, "标签：%s\n\n", join_strings(shown_tags, "、").c_str());
 

@@ -38,11 +38,23 @@ namespace luogu
         std::vector<int> difficulties;       // 难度：多个取“或”，已展开为单个数字
         std::vector<std::string> types;      // 题目类型：B / P，空表示全部
         std::string lang = "zh-CN";          // 题面语言：zh-CN / en
-        std::string show = "11";             // 显示开关：第 1 位=难度，第 2 位=标签
         std::vector<std::string> pids;       // --pid：按题号精确筛选（多个取“或”）
         // --pid-range：按题号闭区间筛选（多组取“或”，两端点均包含；
         // 每组端点已规范化为大写且属于同一题库）
         std::vector<std::pair<std::string, std::string>> pid_ranges;
+    };
+
+    // -M / -L 共用的题目信息显示开关（默认值与 -L 一致）：
+    // 显示来源、时间、区域、特殊题目标签，隐藏算法标签，不显示难度
+    struct DisplayOptions
+    {
+        // --no-show-source-tags 置为 false：不显示来源（type 3）、时间（type 4）、
+        // 区域（type 1）、特殊题目（type 5）标签
+        bool source_tags = true;
+        // --show-algorithm-tags 置为 true：显示算法（type 2）标签
+        bool algorithm_tags = false;
+        // --show-difficulty-tags 置为 true：显示「难度：<难度>」
+        bool difficulty = false;
     };
 
     // 解析题号的组成部分：prefix（前导 ASCII 字母，转大写）、num（紧随的
@@ -128,9 +140,11 @@ namespace luogu
                          std::vector<std::string> *resolved_tags,
                          std::string &error);
 
-    // 生成筛选条件的中文说明；无筛选时返回空字符串
+    // 生成筛选条件的中文说明；无筛选时返回空字符串。
+    // display 可选：把「不显示…」一类的题目信息显示设置也一并写入说明
     std::string describe_filter(const ExportFilter &filter,
-                                const std::vector<std::string> &resolved_tags);
+                                const std::vector<std::string> &resolved_tags,
+                                const DisplayOptions &display = {});
 }
 
 #endif // LUOGU_EXTRACT_EXPORT_COMMON_H

@@ -58,7 +58,6 @@ struct Options
     bool list_tags = false; // --tags
     bool help = false;      // -h, --help
     bool version = false;   // -V, --version
-    bool show_explicit = false; // 是否显式给了 --show
     std::string output;     // --output（空则按模式取默认 problems.md / problems.tex）
 
     // ---- 缓存清除参数（三者都只能单独使用）----
@@ -75,11 +74,11 @@ struct Options
     bool no_toc_links = false;      // --no-toc-links：目录条目不带跳转超链接（仅 -L）
     bool toc_backlinks = false;     // --toc-backlinks：页码为跳回目录的超链接（仅 -L）
     bool no_bilibili_link = false;  // --no-bilibili-link：bilibili URL 输出为普通文本（仅 -L）
-    // ---- 题目内容显示开关（均仅 -L）----
+    // ---- 题目信息显示开关（-M / -L 均有效）----
     bool no_show_source_tags = false;   // --no-show-source-tags：不显示来源/时间/区域/特殊标签
     bool show_algorithm_tags = false;   // --show-algorithm-tags：显示算法标签
     bool show_difficulty_tags = false;  // --show-difficulty-tags：显示题目难度
-    // --show-contents-difficulty-tags：目录中的题目标题按难度着色
+    // --show-contents-difficulty-tags：目录中的题目标题按难度着色（仅 -L）
     bool show_contents_difficulty_tags = false;
     std::string font_cover;         // --set-font-cover-page（仅 -L）
     std::string font_body_zh;       // --set-font-body-zh-CN（仅 -L）
@@ -100,7 +99,6 @@ enum
     OPT_OUTPUT,
     OPT_TYPE,
     OPT_LANG,
-    OPT_SHOW,
     OPT_TAGS,
     OPT_NO_TOC_LINKS,
     OPT_TOC_BACKLINKS,
@@ -134,7 +132,6 @@ inline const char *option_name_for(int code)
     case OPT_OUTPUT: return "--output";
     case OPT_TYPE: return "--type";
     case OPT_LANG: return "--lang";
-    case OPT_SHOW: return "--show";
     case OPT_FONT_COVER: return "--set-font-cover-page";
     case OPT_FONT_BODY_ZH: return "--set-font-body-zh-CN";
     case OPT_FONT_BODY_EN: return "--set-font-body-en-US";
@@ -154,7 +151,6 @@ inline std::string option_argument_hint(const std::string &token)
     if (token == "--output") return "输出文件路径";
     if (token == "--type") return "题目类型（B 或 P）";
     if (token == "--lang") return "题面语言（zh-CN 或 en）";
-    if (token == "--show") return "两位显示开关（如 11）";
     if (token == "--set-font-cover-page") return "字体名称或字体文件地址";
     if (token == "--set-font-body-zh-CN") return "字体名称或字体文件地址";
     if (token == "--set-font-body-en-US") return "字体名称或字体文件地址";
@@ -205,19 +201,19 @@ const char *kUsage =
     "                        多组范围间可不为同一题库），且两端点均须存在于缓存中。\n"
     "                        可与 --tag、--difficulty、--type 同时使用\n"
     "      --lang <zh-CN|en> 题面语言（默认 zh-CN；en 缺失时回退中文）\n"
-    "      --show <NN>       仅 -M 有效：第 1 位=是否显示难度，第 2 位=是否显示标签\n"
-    "                        （默认 11）；隐藏标签仅隐藏「算法」类标签，其他类型始终显示\n"
     "      --output <file>   输出文件路径（默认 problems.md / problems.tex）\n"
     "\n"
-    "LaTeX 排版选项（仅在使用 -L 时有效）：\n"
-    "      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）\n"
-    "      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）\n"
+    "题目信息显示选项（-M / -L 均有效）：\n"
     "      --no-show-source-tags\n"
     "                        不显示来源、时间、区域、特殊题目标签（默认显示）\n"
     "      --show-algorithm-tags\n"
     "                        显示算法标签（默认不显示）\n"
     "      --show-difficulty-tags\n"
     "                        显示题目难度（默认不显示）\n"
+    "\n"
+    "LaTeX 排版选项（仅在使用 -L 时有效）：\n"
+    "      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）\n"
+    "      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）\n"
     "      --show-contents-difficulty-tags\n"
     "                        目录中的题目标题按题目难度着色\n"
     "      --set-font-cover-page <font>\n"
@@ -626,7 +622,6 @@ int main(int argc, char *argv[])
         {"output",     required_argument, nullptr, OPT_OUTPUT},
         {"type",       required_argument, nullptr, OPT_TYPE},
         {"lang",       required_argument, nullptr, OPT_LANG},
-        {"show",       required_argument, nullptr, OPT_SHOW},
         {"tags",       no_argument,       nullptr, OPT_TAGS},
         {"no-toc-links",         no_argument,       nullptr, OPT_NO_TOC_LINKS},
         {"toc-backlinks",        no_argument,       nullptr, OPT_TOC_BACKLINKS},
@@ -742,23 +737,6 @@ int main(int argc, char *argv[])
                 return 1;
             }
             options.filter.lang = lang;
-            break;
-        }
-        case OPT_SHOW:
-        {
-            const std::string s = optarg;
-            options.show_explicit = true;
-            if (s.size() != 2 ||
-                (s[0] != '0' && s[0] != '1') ||
-                (s[1] != '0' && s[1] != '1'))
-            {
-                printError("参数 '--show' 的值 '" + std::string(optarg) +
-                           "' 不是合法的显示开关；正确用法：--show <NN>，"
-                           "NN 为两位 0/1（如 11 / 10 / 01 / 00），"
-                           "第 1 位控制是否显示难度，第 2 位控制是否显示标签");
-                return 1;
-            }
-            options.filter.show = s;
             break;
         }
         case OPT_TAGS:
@@ -979,14 +957,6 @@ int main(int argc, char *argv[])
         return clean_result == crawler::SUCCESS ? 0 : 1;
     }
 
-    if (options.latex && options.show_explicit)
-    {
-        printError("参数 --show 仅在使用 -M（导出 Markdown）时有效；"
-                   "-L（导出 LaTeX）始终不显示难度，且仅隐藏「算法」类标签。"
-                   "请移除 --show，或改用 -M 导出");
-        return 1;
-    }
-
     // -M 与 -L 同时给出：此前 -L 会被静默忽略。明确拒绝，避免用户误以为
     // 两种格式都已导出；需要两种格式时请分两次执行
     if (options.markdown && options.latex)
@@ -996,14 +966,13 @@ int main(int argc, char *argv[])
     }
 
     // 仅 -L 支持的参数与 -M 一起使用属于参数填用错误：拒绝执行并提示正确用法
+    // （--no-show-source-tags / --show-algorithm-tags / --show-difficulty-tags
+    //   对 -M 同样有效，不在此列）
     if (options.markdown && !options.latex)
     {
         std::vector<std::string> latex_only;
         if (options.no_toc_links) latex_only.push_back("--no-toc-links");
         if (options.toc_backlinks) latex_only.push_back("--toc-backlinks");
-        if (options.no_show_source_tags) latex_only.push_back("--no-show-source-tags");
-        if (options.show_algorithm_tags) latex_only.push_back("--show-algorithm-tags");
-        if (options.show_difficulty_tags) latex_only.push_back("--show-difficulty-tags");
         if (options.show_contents_difficulty_tags) latex_only.push_back("--show-contents-difficulty-tags");
         if (!options.font_cover.empty()) latex_only.push_back("--set-font-cover-page");
         if (!options.font_body_zh.empty()) latex_only.push_back("--set-font-body-zh-CN");
@@ -1111,6 +1080,13 @@ int main(int argc, char *argv[])
     }
 
     int result = 0;
+    // -M / -L 共用的题目信息显示开关（默认与 -L 一致：显示来源等标签，
+    // 隐藏算法标签与难度）
+    luogu::DisplayOptions display;
+    display.source_tags = !options.no_show_source_tags;
+    display.algorithm_tags = options.show_algorithm_tags;
+    display.difficulty = options.show_difficulty_tags;
+
     // -U, --update 可与下载题目的参数（-M / -L，含 -RD）一同使用：
     // 只要命令行中出现 -U 就先更新缓存，再下载题目；与各参数在命令行中的
     // 先后顺序无关（更新失败时不继续，避免用旧缓存掩盖更新失败）
@@ -1132,7 +1108,8 @@ int main(int argc, char *argv[])
         const std::filesystem::path out_path = luogu::compat::path_from_utf8(
             options.output.empty() ? "problems.md" : options.output);
         std::string error;
-        if (markdown::export_markdown(options.filter, out_path, error, options.cover_title))
+        if (markdown::export_markdown(options.filter, out_path, error,
+                                      options.cover_title, display))
             printSuccess("已把筛选出的题目导出到 '" +
                          luogu::compat::path_to_utf8(out_path) + "'");
         else
@@ -1147,15 +1124,13 @@ int main(int argc, char *argv[])
         const std::filesystem::path out_path = luogu::compat::path_from_utf8(
             options.output.empty() ? "problems.tex" : options.output);
 
-        // 组装 LaTeX 显示选项
+        // 组装 LaTeX 显示选项（题目信息显示开关与 -M 共用同一组参数）
         latex::Options latex_opt;
         latex_opt.lang = options.filter.lang;
         latex_opt.toc_links = !options.no_toc_links;
         latex_opt.toc_backlinks = options.toc_backlinks;
         latex_opt.bilibili_links = !options.no_bilibili_link;
-        latex_opt.source_tags = !options.no_show_source_tags;
-        latex_opt.algorithm_tags = options.show_algorithm_tags;
-        latex_opt.difficulty = options.show_difficulty_tags;
+        latex_opt.display = display;
         latex_opt.toc_difficulty = options.show_contents_difficulty_tags;
         // -RD, --new-download：下载题面图片时忽略已有缓存，全部重新下载
         // （新图片原子替换缓存中的同名图片，下载失败时保留原有缓存）

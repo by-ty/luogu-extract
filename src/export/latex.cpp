@@ -4109,22 +4109,24 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     // 难度文字的颜色与洛谷网页一致。\noindent 与 5.78pt 缩进和上面的
     // 时间/内存限制（\tabcolsep = 6pt）对齐；下面的标签行同样用 \noindent，
     // 否则它会作为新段落额外获得首行缩进，与难度行错开
-    if (opt.difficulty)
+    if (opt.display.difficulty)
         out += "\\noindent\\hspace{5.78pt}难度：\\textcolor[HTML]{" +
                std::string(luogu::difficulty_color(p.difficulty)) + "}{" +
                escape_latex(luogu::difficulty_label(p.difficulty)) + "}\n\n";
     // 算法（type 2）标签默认隐藏，--show-algorithm-tags 时显示，使用蓝色背景
     // rgb(41,73,180)，并排在其他标签之前
-    auto tagsalgo = opt.algorithm_tags ? luogu::filter_tags_by_type(p.tags, 2)
-                                       : std::vector<std::string>();
-    auto tagsfrom = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 3)
-                                    : std::vector<std::string>();
-    auto tagsdata = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 4)
-                                    : std::vector<std::string>();
-    auto tagsarea = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 1)
-                                    : std::vector<std::string>();
-    auto tagsspec = opt.source_tags ? luogu::filter_tags_by_type(p.tags, 5)
-                                    : std::vector<std::string>();
+    const bool show_algorithm = opt.display.algorithm_tags;
+    const bool show_source = opt.display.source_tags;
+    auto tagsalgo = show_algorithm ? luogu::filter_tags_by_type(p.tags, 2)
+                                   : std::vector<std::string>();
+    auto tagsfrom = show_source ? luogu::filter_tags_by_type(p.tags, 3)
+                                : std::vector<std::string>();
+    auto tagsdata = show_source ? luogu::filter_tags_by_type(p.tags, 4)
+                                : std::vector<std::string>();
+    auto tagsarea = show_source ? luogu::filter_tags_by_type(p.tags, 1)
+                                : std::vector<std::string>();
+    auto tagsspec = show_source ? luogu::filter_tags_by_type(p.tags, 5)
+                                : std::vector<std::string>();
     // 算法与来源/时间/区域/特殊标签都不显示时，不输出「标签」一栏。
     // \noindent：与难度行（以及没有难度时紧跟在上方居中表格之后的情况）
     // 保持同一缩进，避免作为新段落被额外缩进首行
@@ -4276,7 +4278,6 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 等显示开关）沿用本次导出的设置
     Options opt_lang = opt;
     opt_lang.lang = filter.lang;
-    // opt_lang.show 保持默认 "00"：-L 不再支持 --show，默认不显示难度和标签
 
     // 输出采用“临时文件 + fsync + rename”的原子写：
     // 导出中途崩溃/失败不会留下半截 .tex 覆盖旧文件

@@ -1175,11 +1175,10 @@ bool luogu::select_problems(const ExportFilter &filter,
 }
 
 std::string luogu::describe_filter(const ExportFilter &filter,
-                                   const std::vector<std::string> &resolved_tags)
+                                   const std::vector<std::string> &resolved_tags,
+                                   const DisplayOptions &display)
 {
     const bool use_en = (filter.lang == "en");
-    const bool show_difficulty = (filter.show.size() >= 2 && filter.show[0] == '1');
-    const bool show_tags = (filter.show.size() >= 2 && filter.show[1] == '1');
 
     std::vector<std::string> conds;
     if (!filter.pids.empty())
@@ -1204,9 +1203,13 @@ std::string luogu::describe_filter(const ExportFilter &filter,
         conds.push_back("类型为 " + join_strings(filter.types, "、"));
     if (use_en)
         conds.push_back("题面语言为英文（缺失时回退中文）");
-    if (!show_difficulty)
+    // 显示设置（--show-difficulty-tags / --show-algorithm-tags /
+    // --no-show-source-tags）：只记录「不显示」的项，默认设置下说明更简洁
+    if (!display.difficulty)
         conds.push_back("不显示难度");
-    if (!show_tags)
+    if (!display.algorithm_tags)
         conds.push_back("不显示算法类标签");
+    if (!display.source_tags)
+        conds.push_back("不显示来源类标签");
     return join_strings(conds, "；");
 }
