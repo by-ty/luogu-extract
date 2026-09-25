@@ -6,7 +6,11 @@
 
 ## 功能特性
 
-- **更新缓存**：从洛谷 CDN 下载全量题目列表（`problemset-open/latest.ndjson.gz`，gzip 解压后为 `latest.ndjson`），并从官方标签接口下载标签对照表（`tags.json`）。
+- **更新缓存**（`-U, --update`）：从洛谷 CDN 下载全量题目列表（`problemset-open/latest.ndjson.gz`，gzip 解压后为 `latest.ndjson`），并从官方标签接口下载标签对照表（`tags.json`）。可与 `-M` / `-L` 一同使用：同时给出时先更新缓存再下载题目（与参数在命令行中的先后顺序无关）。
+- **清除缓存**（以下三个参数都只能单独使用，不能与其他参数同时使用）：
+  - `-C, --clean-all`：清空整个 luogu-extract 缓存文件夹（题目列表、标签、图片与字体缓存一并删除）；
+  - `-CIMG, --clean-images`：清除 `luogu-extract/images/` 下的图片缓存；
+  - `-CP, --clean-problems`：清除题面缓存（`latest.ndjson` 与 `latest.ndjson.gz`）。
 - **按条件筛选题目**：
   - 按**标签**筛选（多个标签取「且」，即题目必须同时包含所有标签）；
   - 按**难度**筛选（支持单个数字或闭区间 `1-4`，多个取「或」）；
@@ -34,7 +38,7 @@
   - Windows 下输出/缓存路径按 UTF-8（宽字符）处理，支持中文文件名（如 `--output 题册.tex`）与含中文用户名的缓存目录；
   - Windows 传统控制台自动启用 ANSI 转义解析，彩色与进度输出不乱码；
   - Windows（MSVC / MinGW-w64）构建自动使用内置的 `getopt` 兼容实现（语义与 GNU getopt 一致，含长选项缩写与参数重排），macOS / Linux 使用系统 `getopt`。
-- **图片下载**：并行下载题面中的图片到本地缓存；导出 LaTeX 时图片引用会替换为缓存文件路径。
+- **图片下载**：并行下载题面中的图片到本地缓存；导出 LaTeX 时图片引用会替换为缓存文件路径。加 `-RD, --new-download` 后不使用之前缓存的图片，而是重新下载图片。
 - **标签 ID 对照表**（`--tags`）：按官方分类打印标签名称与数字 ID。
 
 ## 依赖与构建
@@ -61,10 +65,21 @@ make
 用法：luogu-extract [选项]
 
 选项：
-  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）
+  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）；
+                        可与 -M / -L 一同使用，此时先更新缓存再下载题目
   -M, --markdown        筛选并导出 Markdown（默认输出 problems.md）
   -L, --latex           筛选并导出 LaTeX（默认输出 problems.tex）
                         （-M 与 -L 不能同时使用）
+  -RD, --new-download   下载题目时不使用之前缓存的图片，而是重新下载图片
+                        （仅在使用 -L 时有效）
+  -C, --clean-all       清空 luogu-extract 缓存文件夹（含题目列表、标签、图片
+                        与字体缓存）；不能与其他参数一起使用
+  -CIMG, --clean-images
+                        清除 luogu-extract/images/ 下的图片缓存；
+                        不能与其他参数一起使用
+  -CP, --clean-problems
+                        清除题面缓存（latest.ndjson 与 latest.ndjson.gz）；
+                        不能与其他参数一起使用
       --tags            按官方分类打印标签 ID 对照表（可与 -h 组合使用）
       --tag <name|ID>...
                         按标签筛选；多个值可用空格分隔或重复 --tag，题目须包含全部标签；
@@ -170,15 +185,32 @@ luogu-extract -L --show-difficulty-tags --show-algorithm-tags \
 
 # 11. 只保留算法标签（隐藏来源、时间、区域、特殊题目标签）
 luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
+
+# 12. 先更新缓存再导出（-U 与下载题目的参数一起使用时，先更新再下载，
+#     与参数位置无关；下面两条命令效果相同）
+luogu-extract -U -L --tag 模拟 --output 题册.tex
+luogu-extract -L --tag 模拟 --output 题册.tex -U
+
+# 13. 重新下载题面图片（不使用之前缓存的图片；下载失败时保留原有缓存）
+luogu-extract -L -RD --pid P1001 P1002 --output 指定题目.tex
+
+# 14. 清除缓存（清除类参数都只能单独使用）
+luogu-extract -C          # 清空整个 luogu-extract 缓存文件夹
+luogu-extract -CIMG       # 只清除 images/ 下的图片缓存
+luogu-extract -CP         # 只清除题面缓存（latest.ndjson 与 latest.ndjson.gz）
 ```
 
 ### 参数说明
 
 | 选项 | 含义 |
 | --- | --- |
-| `-U, --update` | 更新题目列表缓存（`latest.ndjson`）与标签缓存（`tags.json`） |
+| `-U, --update` | 更新题目列表缓存（`latest.ndjson`）与标签缓存（`tags.json`）。可与 `-M` / `-L` 一同使用：同时给出时先更新缓存再下载题目；更新失败时不继续执行后续操作 |
 | `-M, --markdown` | 筛选并导出 Markdown（默认输出 `problems.md`） |
 | `-L, --latex` | 筛选并导出 LaTeX（默认输出 `problems.tex`） |
+| `-RD, --new-download` | 仅 `-L` 有效：下载题目时不使用之前缓存的图片，而是重新下载图片 |
+| `-C, --clean-all` | 清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）。不能与其他参数一起使用 |
+| `-CIMG, --clean-images` | 清除 `luogu-extract/images/` 下的图片缓存。不能与其他参数一起使用 |
+| `-CP, --clean-problems` | 清除题面缓存（`latest.ndjson` 与 `latest.ndjson.gz`）。不能与其他参数一起使用 |
 | `--tags` | 按官方分类打印标签 ID 对照表（可与 `-h` 组合） |
 | `--tag <name\|ID>...` | 按标签筛选；多个值可用空格分隔或重复 `--tag`，题目须包含全部标签；引号整体恰好等于已知标签名（如 `"NOIP 普及组"`）时按一个标签处理 |
 | `--difficulty <spec>` | 按难度（$0\sim 8$）筛选；支持区间写法（如 `1-4`），多组值可用空格分隔或重复 `--difficulty` |
@@ -234,7 +266,17 @@ luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 | `images/` | 图片缓存目录：文件名 = 完整 URL 的双种子 FNV-1a 128 位哈希（32 位十六进制）+ 白名单扩展名 |
 | `fonts/` | 字体缓存目录：无扩展名的字体文件按格式识别后复制到此并补全扩展名 |
 
-图片文件名仅包含哈希值与扩展名：对完整 URL 分别以官方偏移基数（`0xcbf29ce484222325`）与官方素数（`0x100000001b3`）为种子计算两路 64 位 FNV-1a，拼成 128 位后输出 32 位十六进制作为文件名主体（不含 URL 原文，避免不同图床的同名图片互相覆盖）；扩展名取自 URL 路径并做白名单清洗，非法/超长扩展名丢弃。已存在的文件会跳过。下载时按 CPU 核心数并行，洛谷图床（`luogu.com.cn`）的图片会串行下载并保持 0.5~3 秒随机间隔，避免请求过快。
+图片文件名仅包含哈希值与扩展名：对完整 URL 分别以官方偏移基数（`0xcbf29ce484222325`）与官方素数（`0x100000001b3`）为种子计算两路 64 位 FNV-1a，拼成 128 位后输出 32 位十六进制作为文件名主体（不含 URL 原文，避免不同图床的同名图片互相覆盖）；扩展名取自 URL 路径并做白名单清洗，非法/超长扩展名丢弃。已存在的文件会跳过。下载时按 CPU 核心数并行，洛谷图床（`luogu.com.cn`）的图片会串行下载并保持 0.5~3 秒随机间隔，避免请求过快。加 `-RD, --new-download` 时已有图片不再跳过：新图片先下载到同目录的临时文件，校验通过后再原子替换缓存中的同名图片，下载失败或内容无效时只删除临时文件，原有缓存保持不变。
+
+缓存清除（三者都只能单独使用）：
+
+| 参数 | 清除范围 |
+| --- | --- |
+| `-C, --clean-all` | 缓存目录 `luogu-extract` 本身（相当于删除整个缓存文件夹） |
+| `-CIMG, --clean-images` | `luogu-extract/images/` 目录及其中的全部图片 |
+| `-CP, --clean-problems` | `luogu-extract/latest.ndjson` 与 `luogu-extract/latest.ndjson.gz`（以及更新中断时可能残留的 `latest.ndjson.tmp.*` 临时文件） |
+
+缓存目录或文件不存在时按「已清空」处理并正常退出；删除失败（如权限不足）时输出错误信息并以非零状态码退出。
 
 ## 导出格式说明
 
@@ -256,7 +298,7 @@ luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 | 数学公式 | 由 `unicode-math` + `Latin Modern Math` 统一排版 |
 | 表格 | 自动转换洛谷的合并语法（单元格恰为 `^` 时向上合并、恰为 `<` 时向左合并）；表头自动加粗，表头中的公式同样加粗；支持 Tuack 样式表格 |
 | 折叠框 | `:::info` / `:::success` / `:::warning` / `:::error` 渲染为彩色盒子：标题条底色与框线用对应折叠框颜色；未指定标题时用默认标题；支持嵌套和跨页 |
-| 图片 | 只引用缓存中已有的图片，缺失的图片会被跳过而不影响编译；过大的图片自动缩小到版心内，小图片保持原始大小；xelatex 无法加载的格式（GIF/WebP/SVG/BMP/ICO 等）会被跳过 |
+| 图片 | 只引用缓存中已有的图片，缺失的图片会被跳过而不影响编译；过大的图片自动缩小到版心内，小图片保持原始大小；xelatex 无法加载的格式（GIF/WebP/SVG/BMP/ICO 等）会被跳过；加 `-RD, --new-download` 后导出前重新下载题面引用的图片 |
 | 视频 | B 站视频补全为 `https://www.bilibili.com/video/...` 的完整网址后输出链接；加 `--no-bilibili-link` 后输出为普通文本 |
 | 难度 | 默认不显示；加 `--show-difficulty-tags` 后在时间限制、内存限制下方显示「难度：<难度>」，`<难度>` 的字体颜色与洛谷网页一致 |
 | 标签 | 默认显示来源、时间、区域、特殊题目标签；加 `--show-algorithm-tags` 后算法标签显示在最前；加 `--no-show-source-tags` 后不显示来源、时间、区域、特殊题目标签；两类标签都不显示时没有「标签」一栏 |
@@ -276,6 +318,7 @@ luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 - 字体类参数（`--set-font-*`）后未接字体名称或字体文件地址；
 - 字体类参数被识别为字体文件地址，但对应文件不存在；
 - 选择了 `-M`（Markdown）导出，却使用了仅 `-L`（LaTeX）支持的设置参数；
+- `-C` / `-CIMG` / `-CP` 与其他参数（含 `-h`、`--tags`、`-U`、`-M`、`-L` 等）或多余的位置参数同时使用；
 - `-V` / `--version` 与其他参数（含 `-h`、`--tags`、`-M`、`-L` 等）或多余的位置参数同时使用（该参数必须单独使用）；
 - 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）。
 

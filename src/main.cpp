@@ -61,6 +61,16 @@ struct Options
     bool show_explicit = false; // 是否显式给了 --show
     std::string output;     // --output（空则按模式取默认 problems.md / problems.tex）
 
+    // ---- 缓存清除参数（三者都只能单独使用）----
+    bool clean_all = false;      // -C, --clean-all：清空整个缓存文件夹
+    bool clean_images = false;   // -CIMG, --clean-images：清空图片缓存
+    bool clean_problems = false; // -CP, --clean-problems：清空题目列表缓存
+
+    // ---- 下载设置参数 ----
+    // -RD, --new-download：下载题面图片时不使用之前缓存的图片，而是重新下载
+    // （新图片原子替换缓存中的同名图片，下载失败不影响原有缓存；仅 -L）
+    bool new_download = false;
+
     // ---- 导出设置参数 ----
     bool no_toc_links = false;      // --no-toc-links：目录条目不带跳转超链接（仅 -L）
     bool toc_backlinks = false;     // --toc-backlinks：页码为跳回目录的超链接（仅 -L）
@@ -108,6 +118,10 @@ enum
     OPT_COVER_TITLE,
     OPT_PID,
     OPT_PID_RANGE,
+    OPT_CLEAN_ALL,
+    OPT_CLEAN_IMAGES,
+    OPT_CLEAN_PROBLEMS,
+    OPT_NEW_DOWNLOAD,
 };
 
 // 选项码 → 长选项名（用于报错信息）
@@ -159,10 +173,21 @@ const char *kUsage =
     "用法：luogu-extract [选项]\n"
     "\n"
     "选项：\n"
-    "  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）\n"
+    "  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）；\n"
+    "                        可与 -M / -L 一同使用，此时先更新缓存再下载题目\n"
     "  -M, --markdown        筛选并导出 Markdown（默认输出 problems.md）\n"
     "  -L, --latex           筛选并导出 LaTeX（默认输出 problems.tex）\n"
     "                        （-M 与 -L 不能同时使用）\n"
+    "  -RD, --new-download   下载题目时不使用之前缓存的图片，而是重新下载图片\n"
+    "                        （仅在使用 -L 时有效）\n"
+    "  -C, --clean-all       清空 luogu-extract 缓存文件夹（含题目列表、标签、图片\n"
+    "                        与字体缓存）；不能与其他参数一起使用\n"
+    "  -CIMG, --clean-images\n"
+    "                        清除 luogu-extract/images/ 下的图片缓存；\n"
+    "                        不能与其他参数一起使用\n"
+    "  -CP, --clean-problems\n"
+    "                        清除题面缓存（latest.ndjson 与 latest.ndjson.gz）；\n"
+    "                        不能与其他参数一起使用\n"
     "      --tags            按官方分类打印标签 ID 对照表（可与 -h 组合使用）\n"
     "      --tag <name|ID>...\n"
     "                        按标签筛选；多个值可用空格分隔或重复 --tag，题目须包含全部标签；\n"
@@ -280,6 +305,38 @@ inline std::vector<std::string> split_whitespace(const std::string &s)
             out.push_back(s.substr(start, i - start));
     }
     return out;
+}
+
+// 多字符短选项（-CIMG / -CP / -RD）不是 getopt 支持的写法：getopt 只认单字符
+// 短选项，会把 "-CIMG" 当成 -C -I -M -G 这样的选项簇。因此在这些参数交给
+// getopt 之前，先把它们逐个替换成等价的长选项（--clean-images 等）；
+// "--" 之后的内容按惯例是位置参数，不做替换。
+// （-C 是单字符短选项，直接由 optstring 处理，无需在此展开。）
+inline void expand_multichar_short_options(std::vector<std::string> &args_utf8)
+{
+    static const struct
+    {
+        const char *short_form;
+        const char *long_form;
+    } kAliases[] = {
+        {"-CIMG", "--clean-images"},
+        {"-CP", "--clean-problems"},
+        {"-RD", "--new-download"},
+    };
+
+    for (auto &arg : args_utf8)
+    {
+        if (arg == "--")
+            break; // "--" 之后全部是位置参数
+        for (const auto &alias : kAliases)
+        {
+            if (arg == alias.short_form)
+            {
+                arg = alias.long_form;
+                break;
+            }
+        }
+    }
 }
 
 // 校验字体参数（--set-font-*）的值，并区分两种写法：
@@ -550,6 +607,8 @@ int main(int argc, char *argv[])
     // 统一转换为 UTF-8 后构造 getopt 可用的参数表（中文参数不乱码）；
     // 其他平台等价于原 argv 的副本。
     std::vector<std::string> args_utf8 = luogu::compat::get_argv_utf8(argc, argv);
+    // "-CIMG" / "-CP" / "-RD" 这类多字符短选项先展开为等价的长选项
+    expand_multichar_short_options(args_utf8);
     std::vector<char *> args;
     args.reserve(args_utf8.size());
     for (auto &a : args_utf8)
@@ -585,6 +644,10 @@ int main(int argc, char *argv[])
         {"set-cover-title",      required_argument, nullptr, OPT_COVER_TITLE},
         {"pid",                  required_argument, nullptr, OPT_PID},
         {"pid-range",            required_argument, nullptr, OPT_PID_RANGE},
+        {"clean-all",            no_argument,       nullptr, OPT_CLEAN_ALL},
+        {"clean-images",         no_argument,       nullptr, OPT_CLEAN_IMAGES},
+        {"clean-problems",       no_argument,       nullptr, OPT_CLEAN_PROBLEMS},
+        {"new-download",         no_argument,       nullptr, OPT_NEW_DOWNLOAD},
         {"help",       no_argument,       nullptr, 'h'},
         {"version",    no_argument,       nullptr, 'V'},
         {nullptr,      0,                 nullptr, 0},
@@ -592,15 +655,14 @@ int main(int argc, char *argv[])
 
     Options options;
     int opt;
-    // -V, --version 必须单独使用：统计除 -V 之外出现的选项个数，
-    // 与位置参数（optind）一起判断是否属于参数使用错误
-    int other_option_count = 0;
+    // -V, --version 与清除类参数（-C / -CIMG / -CP）都必须单独使用：
+    // 统计出现的选项个数，与位置参数（optind）一起判断是否属于参数使用错误
+    int option_count = 0;
     // 短选项串以 ':' 开头：getopt 出错时不打印英文提示，
     // 由下面的 '?' / ':' 分支输出统一的中文错误信息
-    while ((opt = getopt_long(arg_count, arg_vector, ":UMLhV", kLongOptions, nullptr)) != -1)
+    while ((opt = getopt_long(arg_count, arg_vector, ":UMLhVC", kLongOptions, nullptr)) != -1)
     {
-        if (opt != 'V')
-            ++other_option_count;
+        ++option_count;
         switch (opt)
         {
         case 'U':
@@ -611,6 +673,9 @@ int main(int argc, char *argv[])
             break;
         case 'L':
             options.latex = true;
+            break;
+        case 'C':
+            options.clean_all = true;
             break;
         case OPT_TAG:
             // 先整体保留，具体按一个标签还是按空格拆分，交给 select_problems
@@ -698,6 +763,18 @@ int main(int argc, char *argv[])
         }
         case OPT_TAGS:
             options.list_tags = true;
+            break;
+        case OPT_CLEAN_ALL:
+            options.clean_all = true;
+            break;
+        case OPT_CLEAN_IMAGES:
+            options.clean_images = true;
+            break;
+        case OPT_CLEAN_PROBLEMS:
+            options.clean_problems = true;
+            break;
+        case OPT_NEW_DOWNLOAD:
+            options.new_download = true;
             break;
         case OPT_NO_TOC_LINKS:
             options.no_toc_links = true;
@@ -837,7 +914,7 @@ int main(int argc, char *argv[])
     // （含 -h、--tags、-M、-L 等）或多余的位置参数同时出现即为参数使用错误
     if (options.version)
     {
-        if (other_option_count > 0 || optind < arg_count)
+        if (option_count > 1 || optind < arg_count)
         {
             printError("参数 -V, --version 不能与其他参数同时使用；"
                        "正确用法：luogu-extract -V（或 luogu-extract --version），"
@@ -848,6 +925,38 @@ int main(int argc, char *argv[])
         return 0;
     }
 
+    // 清除类参数（-C / -CIMG / -CP）同样只能单独使用：与其他任何参数
+    // （含 -h、--tags、-U、-M、-L 等）或多余的位置参数同时出现即拒绝执行
+    {
+        const struct
+        {
+            bool used;
+            const char *name;
+            const char *example;
+            const char *effect;
+        } kExclusiveCleanOptions[] = {
+            {options.clean_all, "-C, --clean-all", "-C",
+             "清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）"},
+            {options.clean_images, "-CIMG, --clean-images", "-CIMG",
+             "清除 luogu-extract/images/ 下的图片缓存"},
+            {options.clean_problems, "-CP, --clean-problems", "-CP",
+             "清除题面缓存（latest.ndjson 与 latest.ndjson.gz）"},
+        };
+        for (const auto &clean_opt : kExclusiveCleanOptions)
+        {
+            if (!clean_opt.used)
+                continue;
+            if (option_count > 1 || optind < arg_count)
+            {
+                printError("参数 " + std::string(clean_opt.name) +
+                           " 不能与其他参数同时使用；正确用法：luogu-extract " +
+                           clean_opt.example + "，单独执行该参数即可" +
+                           clean_opt.effect);
+                return 1;
+            }
+        }
+    }
+
     if (options.help)
     {
         printUsage();
@@ -856,6 +965,19 @@ int main(int argc, char *argv[])
 
     if (options.list_tags)
         return print_tag_list() ? 0 : 1;
+
+    // 清除类参数只操作本地缓存，不访问网络、也不需要 libcurl：直接执行后退出
+    if (options.clean_all || options.clean_images || options.clean_problems)
+    {
+        crawler::derror clean_result = crawler::SUCCESS;
+        if (options.clean_all)
+            clean_result = crawler::clean_all();
+        else if (options.clean_images)
+            clean_result = crawler::clean_images();
+        else
+            clean_result = crawler::clean_problems();
+        return clean_result == crawler::SUCCESS ? 0 : 1;
+    }
 
     if (options.latex && options.show_explicit)
     {
@@ -890,6 +1012,8 @@ int main(int argc, char *argv[])
         if (!options.font_title_zh.empty()) latex_only.push_back("--set-font-title-zh-CN");
         if (!options.font_title_en.empty()) latex_only.push_back("--set-font-title-en-US");
         if (options.no_bilibili_link) latex_only.push_back("--no-bilibili-link");
+        // -RD 只在 -L 导出下载题面图片时才有意义（-M 不下载图片）
+        if (options.new_download) latex_only.push_back("--new-download");
         if (!latex_only.empty())
         {
             std::string joined;
@@ -962,10 +1086,20 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // -RD, --new-download 只在 -L 导出下载题面图片时才有意义：
+    // 单独使用或只与 -U 一起使用时不会下载任何图片，按参数填用错误拒绝
+    if (options.new_download && !options.latex)
+    {
+        printError("参数 -RD, --new-download 仅在下载题面图片时有效；"
+                   "请在使用 -L（导出 LaTeX）的同时使用该参数"
+                   "（-M 导出 Markdown 不下载图片，-U 只更新题目列表与标签缓存）");
+        return 1;
+    }
+
     if (!options.update && !options.markdown && !options.latex)
     {
         printError("未指定任何操作；请至少使用 -U（更新缓存）、-M（导出 Markdown）、"
-                   "-L（导出 LaTeX）或 --tags（查看标签对照表）之一，"
+                   "-L（导出 LaTeX）、-C（清空缓存）或 --tags（查看标签对照表）之一，"
                    "并可用 -h, --help 查看帮助信息");
         return 1;
     }
@@ -977,6 +1111,9 @@ int main(int argc, char *argv[])
     }
 
     int result = 0;
+    // -U, --update 可与下载题目的参数（-M / -L，含 -RD）一同使用：
+    // 只要命令行中出现 -U 就先更新缓存，再下载题目；与各参数在命令行中的
+    // 先后顺序无关（更新失败时不继续，避免用旧缓存掩盖更新失败）
     if (options.update)
     {
         result = crawler::update();
@@ -1020,6 +1157,9 @@ int main(int argc, char *argv[])
         latex_opt.algorithm_tags = options.show_algorithm_tags;
         latex_opt.difficulty = options.show_difficulty_tags;
         latex_opt.toc_difficulty = options.show_contents_difficulty_tags;
+        // -RD, --new-download：下载题面图片时忽略已有缓存，全部重新下载
+        // （新图片原子替换缓存中的同名图片，下载失败时保留原有缓存）
+        latex_opt.new_download = options.new_download;
         latex_opt.font_cover = options.font_cover;
         latex_opt.font_body_zh = options.font_body_zh;
         latex_opt.font_body_en = options.font_body_en;

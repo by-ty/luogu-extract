@@ -4214,7 +4214,9 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         return false;
 
     // 检查图片是否都已下载到缓存；缺失时在终端用中文询问是否下载。
-    // 同一 URL 跨题目去重，避免重复下载与并发写同一缓存文件
+    // 同一 URL 跨题目去重，避免重复下载与并发写同一缓存文件。
+    // -RD, --new-download：不使用缓存中已有的图片，所有被引用的图片都视为
+    // 待下载（下载时原子替换缓存中的同名文件）
     std::vector<std::string> missing;
     {
         std::set<std::string> seen_missing;
@@ -4228,7 +4230,8 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
                     continue;
                 if (seen_missing.count(url))
                     continue;
-                if (!std::filesystem::exists(crawler::image_cache_path(url), ec) || ec)
+                if (opt.new_download ||
+                    !std::filesystem::exists(crawler::image_cache_path(url), ec) || ec)
                 {
                     seen_missing.insert(url);
                     missing.push_back(url);
@@ -4238,7 +4241,11 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     }
     if (!missing.empty())
     {
-        std::printf("筛选出的题目共引用了 %zu 张尚未下载的图片。\n现在下载吗？[y/N] ", missing.size());
+        if (opt.new_download)
+            std::printf("筛选出的题目共引用了 %zu 张图片；-RD, --new-download 将全部重新下载"
+                        "（下载失败时保留原有缓存）。\n现在下载吗？[y/N] ", missing.size());
+        else
+            std::printf("筛选出的题目共引用了 %zu 张尚未下载的图片。\n现在下载吗？[y/N] ", missing.size());
         fflush(stdout);
         char answer_buf[16];
         if (!fgets(answer_buf, sizeof(answer_buf), stdin))
@@ -4246,11 +4253,16 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         std::string answer(answer_buf);
         if (!answer.empty() && (answer[0] == 'y' || answer[0] == 'Y'))
         {
-            const crawler::derror download_result = crawler::download_images(missing);
+            const crawler::derror download_result =
+                crawler::download_images(missing, opt.new_download);
             if (download_result != crawler::SUCCESS)
             {
-                std::printf("部分图片下载失败；缺失的图片将在编译时被跳过"
-                            "（\\IfFileExists）。\n");
+                if (opt.new_download)
+                    std::printf("部分图片重新下载失败；原有缓存保持不变，"
+                                "仍然缺失的图片将在编译时被跳过（\\IfFileExists）。\n");
+                else
+                    std::printf("部分图片下载失败；缺失的图片将在编译时被跳过"
+                                "（\\IfFileExists）。\n");
             }
         }
         else

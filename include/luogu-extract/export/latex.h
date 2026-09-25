@@ -60,6 +60,12 @@ namespace latex
         // 置为 true；默认 false，即黑色）。与 difficulty 相互独立。
         bool toc_difficulty = false;
 
+        // 下载题面图片时是否忽略缓存中已有的图片、全部重新下载
+        // （-RD, --new-download 置为 true；默认 false 即已有图片直接跳过）。
+        // 新图片先下载到缓存目录中的临时文件，校验通过后再原子替换缓存中的
+        // 同名文件，因此重新下载失败不会影响原有缓存。
+        bool new_download = false;
+
         // 字体设置：空串表示使用 ctex fontset / 代码字体回退链给出的默认字体。
         // 值既可以是系统已安装的字体名称，也可以是字体文件地址（main 中已规范化）。
         std::string font_cover;    // 封面标题字体（--set-font-cover-page）

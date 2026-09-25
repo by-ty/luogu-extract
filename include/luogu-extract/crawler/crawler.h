@@ -41,6 +41,7 @@ namespace crawler
         INVALID_ARGUMENT,    // 参数无效（如空的题目/文章编号）
         ENV_ERROR,           // 缺少必要的环境变量
         DECOMPRESS_ERROR,    // gzip 解压失败
+        CANT_REMOVE_FILE,    // 无法删除缓存文件或目录
     };
 
     /// @param url 目标网址
@@ -85,12 +86,33 @@ namespace crawler
     /// 与白名单扩展名组成（不含 URL 原文），避免不同图床同名互相覆盖；
     /// 已存在的文件直接跳过。
     /// @param urls 图片链接列表
+    /// @param redownload 为 true 时忽略缓存中已有的图片，全部重新下载：
+    ///        新图片先下载到缓存目录中的临时文件，校验通过后再原子替换
+    ///        缓存中的同名文件；下载失败或内容无效时只删除临时文件，
+    ///        原有缓存保持不变
     /// @return SUCCESS 或对应错误码（部分失败时返回第一个错误码）
-    derror download_images(const std::vector<std::string> &urls);
+    derror download_images(const std::vector<std::string> &urls,
+                           bool redownload = false);
 
     /// 返回图片 URL 在缓存中对应的文件路径（<cache_dir>/images/<文件名>）。
     /// 文件名由完整 URL 的哈希生成，与 download_images 的落盘位置一致。
     std::filesystem::path image_cache_path(const std::string &url);
+
+    /// 清空全部缓存：删除缓存目录 <cache_dir> 本身（含题目列表、标签、
+    /// 图片与字体缓存）。缓存目录不存在时视为已清空。
+    /// @return SUCCESS 或对应错误码
+    derror clean_all();
+
+    /// 清空图片缓存：删除 <cache_dir>/images/ 目录及其中的全部图片。
+    /// 目录不存在时视为已清空。
+    /// @return SUCCESS 或对应错误码
+    derror clean_images();
+
+    /// 清空题目列表缓存：删除 <cache_dir>/latest.ndjson 与
+    /// <cache_dir>/latest.ndjson.gz，以及更新中断时可能残留的
+    /// latest.ndjson.tmp.* 临时文件。文件不存在时视为已清空。
+    /// @return SUCCESS 或对应错误码
+    derror clean_problems();
 
     /// @return SUCCESS 或对应错误码
     derror update();

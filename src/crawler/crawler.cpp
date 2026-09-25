@@ -177,6 +177,35 @@ bool looks_like_image_file(const std::filesystem::path &path)
         return true;
     return false;
 }
+
+// 递归删除文件或目录（不存在时不算失败），用于清除缓存。
+// 返回 true 表示删除成功（removed 为删除的条目数，路径不存在时为 0）；
+// 失败时返回 false，并通过 error 输出失败原因。
+bool remove_cache_entry(const std::filesystem::path &path, std::uintmax_t &removed,
+                        std::string &error)
+{
+    std::error_code ec;
+    removed = std::filesystem::remove_all(path, ec);
+    if (ec)
+    {
+        error = ec.message();
+        return false;
+    }
+    return true;
+}
+
+// 把路径列表拼成「'a'、'b'」形式的提示文本
+std::string join_quoted_paths(const std::vector<std::filesystem::path> &paths)
+{
+    std::string out;
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        if (i)
+            out += "、";
+        out += "'" + luogu::compat::path_to_utf8(paths[i]) + "'";
+    }
+    return out;
+}
 } // namespace
 
 static bool decompress_gzip_file(const std::filesystem::path &input_path,
@@ -684,7 +713,8 @@ crawler::derror crawler::update_tags()
     return SUCCESS;
 }
 
-crawler::derror crawler::download_images(const std::vector<std::string> &urls)
+crawler::derror crawler::download_images(const std::vector<std::string> &urls,
+                                         bool redownload)
 {
     std::filesystem::path cache_dir = crawler::get_cache_dir();
     std::filesystem::path image_dir = cache_dir / "images";
@@ -757,25 +787,44 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
                     continue; // 只处理 http(s) 图片链接
 
                 const std::filesystem::path save_path = image_dir / image_cache_filename(url);
-                std::error_code exists_ec;
-                if (std::filesystem::exists(save_path, exists_ec) && !exists_ec)
+                if (!redownload)
                 {
-                    // 已存在：校验文件头确实是图片。此前进程被杀等场景可能
-                    // 留下半截文件，不校验会把它永远当成已缓存图片
-                    if (looks_like_image_file(save_path))
+                    // 未要求重新下载：缓存中已有该图片时直接跳过
+                    std::error_code exists_ec;
+                    if (std::filesystem::exists(save_path, exists_ec) && !exists_ec)
                     {
-                        ++skipped;
-                        continue;
+                        // 已存在：校验文件头确实是图片。此前进程被杀等场景可能
+                        // 留下半截文件，不校验会把它永远当成已缓存图片
+                        if (looks_like_image_file(save_path))
+                        {
+                            ++skipped;
+                            continue;
+                        }
+                        std::filesystem::remove(save_path, exists_ec);
                     }
-                    std::filesystem::remove(save_path, exists_ec);
                 }
+
+                // --new-download（redownload = true）时不使用缓存中已有的图片：
+                // 先下载到同目录的临时文件，校验通过后再原子替换缓存中的同名
+                // 文件（rename 覆盖），因此下载失败/内容无效只影响临时文件，
+                // 原有缓存图片保持不变
+                const std::filesystem::path temp_path =
+                    redownload ? luogu::compat::temp_sibling_path(save_path)
+                               : std::filesystem::path();
+                const std::filesystem::path target_path =
+                    redownload ? temp_path : save_path;
 
                 auto download_one = [&] {
                     // 图片下载不显示进度条（可自定义回调）
-                    const derror result = downloadFile(url, save_path,
+                    const derror result = downloadFile(url, target_path,
                                                        [](const std::string &, long long, long long) {});
                     if (result != SUCCESS)
                     {
+                        if (redownload)
+                        {
+                            std::error_code rm_ec;
+                            std::filesystem::remove(temp_path, rm_ec);
+                        }
                         std::lock_guard<std::mutex> lock(error_mutex);
                         if (first_error == SUCCESS)
                             first_error = result;
@@ -783,14 +832,30 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
                     }
 
                     // 校验下载内容确实是图片；无效内容（如错误页）删除并视为失败
-                    if (!looks_like_image_file(save_path))
+                    if (!looks_like_image_file(target_path))
                     {
                         std::error_code rm_ec;
-                        std::filesystem::remove(save_path, rm_ec);
+                        std::filesystem::remove(target_path, rm_ec);
                         std::lock_guard<std::mutex> lock(error_mutex);
                         if (first_error == SUCCESS)
                             first_error = DOWNLOAD_FAIL;
                         return;
+                    }
+
+                    if (redownload)
+                    {
+                        // 原子替换缓存中的同名图片（同名旧图片在替换前一直可用）
+                        std::error_code rename_ec;
+                        std::filesystem::rename(temp_path, save_path, rename_ec);
+                        if (rename_ec)
+                        {
+                            std::error_code rm_ec;
+                            std::filesystem::remove(temp_path, rm_ec);
+                            std::lock_guard<std::mutex> lock(error_mutex);
+                            if (first_error == SUCCESS)
+                                first_error = CANT_CREAT_FILE;
+                            return;
+                        }
                     }
                     ++downloaded;
                 };
@@ -821,7 +886,12 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
 
     if (downloaded == 0 && skipped == 0)
     {
-        print_error("没有需要下载的图片");
+        // 重新下载时所有图片都算“需要下载”，此时没有下载成功意味着全部失败，
+        // 报“没有需要下载的图片”会误导（未重新下载时该提示是准确的）
+        if (redownload && first_error != SUCCESS)
+            print_error("图片重新下载失败");
+        else
+            print_error("没有需要下载的图片");
         return first_error != SUCCESS ? first_error : EMPTY_RESPONSE;
     }
     return first_error;
@@ -830,6 +900,97 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
 std::filesystem::path crawler::image_cache_path(const std::string &url)
 {
     return crawler::get_cache_dir() / "images" / image_cache_filename(url);
+}
+
+crawler::derror crawler::clean_all()
+{
+    const std::filesystem::path cache_dir = crawler::get_cache_dir();
+    std::uintmax_t removed = 0;
+    std::string error;
+    if (!remove_cache_entry(cache_dir, removed, error))
+    {
+        print_error("清空缓存目录 '" + luogu::compat::path_to_utf8(cache_dir) +
+                    "' 失败：" + error);
+        return CANT_REMOVE_FILE;
+    }
+    if (removed == 0)
+        print_success("缓存目录 '" + luogu::compat::path_to_utf8(cache_dir) +
+                      "' 不存在，无需清理");
+    else
+        print_success("已清空缓存目录 '" + luogu::compat::path_to_utf8(cache_dir) +
+                      "'（含题目列表、标签、图片与字体缓存）");
+    return SUCCESS;
+}
+
+crawler::derror crawler::clean_images()
+{
+    const std::filesystem::path image_dir = crawler::get_cache_dir() / "images";
+    std::uintmax_t removed = 0;
+    std::string error;
+    if (!remove_cache_entry(image_dir, removed, error))
+    {
+        print_error("清空图片缓存目录 '" + luogu::compat::path_to_utf8(image_dir) +
+                    "' 失败：" + error);
+        return CANT_REMOVE_FILE;
+    }
+    if (removed == 0)
+        print_success("图片缓存目录 '" + luogu::compat::path_to_utf8(image_dir) +
+                      "' 不存在，无需清理");
+    else
+        print_success("已清空图片缓存目录 '" + luogu::compat::path_to_utf8(image_dir) +
+                      "'");
+    return SUCCESS;
+}
+
+crawler::derror crawler::clean_problems()
+{
+    const std::filesystem::path cache_dir = crawler::get_cache_dir();
+    std::vector<std::filesystem::path> targets = {
+        cache_dir / "latest.ndjson",
+        cache_dir / "latest.ndjson.gz",
+    };
+
+    // 更新中断时可能残留 latest.ndjson.tmp.* 临时文件，一并清除
+    std::error_code dir_ec;
+    if (std::filesystem::is_directory(cache_dir, dir_ec) && !dir_ec)
+    {
+        std::error_code iter_ec;
+        for (std::filesystem::directory_iterator it(cache_dir, iter_ec), end;
+             !iter_ec && it != end; it.increment(iter_ec))
+        {
+            const std::string name =
+                luogu::compat::path_to_utf8(it->path().filename());
+            if (name.rfind("latest.ndjson.tmp.", 0) == 0)
+                targets.push_back(it->path());
+        }
+        if (iter_ec)
+        {
+            print_error("读取缓存目录 '" + luogu::compat::path_to_utf8(cache_dir) +
+                        "' 失败：" + iter_ec.message());
+            return CANT_REMOVE_FILE;
+        }
+    }
+
+    std::vector<std::filesystem::path> removed_paths;
+    for (const auto &target : targets)
+    {
+        std::uintmax_t removed = 0;
+        std::string error;
+        if (!remove_cache_entry(target, removed, error))
+        {
+            print_error("清除题目列表缓存 '" + luogu::compat::path_to_utf8(target) +
+                        "' 失败：" + error);
+            return CANT_REMOVE_FILE;
+        }
+        if (removed > 0)
+            removed_paths.push_back(target);
+    }
+
+    if (removed_paths.empty())
+        print_success("题目列表缓存（latest.ndjson / latest.ndjson.gz）不存在，无需清理");
+    else
+        print_success("已清除题目列表缓存：" + join_quoted_paths(removed_paths));
+    return SUCCESS;
 }
 
 crawler::derror crawler::update()
