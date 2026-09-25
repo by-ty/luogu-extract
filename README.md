@@ -255,6 +255,7 @@ luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 | 封面 | 标题可用 `--set-cover-title` 自定义（默认 `luogu extract`）；作者「luogu-extract」带有指向项目仓库的超链接 |
 | 数学公式 | 由 `unicode-math` + `Latin Modern Math` 统一排版 |
 | 表格 | 自动转换洛谷的合并语法（单元格恰为 `^` 时向上合并、恰为 `<` 时向左合并）；表头自动加粗，表头中的公式同样加粗 |
+| 折叠框 | `:::info` / `:::success` / `:::warning` / `:::error` 渲染为彩色盒子：标题条底色与框线用对应折叠框颜色；未指定标题时用默认标题；支持嵌套和跨页 |
 | 图片 | 只引用缓存中已有的图片，缺失的图片会被跳过而不影响编译；过大的图片自动缩小到版心内，小图片保持原始大小；xelatex 无法加载的格式（GIF/WebP/SVG/BMP/ICO 等）会被跳过 |
 | 视频 | B 站视频补全为 `https://www.bilibili.com/video/...` 的完整网址后输出链接；加 `--no-bilibili-link` 后输出为普通文本 |
 | 难度 | 默认不显示；加 `--show-difficulty-tags` 后在时间限制、内存限制下方显示「难度：<难度>」，`<难度>` 的字体颜色与洛谷网页一致 |

@@ -2427,6 +2427,468 @@ bool is_table_row(const std::string &line)
     return trim(line).find('|') != std::string::npos;
 }
 
+// ---- 折叠框（洛谷 :::info / :::success / :::warning / :::error）----
+// 折叠框样式：洛谷的类型名（小写）、框线与标题行底色（与洛谷网页一致）、
+// 未指定标题时的默认标题，以及生成的 .tex 中使用的颜色名
+// （导言区用 \definecolor 定义，见 export_latex）。
+struct FoldStyle
+{
+    const char *type;
+    const char *rgb;
+    const char *title;
+    const char *color;
+};
+
+const FoldStyle kFoldStyles[] = {
+    {"info", "52,152,219", "提示", "luogofoldinfo"},
+    {"success", "82,196,26", "成功", "luogofoldsuccess"},
+    {"warning", "255,193,22", "警告", "luogofoldwarning"},
+    {"error", "231,76,60", "错误", "luogofolderror"},
+};
+
+// 按类型名找折叠框样式（大小写不敏感）；不是折叠框类型时返回 nullptr
+const FoldStyle *find_fold_style(const std::string &type)
+{
+    const std::string t = to_lower_ascii(type);
+    for (const auto &s : kFoldStyles)
+    {
+        if (t == s.type)
+            return &s;
+    }
+    return nullptr;
+}
+
+// 解析折叠框起始行：冒号不少于 3 个（::::info 表示嵌套在另一折叠框内），
+// 类型为 info / success / warning / error（大小写不敏感），可选的 [标题]，
+// 以及尾部可选的 {选项}（如 {open}，表示默认展开，PDF 里无意义直接忽略）。
+// 匹配成功时返回 true 并给出样式与标题（标题可能为空，调用方用默认标题补上）。
+bool parse_fold_opener(const std::string &line, const FoldStyle *&style,
+                       std::string &title)
+{
+    static const std::regex kFold(
+        R"(^\s*:{3,}\s*(info|success|warning|error)\s*(?:\[([^\]]*)\])?\s*(?:\{[^}]*\})?\s*$)",
+        std::regex::icase);
+    std::smatch m;
+    if (!std::regex_match(line, m, kFold))
+        return false;
+    style = find_fold_style(m[1].str());
+    if (!style)
+        return false;
+    title = m[2].matched ? trim(m[2].str()) : std::string();
+    return true;
+}
+
+// 整行只由冒号组成（至少 3 个）→ ::: 风格块的收尾行
+bool is_colon_closer(const std::string &t)
+{
+    return t.size() >= 3 && t.find_first_not_of(':') == std::string::npos;
+}
+
+// 是否为 ::: 风格块的起始行（:::info / ::::epigraph / :::align{center} 等）：
+// 至少 2 个冒号，且冒号后还有其他内容（::cute-table 也算，其收尾同样是冒号行）
+bool is_colon_opener(const std::string &t)
+{
+    size_t n = 0;
+    while (n < t.size() && t[n] == ':')
+        ++n;
+    return n >= 2 && n < t.size();
+}
+
+// 从起始行 open_idx 之后找到与之配对的收尾行（整行冒号行）并返回其下标。
+// 洛谷的嵌套写法有两种（内层冒号更多，如 :::info 套 ::::info；或内外层都用
+// :::info），收尾行与起始行的冒号数一一对应，因此按“开块 +1 / 收尾 -1”
+// 计数即可正确配对。代码围栏（``` / ~~~）内的 ::: 不是块标记，需要跳过。
+// 找不到收尾行（数据残缺）时返回 lines.size()，调用方据此把剩余内容都当块内容。
+size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
+{
+    int depth = 1;
+    char fence = 0;
+    size_t fence_len = 0;
+    for (size_t k = open_idx + 1; k < lines.size(); ++k)
+    {
+        const std::string t = trim(lines[k]);
+        if (fence)
+        {
+            if (t.size() >= fence_len &&
+                std::string(t.begin(), t.begin() + fence_len) ==
+                    std::string(fence_len, fence))
+                fence = 0;
+            continue;
+        }
+        if (t.size() >= 3 && (t[0] == '`' || t[0] == '~'))
+        {
+            size_t n = 0;
+            while (n < t.size() && t[n] == t[0])
+                ++n;
+            if (n >= 3)
+            {
+                fence = t[0];
+                fence_len = n;
+                continue;
+            }
+        }
+        if (is_colon_closer(t))
+        {
+            if (--depth == 0)
+                return k;
+        }
+        else if (is_colon_opener(t))
+        {
+            ++depth;
+        }
+    }
+    return lines.size();
+}
+
+// ---- 嵌套折叠框的切块 ----
+// mdframed 有一条已知限制（文档「Known Problems」）：嵌套的 mdframed 不能
+// 跨页。顶层折叠框可以自然跨页，但嵌在里面的折叠框一旦超过一页就会丢内容，
+// 因此这里把嵌套折叠框的内容按顶层块切成若干矮块，每块渲染成一个同色的嵌套
+// 折叠框（首尾相接，见 fold_piece_latex，视觉上仍是一个完整的框）：分页只
+// 发生在块与块之间，既不会截断内容，也不会在一页底部留下大片空白。
+// 估算只用于切块，宁可偏大：一页正文约 35 行，这里每块按 8 行估算（块越矮
+// 页底浪费越少，块之间没有可见接缝，多切几块不影响观感）；
+// 折叠框内图片高度上限为 0.4\textheight（见 fold_box_latex），按 18 行计；
+// 代码、表格行按 1 行，公式行按 2 行，普通行按 44 个半角字符宽折算。
+constexpr int kFoldBoxMaxRows = 8;
+
+// 一行里的图片在缓存中是否可用（可用的图片才有实际高度；xelatex 无法加载
+// 的格式与未下载的图片都会渲染成空盒）
+bool line_has_usable_image(const std::string &line)
+{
+    static const std::regex kImg("!\\[[^\\]]*\\]\\s*\\(\\s*([^\\s)]+)");
+    for (std::sregex_iterator it(line.begin(), line.end(), kImg), end;
+         it != end; ++it)
+    {
+        const std::string url = (*it)[1].str();
+        if (!looks_like_url(url) || is_video_url(url) || is_data_uri(url))
+            continue;
+        if (!prepare_cached_image(crawler::image_cache_path(url)).empty())
+            return true;
+    }
+    return false;
+}
+
+// 一行去掉图片语法后是否只剩空白（即这一行只有图片）
+bool line_is_image_only(const std::string &line)
+{
+    static const std::regex kImg("!\\[[^\\]]*\\]\\s*\\([^)]*\\)");
+    if (line.find("![") == std::string::npos)
+        return false;
+    return std::regex_replace(line, kImg, "").find_first_not_of(" \t") ==
+           std::string::npos;
+}
+
+// 该行是否以图片开头（图片按自然宽度/\linewidth 排版，不能加首行缩进）
+bool line_starts_with_image(const std::string &line)
+{
+    const size_t p = line.find("![");
+    if (p == std::string::npos)
+        return false;
+    return line.find_first_not_of(" \t") >= p;
+}
+
+// 整个段落是否只有图片（且至少有一张图片确实可用），用于给独立成段的
+// 图片前后留出间距
+bool paragraph_is_image_only(
+    const std::vector<std::pair<std::string, bool>> &parts)
+{
+    bool usable = false;
+    for (const auto &p : parts)
+    {
+        if (!line_is_image_only(p.first))
+            return false;
+        if (line_has_usable_image(p.first))
+            usable = true;
+    }
+    return usable;
+}
+
+// 一行文字的估算渲染行数（空行不计；图片高度上限见 kFoldBoxMaxRows 的注释）
+int estimate_text_line_rows(const std::string &line)
+{
+    if (trim(line).empty())
+        return 0;
+    // 图片语法 ![alt](url)：只在图片确实可用时才有高度
+    if (line.find("![") != std::string::npos)
+        return line_has_usable_image(line) ? 18 : 1;
+    double units = 0.0;
+    for (size_t i = 0; i < line.size();)
+    {
+        const unsigned char c = static_cast<unsigned char>(line[i]);
+        size_t len = 1;
+        if (c >= 0xF0)
+            len = 4;
+        else if (c >= 0xE0)
+            len = 3; // CJK 等全角字符按 1 个字符宽
+        else if (c >= 0xC0)
+            len = 2;
+        units += (len >= 3) ? 1.0 : 0.5;
+        i += len;
+    }
+    const int rows = static_cast<int>((units + 43.0) / 44.0);
+    return rows < 1 ? 1 : rows;
+}
+
+// 折叠框内容里的一个顶层块（段落 / 代码块 / 表格 / 公式 / 嵌套块）：
+// 块内部不允许切分（切开会破坏 markdown 结构）
+struct MarkdownBlock
+{
+    size_t begin = 0; // 起始行（含）
+    size_t end = 0;   // 结束行（不含）
+    int rows = 1;     // 估算渲染行数
+};
+
+// 扫描 [begin, end) 内的顶层块并估算各块的行数
+std::vector<MarkdownBlock> scan_markdown_blocks(
+    const std::vector<std::string> &lines, size_t begin, size_t end);
+
+// 某个位置是否是一个“特殊块”的起始（代码围栏 / ::: 块 / 块级公式 / 表格），
+// 用于结束普通段落
+bool starts_special_block(const std::vector<std::string> &lines, size_t k,
+                          size_t end)
+{
+    const std::string t = trim(lines[k]);
+    if (t.empty())
+        return false;
+    if (t.size() >= 3 && (t[0] == '`' || t[0] == '~'))
+    {
+        size_t n = 0;
+        while (n < t.size() && t[n] == t[0])
+            ++n;
+        if (n >= 3)
+            return true;
+    }
+    if (is_colon_opener(t) || t.rfind("$$", 0) == 0)
+        return true;
+    if (is_table_row(t))
+    {
+        size_t j = k + 1;
+        while (j < end && trim(lines[j]).empty())
+            ++j;
+        if (j < end && is_table_separator_row(lines[j]))
+            return true;
+    }
+    return false;
+}
+
+std::vector<MarkdownBlock> scan_markdown_blocks(
+    const std::vector<std::string> &lines, size_t begin, size_t end)
+{
+    std::vector<MarkdownBlock> blocks;
+    size_t i = begin;
+    while (i < end)
+    {
+        if (trim(lines[i]).empty())
+        {
+            ++i;
+            continue;
+        }
+        MarkdownBlock b;
+        b.begin = i;
+        const std::string t = trim(lines[i]);
+
+        // 代码围栏：整段作为一个块
+        size_t fence_len = 0;
+        char fence = 0;
+        if (t.size() >= 3 && (t[0] == '`' || t[0] == '~'))
+        {
+            size_t n = 0;
+            while (n < t.size() && t[n] == t[0])
+                ++n;
+            if (n >= 3)
+            {
+                fence = t[0];
+                fence_len = n;
+            }
+        }
+        if (fence)
+        {
+            ++i;
+            int rows = 2;
+            while (i < end)
+            {
+                const std::string l = trim(lines[i]);
+                ++rows;
+                const bool closes =
+                    l.size() >= fence_len &&
+                    std::string(l.begin(), l.begin() + fence_len) ==
+                        std::string(fence_len, fence);
+                ++i;
+                if (closes)
+                    break;
+            }
+            b.end = i;
+            b.rows = rows;
+            blocks.push_back(b);
+            continue;
+        }
+
+        // ::: 块（折叠框 / epigraph / align 等）：整段作为一个块，
+        // 块内是嵌套折叠框时把它的估算高度一并计入
+        if (is_colon_opener(t))
+        {
+            const size_t closer = find_block_closer(lines, i);
+            const size_t inner_end = closer < end ? closer : end;
+            int rows = 4; // 标题条与上下间距
+            for (const auto &sub : scan_markdown_blocks(lines, i + 1, inner_end))
+                rows += sub.rows;
+            i = closer < end ? closer + 1 : end;
+            b.end = i;
+            b.rows = rows;
+            blocks.push_back(b);
+            continue;
+        }
+
+        // 块级公式 $$...$$
+        if (t.rfind("$$", 0) == 0)
+        {
+            ++i;
+            int rows = 2;
+            while (i < end)
+            {
+                const std::string l = trim(lines[i]);
+                rows += 2;
+                ++i;
+                if (l.find("$$") != std::string::npos)
+                    break;
+            }
+            b.end = i;
+            b.rows = rows;
+            blocks.push_back(b);
+            continue;
+        }
+
+        // 表格：连续含 | 的行（首行后跟分隔行才算表格）
+        if (is_table_row(t))
+        {
+            size_t j = i + 1;
+            while (j < end && trim(lines[j]).empty())
+                ++j;
+            if (j < end && is_table_separator_row(lines[j]))
+            {
+                int rows = 2;
+                while (i < end && !trim(lines[i]).empty() && is_table_row(lines[i]))
+                {
+                    rows += 2; // 每个表格行按 2 行估算（含行距）
+                    ++i;
+                }
+                b.end = i;
+                b.rows = rows;
+                blocks.push_back(b);
+                continue;
+            }
+        }
+
+        // 普通段落：连续的非空行，遇到空行或其他特殊块为止
+        {
+            int rows = 1; // 段间距
+            while (i < end)
+            {
+                if (trim(lines[i]).empty() ||
+                    (i > b.begin && starts_special_block(lines, i, end)))
+                    break;
+                rows += estimate_text_line_rows(lines[i]);
+                ++i;
+            }
+            b.end = i;
+            b.rows = rows;
+            blocks.push_back(b);
+        }
+    }
+    return blocks;
+}
+
+// 把块按估算行数分组：每组不超过 budget 行（单个块本身超预算时自成一组）
+std::vector<std::pair<size_t, size_t>> group_blocks_into_chunks(
+    const std::vector<MarkdownBlock> &blocks, int budget)
+{
+    std::vector<std::pair<size_t, size_t>> chunks;
+    size_t i = 0;
+    while (i < blocks.size())
+    {
+        int rows = blocks[i].rows;
+        size_t j = i + 1;
+        while (j < blocks.size() && rows + blocks[j].rows <= budget)
+        {
+            rows += blocks[j].rows;
+            ++j;
+        }
+        chunks.emplace_back(blocks[i].begin, blocks[j - 1].end);
+        i = j;
+    }
+    return chunks;
+}
+
+// 折叠框渲染（mdframed 环境，样式在导言区的 \mdfdefinestyle{luogofoldbox}）：
+// - 第一行是标题条：底色为折叠框颜色、白色粗体字；
+// - 下面是框内内容：白底黑字，字体与正文一致（除标题外不切换任何字体）；
+// - 框线用对应折叠框的颜色（linecolor）；
+// - 顶层折叠框左右外边距为 0，占满整行宽度，并可以自然跨页。
+// 说明：这里不用 tabular 模拟——LaTeX 的表格是整体不可分割的盒子，
+// 内容超过一页的折叠框会被截断；mdframed 可以自然跨页，外观一致。
+// 嵌套折叠框见 fold_piece_latex。
+std::string fold_box_latex(const FoldStyle &style, const std::string &title,
+                           const std::string &content)
+{
+    std::string out;
+    out += "\\begin{mdframed}[style=luogofoldbox";
+    out += ", linecolor=" + std::string(style.color);
+    out += ", frametitlebackgroundcolor=" + std::string(style.color);
+    // frametitle 用花括号包住：标题里的逗号/等号/右方括号不会被当成键值
+    out += ", frametitle={" + title + "}]\n";
+    // 框内图片的高度上限（\luogoimagemaxheight 的默认值是 \textheight）：
+    // 图片（\hbox）无法被拆开，太高的话一页只能放下一张、页底留下大片空白，
+    // 因此折叠框内统一限制为 0.4\textheight——一页能放下两张图，或一张图加
+    // 一段文字。mdframed 环境是一个分组，设置只在本框内生效。
+    out += "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
+    out += content;
+    if (!content.empty() && content.back() != '\n')
+        out += '\n';
+    out += "\\end{mdframed}\n\n";
+    return out;
+}
+
+// 嵌套折叠框的一块。mdframed 的嵌套盒子不能跨页，所以嵌套框的内容会按块
+// 切成若干小块；这些小块按“相连”的方式排版，视觉上仍是一个完整的框：
+// - 只有第一块有标题条与上框线（topline），只有最后一块有下框线（bottomline）；
+// - 块与块之间没有任何竖直间距，左右框线首尾相接：mdframed 的环境结束时
+//   \endtrivlist 会把环境前的竖直间距重新补回来（又加出一个 \topsep 左右的
+//   空隙），小块之间就会出现缝隙、框线断开。块内容末尾调用
+//   \luogofoldnoparlist 把 LaTeX 的 \@noparlist 开关置真后，\endtrivlist
+//   会整段跳过这段间距（环境结束后再用 \luogofoldparlist 还原）。
+//   不能改用固定负间距（如 \vspace{-\topsep}）抵消：那段间距有时是 0、
+//   有时约 8pt，负间距会把小块上移、压住上一块的内容；
+// - frametitle 必须显式给出：mdframed 的选项会被嵌套的环境继承，续块不写
+//   空标题就会重复显示上一级的标题；
+// - 小块宽度比上一级窄 1em（左右各缩进 1em，\linewidth 此时已是上一级内宽）。
+// 这样每一块都很矮，分页时只会在块之间断页，既不会截断内容，也不会在一页
+// 底部留下大片空白（若每块都画标题条并留间距，一页只能放下一两块）。
+std::string fold_piece_latex(const FoldStyle &style, const std::string &title,
+                             const std::string &content, bool first, bool last)
+{
+    std::string out;
+    out += "\\begin{mdframed}[style=luogofoldbox";
+    out += ", linecolor=" + std::string(style.color);
+    out += ", frametitlebackgroundcolor=" + std::string(style.color);
+    out += ", leftmargin=1em, rightmargin=1em";
+    out += first ? ", topline=true" : ", topline=false";
+    out += last ? ", bottomline=true" : ", bottomline=false";
+    out += ", frametitle={" + (first ? title : std::string()) + "}";
+    out += first ? ", innertopmargin=4pt" : ", innertopmargin=0pt";
+    out += last ? ", innerbottommargin=4pt" : ", innerbottommargin=0pt";
+    out += ", skipabove=0pt, skipbelow=0pt]\n";
+    // 嵌套框内图片高度上限同样是 0.4\textheight，与切块时的估算（18 行）一致
+    out += "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
+    out += content;
+    if (!content.empty() && content.back() != '\n')
+        out += '\n';
+    out += "\\luogofoldnoparlist\n"; // 让本块结束后不再补竖直间距
+    out += "\\end{mdframed}\n";
+    out += "\\luogofoldparlist\n"; // 还原开关，避免影响后面的列表/盒子
+    return out;
+}
+
 // 把多个行内片段拼成一个段落：硬换行用 \\\\，丢弃转换后为空的片段
 // （缺失图片会变成空），\\\\ 后紧跟 [ 时补 {} 防止被当作可选参数
 std::string join_inline_parts(const std::vector<std::pair<std::string, bool>> &parts)
@@ -2435,7 +2897,10 @@ std::string join_inline_parts(const std::vector<std::pair<std::string, bool>> &p
     for (const auto &rp : parts)
     {
         const std::string c = inline_to_latex(rp.first);
-        if (!c.empty())
+        // 只剩空白的片段同样丢弃：未下载的图片会变成空串，行首的空白会在这里
+        // 留下 " " 之类的内容，让后面的 \\ 落在段首（LaTeX 报
+        // "There's no line here to end"，折叠框内尤其容易触发）
+        if (c.find_first_not_of(" \t") != std::string::npos)
             out.emplace_back(c, rp.second);
     }
     std::string para;
@@ -2954,9 +3419,10 @@ std::string split_long_lines(const std::string &content)
     return out;
 }
 
-} // namespace
-
-std::string latex::markdown_to_latex(const std::string &markdown)
+// 把一段 markdown / HTML 文本转换为 LaTeX（块级处理）。
+// 折叠框需要把框内内容整体放进盒子里，因此按嵌套层递归调用自身：
+// @param fold_depth 当前所在的折叠框嵌套层数（0 = 不在任何折叠框内）
+std::string render_markdown(const std::string &markdown, int fold_depth)
 {
     std::vector<std::string> lines;
     lines = split_lines(markdown);
@@ -3074,7 +3540,7 @@ std::string latex::markdown_to_latex(const std::string &markdown)
             continue;
         }
 
-        // ---- Luogu 扩展块：cute-table / align / epigraph / info 等 ----
+        // ---- Luogu 扩展块：折叠框 / cute-table / align / epigraph 等 ----
         if (line.rfind("::cute-table", 0) == 0)
         {
             ++i;
@@ -3084,9 +3550,72 @@ std::string latex::markdown_to_latex(const std::string &markdown)
         {
             static const std::regex kCloser(R"(^\s*:+$)", std::regex::icase);
             static const std::regex kCustom(
-                R"(^\s*:+\s*(align\{(center|right)\}|epigraph(?:\[[^\]]*\])?|(?:info|success|warning|error)(?:\[[^\]]*\])?(?:\{[^}]*\})?)\s*$)",
+                R"(^\s*:+\s*(align\{(center|right)\}|epigraph(?:\[[^\]]*\])?)\s*$)",
                 std::regex::icase);
-            static const std::regex kTitle(R"(\[([^\]]*)\])");
+
+            // 折叠框：找出配对的收尾行，把框内内容整段递归转换后放进
+            // mdframed 盒子（标题条 + 白底黑字内容），嵌套的折叠框因此可以
+            // 一层层套进上一级框内
+            const FoldStyle *fold = nullptr;
+            std::string fold_title;
+            if (parse_fold_opener(line, fold, fold_title))
+            {
+                const size_t closer = find_block_closer(lines, i);
+                const size_t inner_begin = i + 1;
+                const size_t inner_end =
+                    (closer < lines.size()) ? closer : lines.size();
+                std::string inner;
+                for (size_t k = inner_begin; k < inner_end; ++k)
+                {
+                    if (k > inner_begin)
+                        inner += '\n';
+                    inner += lines[k];
+                }
+                if (fold_title.empty())
+                    fold_title = fold->title; // 未指定标题时用默认标题
+
+                if (fold_depth == 0)
+                {
+                    // 顶层折叠框：mdframed 可以自然跨页，整段放进一个框
+                    out += fold_box_latex(*fold, inline_to_latex(fold_title),
+                                          render_markdown(inner, fold_depth + 1));
+                }
+                else
+                {
+                    // 嵌套折叠框不能跨页：按顶层块切成若干矮块，首尾相接
+                    // 渲染成同色的嵌套折叠框，避免内容被截断或留大片空白
+                    const auto blocks =
+                        scan_markdown_blocks(lines, inner_begin, inner_end);
+                    const auto chunks =
+                        group_blocks_into_chunks(blocks, kFoldBoxMaxRows);
+                    if (chunks.empty())
+                    {
+                        // 空框（框内只有空行）：仍然输出标题条
+                        out += fold_piece_latex(*fold, inline_to_latex(fold_title),
+                                                std::string(), true, true);
+                    }
+                    for (size_t c = 0; c < chunks.size(); ++c)
+                    {
+                        const auto &chunk = chunks[c];
+                        std::string piece;
+                        for (size_t k = chunk.first; k < chunk.second; ++k)
+                        {
+                            if (k > chunk.first)
+                                piece += '\n';
+                            piece += lines[k];
+                        }
+                        // 各块首尾相接：只有第一块画标题条与上框线、
+                        // 最后一块画下框线，视觉上仍是一个完整的框
+                        out += fold_piece_latex(
+                            *fold, inline_to_latex(fold_title),
+                            render_markdown(piece, fold_depth + 1), c == 0,
+                            c + 1 == chunks.size());
+                    }
+                }
+                // 找不到收尾行时把剩余内容都当作框内内容（不再前进到哨兵后）
+                i = (closer < lines.size()) ? closer + 1 : lines.size();
+                continue;
+            }
 
             std::smatch m;
             if (std::regex_match(line, m, kCloser) && line.size() >= 3)
@@ -3104,6 +3633,7 @@ std::string latex::markdown_to_latex(const std::string &markdown)
                 const std::string spec = m[1].str();
                 std::string title;
                 std::smatch tm;
+                static const std::regex kTitle(R"(\[([^\]]*)\])");
                 if (std::regex_search(spec, tm, kTitle))
                     title = tm[1].str();
 
@@ -3399,9 +3929,27 @@ std::string latex::markdown_to_latex(const std::string &markdown)
         }
         if (!parts.empty())
         {
-            const std::string para = join_inline_parts(parts);
+            std::string para = join_inline_parts(parts);
             if (!para.empty())
+            {
+                if (paragraph_is_image_only(parts))
+                {
+                    // 独立成段的图片：前后留一点间距，否则会与相邻文字贴在一起
+                    para = "\\vspace{\\medskipamount}\n" + para +
+                           "\n\\vspace{\\medskipamount}";
+                }
+                else if (fold_depth > 0 && out.empty() &&
+                         !line_starts_with_image(parts.front().first))
+                {
+                    // 折叠框内第一段的首行缩进要自己补：mdframed 的内容从水平
+                    // 模式开始排，LaTeX 不会给它加首行缩进，\indent 此时也无效，
+                    // 只能用 \hspace 手动缩进两格。只补这一处：其他位置的段落
+                    // LaTeX 会自己缩进（补了会缩进两次）。以图片开头的段落不
+                    // 缩进：图片按 \linewidth 缩放，再加缩进会超出右边界。
+                    para = "\\hspace{\\parindent}" + para;
+                }
                 out += para + "\n\n";
+            }
             continue;
         }
         // 理论上到不了这里；保险起见直接前进，避免死循环
@@ -3415,6 +3963,13 @@ std::string latex::markdown_to_latex(const std::string &markdown)
         env_stack.pop_back();
     }
     return out;
+}
+
+} // namespace
+
+std::string latex::markdown_to_latex(const std::string &markdown)
+{
+    return render_markdown(markdown, 0);
 }
 
 std::string latex::problem_to_latex(const problem::Problem &p, const Options &opt)
@@ -3634,13 +4189,17 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 图片统一缩放：测量自然宽高，只在超过行宽/版心高时按比例缩小；
     // 小图片保持原始尺寸，不放大。max width 与 max height 同时给出并由
     // keepaspectratio 保证宽高比不变，避免超高或超宽图片溢出页面。
+    // 高度上限用 \luogoimagemaxheight 而不是直接写 \textheight：折叠框内
+    // 会把该长度改小（见 fold_box_latex），保证框装得下一页。
+    std::fputs("\\newlength{\\luogoimagemaxheight}\n", out);
+    std::fputs("\\setlength{\\luogoimagemaxheight}{\\textheight}\n", out);
     std::fputs("\\newcommand{\\luogoincludegraphics}[1]{%\n", out);
     std::fputs("  \\setbox0=\\hbox{\\includegraphics{#1}}%\n", out);
     std::fputs("  \\ifdim\\wd0>\\linewidth\n", out);
-    std::fputs("    \\includegraphics[width=\\linewidth,height=\\textheight,keepaspectratio]{#1}%\n", out);
+    std::fputs("    \\includegraphics[width=\\linewidth,height=\\luogoimagemaxheight,keepaspectratio]{#1}%\n", out);
     std::fputs("  \\else\n", out);
-    std::fputs("    \\ifdim\\dimexpr\\ht0+\\dp0\\relax>\\textheight\n", out);
-    std::fputs("      \\includegraphics[width=\\linewidth,height=\\textheight,keepaspectratio]{#1}%\n", out);
+    std::fputs("    \\ifdim\\dimexpr\\ht0+\\dp0\\relax>\\luogoimagemaxheight\n", out);
+    std::fputs("      \\includegraphics[width=\\linewidth,height=\\luogoimagemaxheight,keepaspectratio]{#1}%\n", out);
     std::fputs("    \\else\n", out);
     std::fputs("      \\includegraphics{#1}%\n", out);
     std::fputs("    \\fi\n", out);
@@ -3684,6 +4243,20 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\usepackage{tabularx}\n", out);
     // 表格合并（洛谷的 ^ 向上合并 / < 向左合并）需要 \multirow
     std::fputs("\\usepackage{multirow}\n", out);
+    // 折叠框（洛谷 :::info / :::success / :::warning / :::error）用 mdframed
+    // 绘制：彩色框线 + 彩色标题条 + 白底黑字。不用 tabular 模拟是因为
+    // LaTeX 表格无法跨页，内容长的折叠框会被截断；mdframed 可以自然跨页。
+    std::fputs("\\usepackage{mdframed}\n", out);
+    // 嵌套折叠框的相连小块要求“块与块之间没有竖直间距”，否则框线会在接缝处
+    // 断开。mdframed 的环境结束时 \endtrivlist 会把环境前的竖直间距重新补回来
+    // （又加出一个 \topsep 左右的空隙），把 LaTeX 的 \@noparlist 开关置真即可
+    // 让 \endtrivlist 跳过这段间距。
+    // 开关是全局的（小块内容被收集在 mdframed 自己的盒子里，局部赋值传不出来），
+    // 因此小块内容末尾置真、环境结束后立刻还原，避免影响后面的列表与盒子。
+    std::fputs("\\makeatletter\n", out);
+    std::fputs("\\newcommand{\\luogofoldnoparlist}{\\global\\@noparlisttrue}\n", out);
+    std::fputs("\\newcommand{\\luogofoldparlist}{\\global\\@noparlistfalse}\n", out);
+    std::fputs("\\makeatother\n", out);
     std::fputs("\\geometry{margin=2cm}\n", out);
     // book 默认 \headheight=12pt 略小于 ctex/unicode-math 标题所需的
     // 12.03pt；显式给到 13pt，消除每一页的 fancyhdr 警告，正文版心基本不变。
@@ -3846,6 +4419,38 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\colorlet{transparent}{white}\n", out);
     std::fputs("\\definecolor{Aquamarine}{RGB}{127,255,212}\n", out);
     std::fputs("\\definecolor{gold}{RGB}{255,215,0}\n", out);
+    // 折叠框颜色（与洛谷网页一致）：info 蓝 / success 绿 / warning 黄 / error 红，
+    // 用作框线颜色与标题条底色（见文件上方的 kFoldStyles）
+    for (const auto &fold : kFoldStyles)
+    {
+        std::fprintf(out, "\\definecolor{%s}{RGB}{%s}\n", fold.color, fold.rgb);
+    }
+    // 折叠框样式：框线 1pt、白底黑字（字体与正文一致，不额外指定），
+    // 标题条为白色粗体、底色与框线同色（每次使用时用 linecolor /
+    // frametitlebackgroundcolor 指定具体颜色）。
+    // 左右外边距为 0 时占满整行宽度；嵌套的折叠框在 \begin{mdframed} 处
+    // 单独给出 leftmargin/rightmargin=1em，宽度略小于上一级。
+    std::fputs("\\mdfdefinestyle{luogofoldbox}{%\n", out);
+    std::fputs("  linewidth=1pt,\n", out);
+    std::fputs("  linecolor=black,\n", out);
+    std::fputs("  backgroundcolor=white,\n", out);
+    std::fputs("  fontcolor=black,\n", out);
+    std::fputs("  leftmargin=0pt,\n", out);
+    std::fputs("  rightmargin=0pt,\n", out);
+    std::fputs("  innerleftmargin=6pt,\n", out);
+    std::fputs("  innerrightmargin=6pt,\n", out);
+    std::fputs("  innertopmargin=4pt,\n", out);
+    std::fputs("  innerbottommargin=4pt,\n", out);
+    std::fputs("  frametitlefont=\\bfseries,\n", out);
+    std::fputs("  frametitlefontcolor=white,\n", out);
+    std::fputs("  frametitlebackgroundcolor=black,\n", out);
+    std::fputs("  frametitlerule=false,\n", out);
+    std::fputs("  frametitleaboveskip=4pt,\n", out);
+    std::fputs("  frametitlebelowskip=4pt,\n", out);
+    std::fputs("  skipabove=6pt,\n", out);
+    std::fputs("  skipbelow=6pt,\n", out);
+    std::fputs("  nobreak=false,\n", out);
+    std::fputs("}\n", out);
     std::fputs("\\providecommand{\\degree}{^{\\circ}}\n", out);
     std::fputs("\\providecommand{\\exist}{\\exists}\n", out);
     std::fputs("\\providecommand{\\infin}{\\infty}\n", out);

@@ -84,7 +84,15 @@ namespace latex
     // （crawler::image_cache_path），超宽/超高图片按比例缩小到版心内，小图片
     // 不放大；视频（Bilibili 等）只输出链接；
     // 数学公式原样保留。
-    // 依赖的宏包：graphicx、hyperref、ulem（删除线）、amsmath/amssymb（公式/任务框）。
+    // 洛谷的折叠框（:::info / :::success / :::warning / :::error，可带
+    // [标题]，未指定标题时用默认标题「提示/成功/警告/错误」）用 mdframed
+    // 环境渲染：标题条底色为对应折叠框颜色、白色粗体字，内容白底黑字、
+    // 字体与正文一致，框线为对应颜色；顶层折叠框占满整行宽度并可自然跨页，
+    // 嵌套折叠框在上一级框内、左右各缩进 1em（宽度略小于上一级），由于
+    // mdframed 的嵌套盒子不能跨页，嵌套框的内容会按估算高度自动切成若干
+    // 一页以内的小块（第二块起标题加「（续）」），保证不被截断。
+    // 依赖的宏包：graphicx、hyperref、ulem（删除线）、amsmath/amssymb（公式/
+    // 任务框）、mdframed（折叠框）。
     std::string markdown_to_latex(const std::string &markdown);
 
     // 把一题转换为以 \section 开头的 LaTeX 内容（结构同 markdown 导出：
