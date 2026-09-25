@@ -100,6 +100,26 @@ namespace luogu
         return 0;
     }
 
+    // 洛谷题面用「图片语法 + bilibili: 伪协议」插入 B 站视频，支持的写法：
+    //   ![](bilibili:221107)                  纯数字：省略 av 前缀的 av 号
+    //   ![](bilibili:av53851218)              av 号
+    //   ![](bilibili:BV1GJ411x7h7)            BV 号
+    //   ![](bilibili:BV1bv411p7U5?page=4&t=82) 可带分 P（page）与起始位置（t，秒）
+    // 本函数把这种伪链接补全成完整的视频网页 URL
+    // （https://www.bilibili.com/video/<id>[?<query>]，query 原样保留）；
+    // 不是可识别的 bilibili 伪链接（前缀不对、id/query 含非法字符）时返回空串，
+    // 调用方据此保留原文。
+    std::string bilibili_video_url(const std::string &url);
+
+    // Markdown 导出用：把题面中的 B 站视频伪链接补全成指向视频网页的
+    // Markdown 超链接。洛谷的视频写法在 Markdown 里只是指向 bilibili: 协议的
+    // 坏图，这里改成 [文字](https://www.bilibili.com/video/...)：
+    // - 图片语法 ![文字](bilibili:...) 的文字非空时作为链接文字，为空时用完整 URL；
+    // - 普通链接语法 [文字](bilibili:...) 保留原有链接文字；
+    // - 自动链接 <bilibili:...> 用完整 URL 作为链接文字；
+    // 其余内容（含普通图片、普通链接、围栏代码块与行内代码）一律原样保留。
+    std::string markdown_bilibili_links(const std::string &markdown);
+
     // 从缓存 latest.ndjson 中筛选题目并按题号排序（-M / -L 共用）。
     // resolved_tags 可选：返回解析后的标签名（数字 ID 已翻译成名称），
     // 用于在导出文件头描述筛选条件。

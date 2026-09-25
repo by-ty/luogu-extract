@@ -26,7 +26,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <limits>
+#include <regex>
 #include <set>
 #include <string>
 #include <string_view>
@@ -694,6 +696,173 @@ bool raw_may_match(std::string_view line,
 }
 
 } // namespace
+
+std::string luogu::bilibili_video_url(const std::string &url)
+{
+    static const std::string kScheme = "bilibili:";
+    static const std::string kBase = "https://www.bilibili.com/video/";
+    if (url.compare(0, kScheme.size(), kScheme) != 0)
+        return "";
+
+    // 拆出 id 与查询串（?page=4&t=82）：分 P 与起始播放位置由查询串表达，
+    // 补全后的网页 URL 原样保留，不做数值换算
+    std::string id = url.substr(kScheme.size());
+    std::string query;
+    const size_t q = id.find_first_of("?#");
+    if (q != std::string::npos)
+    {
+        query = id.substr(q);
+        id.resize(q);
+    }
+    if (id.empty())
+        return "";
+
+    auto is_all = [](const std::string &s, size_t from, int (*pred)(int)) {
+        return from < s.size() &&
+               std::all_of(s.begin() + static_cast<std::ptrdiff_t>(from), s.end(),
+                           [pred](char c) { return pred(static_cast<unsigned char>(c)) != 0; });
+    };
+
+    const std::string low = to_lower_ascii(id);
+    if (low.rfind("bv", 0) == 0)
+    {
+        // BV 号：BV + 字母数字串
+        if (!is_all(id, 2, std::isalnum))
+            return "";
+    }
+    else if (low.rfind("av", 0) == 0)
+    {
+        // av 号：av + 数字
+        if (!is_all(id, 2, std::isdigit))
+            return "";
+    }
+    else if (is_all(id, 0, std::isdigit))
+    {
+        // 省略了 av 前缀的 av 号
+        id = "av" + id;
+    }
+    else
+    {
+        return ""; // 既不是 BV 号也不是 av 号
+    }
+
+    // 查询串只允许 URL 中常见且不会破坏 LaTeX/Markdown 输出的字符，
+    // 避免把 } { \ " 等注入到 \url{} / \href{}（Markdown 的 ]( ) 同理）
+    static const std::string kQueryExtra = "-._~=&%?#+/:";
+    for (char c : query)
+    {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (!std::isalnum(u) && kQueryExtra.find(static_cast<char>(u)) == std::string::npos)
+            return "";
+    }
+    return kBase + id + query;
+}
+
+std::string luogu::markdown_bilibili_links(const std::string &markdown)
+{
+    // 洛谷的视频写法在 Markdown 里是指向 bilibili: 伪协议的坏图，
+    // 改写为 [文字](https://www.bilibili.com/video/...)：
+    // - 图片语法 ![文字](bilibili:...)：文字非空时作为链接文字，为空时用完整 URL；
+    // - 普通链接语法 [文字](bilibili:...)：保留原有链接文字；
+    // - 自动链接 <bilibili:...>：用完整 URL 作为链接文字。
+    // 围栏代码块与行内代码里的内容原样保留（见函数末尾的逐行处理）。
+    static const std::regex kImage(R"(!\[([^\]]*)\]\(\s*(bilibili:[^\s)]+)\s*\))");
+    static const std::regex kLink(R"(\[([^\]]*)\]\(\s*(bilibili:[^\s)]+)\s*\))");
+    static const std::regex kAutolink(R"(<(bilibili:[^>\s]+)>)");
+
+    auto expand = [](const std::string &label, const std::string &raw) -> std::string {
+        const std::string full = luogu::bilibili_video_url(raw);
+        if (full.empty())
+            return ""; // 不是可识别的视频伪链接：保留原文
+        // 文字含会破坏 Markdown 链接语法的字符时，改用完整 URL 作链接文字
+        const bool label_ok =
+            !label.empty() && label.find_first_of("[]()\\") == std::string::npos;
+        return "[" + (label_ok ? label : full) + "](" + full + ")";
+    };
+
+    auto rewrite = [](const std::string &s, const std::regex &re,
+                      const std::function<std::string(const std::smatch &)> &convert) {
+        std::string out;
+        size_t last = 0;
+        for (std::sregex_iterator it(s.begin(), s.end(), re), end; it != end; ++it)
+        {
+            out += s.substr(last, static_cast<size_t>(it->position()) - last);
+            const std::string replaced = convert(*it);
+            out += replaced.empty() ? it->str() : replaced;
+            last = static_cast<size_t>(it->position() + it->length());
+        }
+        out += s.substr(last);
+        return out;
+    };
+
+    // 三种语法按顺序改写：图片语法必须最先处理，否则内层 [..](..) 会被
+    // 链接规则先匹配到
+    auto rewrite_plain = [&](const std::string &s) {
+        std::string r = rewrite(s, kImage, [&expand](const std::smatch &m) {
+            return expand(m[1].str(), m[2].str());
+        });
+        r = rewrite(r, kLink, [&expand](const std::smatch &m) {
+            return expand(m[1].str(), m[2].str());
+        });
+        return rewrite(r, kAutolink, [&expand](const std::smatch &m) {
+            return expand("", m[1].str());
+        });
+    };
+
+    // 行内代码（`...`）是题面里的示例内容，原样保留
+    auto rewrite_line = [&rewrite_plain](const std::string &line) {
+        std::string out;
+        size_t i = 0;
+        while (i < line.size())
+        {
+            const size_t open = line.find('`', i);
+            if (open == std::string::npos)
+            {
+                out += rewrite_plain(line.substr(i));
+                break;
+            }
+            size_t run = 0;
+            while (open + run < line.size() && line[open + run] == '`')
+                ++run;
+            const std::string ticks = line.substr(open, run);
+            const size_t close = line.find(ticks, open + run);
+            if (close == std::string::npos)
+            {
+                // 没有配对的结束反引号：按普通内容处理
+                out += rewrite_plain(line.substr(i));
+                break;
+            }
+            out += rewrite_plain(line.substr(i, open - i));
+            out += line.substr(open, close + run - open);
+            i = close + run;
+        }
+        return out;
+    };
+
+    // 逐行改写，跳过围栏代码块（``` / ~~~）：代码块是题面里的示例内容，
+    // 里面的文本应原样保留
+    std::string out;
+    bool in_fence = false;
+    size_t pos = 0;
+    while (pos < markdown.size())
+    {
+        size_t eol = markdown.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = markdown.size();
+        const std::string line = markdown.substr(pos, eol - pos);
+        const size_t first = line.find_first_not_of(" \t");
+        const bool is_fence =
+            first != std::string::npos &&
+            (line.compare(first, 3, "```") == 0 || line.compare(first, 3, "~~~") == 0);
+        if (is_fence)
+            in_fence = !in_fence;
+        out += (in_fence || is_fence) ? line : rewrite_line(line);
+        if (eol < markdown.size())
+            out += '\n';
+        pos = eol + 1;
+    }
+    return out;
+}
 
 bool luogu::select_problems(const ExportFilter &filter,
                             std::vector<problem::Problem> &problems,

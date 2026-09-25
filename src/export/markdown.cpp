@@ -133,6 +133,15 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
             if (!en.empty()) hint = en;
         }
 
+        // B 站视频在题面里写作 ![](bilibili:221107) 这类图片语法，Markdown 里
+        // 会变成指向 bilibili: 伪协议的坏图；补全为指向视频网页的超链接
+        // （-L 的 --no-bilibili-link 仅对 LaTeX 生效，Markdown 始终输出链接）
+        background = luogu::markdown_bilibili_links(background);
+        description = luogu::markdown_bilibili_links(description);
+        formatI = luogu::markdown_bilibili_links(formatI);
+        formatO = luogu::markdown_bilibili_links(formatO);
+        hint = luogu::markdown_bilibili_links(hint);
+
         std::fputs("---\n\n", out);
         std::fprintf(out, "# %s %s\n\n", p.pid.c_str(), title.c_str());
 

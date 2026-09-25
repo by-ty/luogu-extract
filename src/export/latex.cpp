@@ -1825,6 +1825,15 @@ bool looks_like_url(const std::string &url)
            url.find("://") != std::string::npos;
 }
 
+// 输出用的视频链接目标：洛谷的 B 站视频伪链接（![](bilibili:BVxxx?page=1)）
+// 补全为 https://www.bilibili.com/video/... 的完整网页 URL，其余视频
+// （如 .mp4 直链）原样返回。
+std::string video_link_target(const std::string &url)
+{
+    const std::string full = luogu::bilibili_video_url(url);
+    return full.empty() ? url : full;
+}
+
 // data:image/...;base64,... 这类内嵌数据 URI：xelatex 无法使用，
 // 而且 base64 内容是一整串无空格文本，会让 TeX 段落排版出问题
 // （甚至段错误/卡死），一律跳过
@@ -2223,10 +2232,12 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 return m[0].str();
             if (is_video_url(link_url) || is_video_url(img_url))
             {
-                // --no-bilibili-link：视频 URL 输出为普通文本而非超链接
+                // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时
+                // 视频 URL 输出为普通文本而非超链接
+                const std::string target = video_link_target(link_url);
                 if (g_options && !g_options->bilibili_links)
-                    return protect(escape_latex(link_url));
-                return protect("\\url{" + escape_url(link_url) + "}");
+                    return protect(escape_latex(target));
+                return protect("\\url{" + escape_url(target) + "}");
             }
             // 按缓存文件真实内容判断能否加载，扩展名与内容不符的图片
             // 先经 prepare_cached_image 归一化（修正密度/补扩展名）
@@ -2254,10 +2265,12 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 return m[0].str(); // 不是真正的图片链接，保留原文（转义阶段处理）
             if (is_video_url(url))
             {
-                // --no-bilibili-link：视频 URL 输出为普通文本而非超链接
+                // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时
+                // 视频 URL 输出为普通文本而非超链接
+                const std::string target = video_link_target(url);
                 if (g_options && !g_options->bilibili_links)
-                    return protect(escape_latex(url));
-                return protect("\\url{" + escape_url(url) + "}");
+                    return protect(escape_latex(target));
+                return protect("\\url{" + escape_url(target) + "}");
             }
             // 按缓存文件真实内容判断能否加载：GIF/WebP/SVG/BMP/ICO 等
             // xelatex 无法加载的格式直接跳过；扩展名与内容不符的图片
@@ -2285,18 +2298,21 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             // --no-bilibili-link：链接目标是 bilibili 视频 URL 时只保留链接文字
             if (g_options && !g_options->bilibili_links && is_video_url(m[2].str()))
                 return protect(inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1));
-            return protect("\\href{" + escape_latex(m[2].str()) + "}{" +
+            // B 站视频伪链接补全为完整网页 URL 后作为链接目标
+            return protect("\\href{" + escape_latex(video_link_target(m[2].str())) + "}{" +
                            inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1) + "}");
         });
     }
-    // 6. 自动链接 <https://...>
+    // 6. 自动链接 <https://...> / <bilibili:...>
     {
-        static const std::regex re("<(https?://[^>]+)>");
+        static const std::regex re("<((?:https?://|bilibili:)[^>]+)>");
         s = regex_transform(s, re, [&](const std::smatch &m) {
+            // B 站视频伪链接补全为完整网页 URL
+            const std::string target = video_link_target(m[1].str());
             // --no-bilibili-link：视频 URL 输出为普通文本而非超链接
-            if (g_options && !g_options->bilibili_links && is_video_url(m[1].str()))
-                return protect(escape_latex(m[1].str()));
-            return protect("\\url{" + escape_url(m[1].str()) + "}");
+            if (g_options && !g_options->bilibili_links && is_video_url(target))
+                return protect(escape_latex(target));
+            return protect("\\url{" + escape_url(target) + "}");
         });
     }
     // 7. 粗体
@@ -3460,12 +3476,18 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     // 保持同一缩进，避免作为新段落被额外缩进首行
     if(!tagsalgo.empty() || !tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\noindent\\hspace{5.78pt}标签：";
     // 标签名来自 tags.json / 缓存，可能含 LaTeX 特殊字符（如 %、#、_），
-    // 必须转义后才能放进 \textcolor/\colorbox 参数，否则编译失败或注入宏
-    for(auto &tag : tagsalgo) tag = "\\textcolor{white}{\\colorbox[HTML]{2949b4}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsfrom) tag = "\\textcolor{white}{\\colorbox[HTML]{13c2c2}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsdata) tag = "\\textcolor{white}{\\colorbox[HTML]{3498db}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsarea) tag = "\\textcolor{white}{\\colorbox[HTML]{53c41a}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
-    for(auto &tag : tagsspec) tag = "\\textcolor{white}{\\colorbox[HTML]{f39c11}{\\tagsfonts\\small\\vphantom{涵}" + escape_latex(tag) + "}}";
+    // 必须转义后才能放进 \luogotag 参数，否则编译失败或注入宏。
+    // 徽章统一由 \luogotag 渲染：高度/深度在宏内固定，各标签框完全等高
+    // （背景色与洛谷网页一致：算法蓝、来源青、时间浅蓝、区域绿、特殊橙）
+    auto decorate_tags = [](std::vector<std::string> &tags, const char *color) {
+        for (auto &tag : tags)
+            tag = "\\luogotag{" + std::string(color) + "}{" + escape_latex(tag) + "}";
+    };
+    decorate_tags(tagsalgo, "2949b4");
+    decorate_tags(tagsfrom, "13c2c2");
+    decorate_tags(tagsdata, "3498db");
+    decorate_tags(tagsarea, "53c41a");
+    decorate_tags(tagsspec, "f39c11");
     if(!tagsalgo.empty()) out += join_strings(tagsalgo, " \\ ") + " \\ ";
     if(!tagsfrom.empty()) out += join_strings(tagsfrom, " \\ ") + " \\ ";
     if(!tagsdata.empty()) out += join_strings(tagsdata, " \\ ") + " \\ ";

@@ -25,7 +25,7 @@
   - `--show-difficulty-tags`：显示难度（默认不显示）；
   - `--show-contents-difficulty-tags`：目录中的题目标题按题目难度着色；
   - `--set-font-cover-page` / `--set-font-body-zh-CN` / `--set-font-body-en-US` / `--set-font-body-codes` / `--set-font-title-zh-CN` / `--set-font-title-en-US`：分别设置封面标题、正文中文、正文及题目大标题西文（不含公式）、代码块与正文黑体部分西文、标题中文（大标题、小节、目录与页眉）、标题西文（小节、目录与页眉；大标题西文随正文西文）的字体，参数既可填**系统已安装的字体名称**，也可填**字体文件地址**；
-  - `--no-bilibili-link`：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接）；
+  - `--no-bilibili-link`：题面中的 B 站视频补全为完整网址后输出为普通文本而非超链接（默认超链接）；
   - `--set-cover-title`：自定义封面标题（`-M` 下对应一级标题）。
 - **LaTeX 默认字体方案**：`-L` 生成文档时使用 ctex 宏包的 `fontset=` 机制选择整套中文字体——Windows 用 `fontset=windows`，macOS 用 `fontset=mac`；Linux 在程序运行阶段解析 `/etc/os-release`，Ubuntu / Kubuntu 等 Ubuntu 系列发行版用 `fontset=ubuntu`，其他发行版用 `fontset=fandol`。正文与题目大标题默认使用 fontset 预设的正文字体，小节标题的中文默认使用预设黑体、西文（不含公式）则与代码块使用同一字体。
 - **代码字体回退链**：代码块西文，以及正文中黑体部分的西文，按 **Consolas → Menlo → DejaVu Sans Mono** 的顺序回退（`--set-font-body-codes` 可统一指定该字体）；中文字体仍由 ctex fontset 的黑体方案控制，不受影响。三种等宽字体都不存在时保留 fontspec 默认等宽字体（小标题西文则沿用正文字体）。
@@ -199,7 +199,7 @@ luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 | `--set-font-body-codes <font>` | 仅 `-L` 有效：设置代码块西文，以及正文黑体部分西文的字体（名称或字体文件地址；默认按 `Consolas` → `Menlo` → `DejaVu Sans Mono` 回退） |
 | `--set-font-title-zh-CN <font>` | 仅 `-L` 有效：设置题目大标题、小节标题、目录页标题与每页页眉标题中的中文字体（名称或字体文件地址） |
 | `--set-font-title-en-US <font>` | 仅 `-L` 有效：设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题西文跟随 `--set-font-body-en-US`（名称或字体文件地址） |
-| `--no-bilibili-link` | 仅 `-L` 有效：bilibili 视频 URL 输出为普通文本而非超链接（默认超链接） |
+| `--no-bilibili-link` | 仅 `-L` 有效：题面中的 B 站视频补全为完整网址后输出为普通文本而非超链接（默认超链接） |
 | `--set-cover-title <title>` | 设置封面标题（`-L`，默认 `luogu extract`）或 Markdown 一级标题（`-M`，默认 `洛谷题目导出`） |
 | `-h, --help` | 显示帮助（文本与上表内容一致） |
 | `-V, --version` | 显示项目简介、版本号、版权声明与项目仓库链接；版本号在编译期由 CMake 从 `CMakeLists.txt` 中的 `project(luogu-extract VERSION ...)` 取得；不能与其他参数同时使用 |
@@ -255,7 +255,7 @@ luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
 | 数学公式 | 由 `unicode-math` + `Latin Modern Math` 统一排版 |
 | 表格 | 自动转换洛谷的合并语法（单元格恰为 `^` 时向上合并、恰为 `<` 时向左合并）；表头自动加粗，表头中的公式同样加粗 |
 | 图片 | 只引用缓存中已有的图片，缺失的图片会被跳过而不影响编译；过大的图片自动缩小到版心内，小图片保持原始大小；xelatex 无法加载的格式（GIF/WebP/SVG/BMP/ICO 等）会被跳过 |
-| 视频 | 只输出链接；加 `--no-bilibili-link` 后输出为普通文本 |
+| 视频 | B 站视频补全为 `https://www.bilibili.com/video/...` 的完整网址后输出链接；加 `--no-bilibili-link` 后输出为普通文本 |
 | 难度 | 默认不显示；加 `--show-difficulty-tags` 后在时间限制、内存限制下方显示「难度：<难度>」，`<难度>` 的字体颜色与洛谷网页一致 |
 | 标签 | 默认显示来源、时间、区域、特殊题目标签；加 `--show-algorithm-tags` 后算法标签显示在最前；加 `--no-show-source-tags` 后不显示来源、时间、区域、特殊题目标签；两类标签都不显示时没有「标签」一栏 |
 | 目录 | 目录条目默认可跳转到对应题目；加 `--no-toc-links` 后不带超链接；加 `--show-contents-difficulty-tags` 后目录中的题目标题按难度着色 |
