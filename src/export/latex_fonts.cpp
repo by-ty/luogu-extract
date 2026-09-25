@@ -227,13 +227,12 @@ void write_font_setup(FILE *out, const Options &opt)
     std::fputs("\\newcommand{\\tagsfonts}{}\n", out);
     // 标签徽章统一由 \luogotag{<HTML 背景色>}{<文字>} 渲染。\colorbox 的尺寸由
     // 内容决定，而不同标签文字的高低/下伸部不同（如 Special Judge 的 p、g），
-    // 背景框会高低不一：\vphantom{涵} 把所有徽章的高度统一成一个汉字的字高，
-    // \rule 再统一深度（零宽度、下伸 0.3em），\smash 让文字本身不再影响尺寸。
-    // 三者合起来使所有标签框完全等高；\colorbox 的 \fboxsep 留白足以容纳
-    // 比占位汉字略高的字形与各类下伸部，文字不会被挤出彩色背景。
+    // 背景框会高低不一：\vphantom{涵} 把每个徽章的高度与深度都固定成一个标准
+    // 汉字的字高/字深（不再额外加深），\smash 让文字本身不再影响尺寸，
+    // 各标签框因此完全等高且与汉字标签一样紧凑。\colorbox 的 \fboxsep 留白
+    // 足以容纳比占位汉字略高的字形与各类下伸部，文字不会被挤出彩色背景。
     std::fputs("\\newcommand{\\luogotag}[2]{\\textcolor{white}{\\colorbox[HTML]{#1}{"
-               "\\tagsfonts\\small\\vphantom{涵}\\smash{#2}"
-               "\\rule[-0.3em]{0pt}{0pt}}}}\n",
+               "\\tagsfonts\\small\\vphantom{涵}\\smash{#2}}}}\n",
                out);
 
     // 4. 用户指定的封面 / 标题字体。命令在标题格式中按需展开。

@@ -114,7 +114,8 @@ LaTeX 排版选项（仅在使用 -L 时有效）：
                         设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题
                         西文跟随 --set-font-body-en-US（名称或字体文件地址）
       --no-bilibili-link
-                        bilibili 视频 URL 输出为普通文本而非超链接（默认超链接）
+                        题面中的 B 站视频补全为完整网址后输出为普通文本而非超链接
+                        （默认超链接）
       --set-cover-title <title>
                         设置封面标题（-L，默认 luogu extract）或 Markdown 一级标题
                         （-M，默认 洛谷题目导出）
