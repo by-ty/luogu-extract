@@ -2484,8 +2484,24 @@ bool is_colon_closer(const std::string &t)
     return t.size() >= 3 && t.find_first_not_of(':') == std::string::npos;
 }
 
+// 洛谷的 ::cute-table 指令（「更像 Tuack 的表格」），整行形如：
+//   ::cute-table{tuack}      样式写在花括号里（官方写法）
+//   ::cute-table[]{tuack}    旧写法，花括号挂在空的方括号后
+//   ::cute-table             未写样式
+// 该指令声明紧随其后的表格按 Tuack 风格渲染（指令本身不是内容）；
+// 洛谷网页对 {tuack} / {tuack=N} / {three} 等样式名的渲染结果一致，这里
+// 不做区分，一律按 Tuack 风格处理。不是该指令时返回 false。
+bool is_cute_table_opener(const std::string &t)
+{
+    static const std::regex kCute(
+        R"(^:{2,}\s*cute-table\s*(?:\[[^\]]*\])?\s*(?:\{[^}]*\})?$)",
+        std::regex::icase);
+    return std::regex_match(t, kCute);
+}
+
 // 是否为 ::: 风格块的起始行（:::info / ::::epigraph / :::align{center} 等）：
-// 至少 2 个冒号，且冒号后还有其他内容（::cute-table 也算，其收尾同样是冒号行）
+// 至少 2 个冒号，且冒号后还有其他内容。::cute-table 这类没有收尾行的指令
+// 同样算（它也会打断普通段落），是否为容器请另用 is_cute_table_opener 判断。
 bool is_colon_opener(const std::string &t)
 {
     size_t n = 0;
@@ -2498,6 +2514,8 @@ bool is_colon_opener(const std::string &t)
 // 洛谷的嵌套写法有两种（内层冒号更多，如 :::info 套 ::::info；或内外层都用
 // :::info），收尾行与起始行的冒号数一一对应，因此按“开块 +1 / 收尾 -1”
 // 计数即可正确配对。代码围栏（``` / ~~~）内的 ::: 不是块标记，需要跳过。
+// ::cute-table{tuack} 不是容器（没有配对的收尾行），不能计入嵌套层数，
+// 否则折叠框会找不到自己的收尾行而把后面的内容全部吞进框里。
 // 找不到收尾行（数据残缺）时返回 lines.size()，调用方据此把剩余内容都当块内容。
 size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
 {
@@ -2527,6 +2545,8 @@ size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
                 continue;
             }
         }
+        if (is_cute_table_opener(t))
+            continue; // 不是容器：不影响嵌套层数
         if (is_colon_closer(t))
         {
             if (--depth == 0)
@@ -2722,6 +2742,34 @@ std::vector<MarkdownBlock> scan_markdown_blocks(
             b.rows = rows;
             blocks.push_back(b);
             continue;
+        }
+
+        // ::cute-table 指令 + 紧随其后的表格：整段作为一个表格块（指令与表格
+        // 必须留在同一个块里，否则切块后表格会丢掉 Tuack 样式）
+        if (is_cute_table_opener(t))
+        {
+            size_t j = i + 1;
+            while (j < end && trim(lines[j]).empty())
+                ++j;
+            size_t k = j + 1;
+            while (k < end && trim(lines[k]).empty())
+                ++k;
+            if (j < end && is_table_row(trim(lines[j])) &&
+                k < end && is_table_separator_row(lines[k]))
+            {
+                int rows = 2;
+                i = j;
+                while (i < end && !trim(lines[i]).empty() && is_table_row(lines[i]))
+                {
+                    rows += 2; // 每个表格行按 2 行估算（含行距）
+                    ++i;
+                }
+                b.end = i;
+                b.rows = rows;
+                blocks.push_back(b);
+                continue;
+            }
+            // 指令后面不是表格：按普通段落处理（渲染时指令会被丢弃）
         }
 
         // ::: 块（折叠框 / epigraph / align 等）：整段作为一个块，
@@ -2950,7 +2998,13 @@ bool has_unclosed_paren_or_bracket(const std::string &s)
 // 恰为 "<" 时向左合并单元格（列合并）；合并标记必须是单元格内唯一的纯文本内容。
 // 合并解析保证每个合并区域都是矩形（\multicolumn/\multirow 可表达），
 // 无法表达的交叉/ L 形合并会安全退化为空单元格，保证输出可编译。
-void emit_table(const std::vector<std::string> &rows, std::string &out)
+// tuack = true 时按洛谷「更像 Tuack 的表格」（::cute-table{tuack}）渲染：
+// 表格整体居中、去掉最左与最右两条竖线（列间竖线保留）、表头不加粗，
+// 最上/最下框线加粗，表头下方的框线加粗一档（细于上下框线）；合并语法
+// 支持完全相同。
+// tuack = false 时保持原来的默认样式（四周边框、表头加粗、每行 \hline）。
+void emit_table(const std::vector<std::string> &rows, std::string &out,
+                bool tuack)
 {
     auto split_cells = [](const std::string &row) {
         std::string r = trim(row);
@@ -2984,12 +3038,17 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
     if (col_count == 0)
         return; // 防御：无列时不再输出（正常数据至少 1 列）
 
-    std::string spec = "|";
+    // 列规格：默认样式带左右外框线（首尾的 '|'）与列间竖线；Tuack 样式只去掉
+    // 表格最左与最右那两条竖线——开头的 '|' 即最左框线，末列的 '|' 即最右框线，
+    // 两者去掉、列间竖线全部保留
+    std::string spec;
+    if (!tuack)
+        spec += '|';
     std::vector<char> col_types;
     col_types.reserve(col_count);
-    for (const auto &a : align_row)
+    for (size_t c = 0; c < col_count; ++c)
     {
-        const std::string t = trim(a);
+        const std::string t = trim(align_row[c]);
         char type;
         if (t.size() >= 3 && t.front() == ':' && t.back() == ':')
             type = 'c';
@@ -3000,7 +3059,10 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
         else
             type = 'l';
         spec += type;
-        spec += '|';
+        // 每列后面的 '|'：默认样式一律保留（末列的是最右框线）；
+        // Tuack 样式只在后面还有列时保留（即只留列间竖线）
+        if (!tuack || c + 1 < col_count)
+            spec += '|';
         col_types.push_back(type);
     }
 
@@ -3142,7 +3204,12 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
     };
 
     // ---- 渲染 ----
-    out += "\\begin{tabular}{" + spec + "}\n\\hline\n";
+    // Tuack 风格的表格整体居中；默认样式不加 center，保持原有排版
+    if (tuack)
+        out += "\\begin{center}\n";
+    out += "\\begin{tabular}{" + spec + "}\n";
+    // 最上框线：默认样式是普通 \hline，Tuack 样式加粗
+    out += tuack ? "\\luogotuackheavyrule\n" : "\\hline\n";
     for (size_t r = 0; r < row_count; ++r)
     {
         for (size_t c = 0; c < col_count; ++c)
@@ -3164,6 +3231,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
                 // 第一列（无左邻列）自己补上；其余位置左侧竖线由左邻列右侧
                 // 的竖线负责绘制，补上会把同一条线画成双线。右侧竖线只在
                 // 右邻列不属于同一合并矩形（或本列已是末列）时补上。
+                // Tuack 样式没有最左/最右框线，这两处竖线同样不补。
                 if (in_rect[r][c] &&
                     !(vend[r][c] > static_cast<long>(r) &&
                       hend[r][c] > static_cast<long>(c)) &&
@@ -3174,10 +3242,13 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
                         rect_left[r][c + 1] == rect_left[r][c] &&
                         rect_right[r][c + 1] == rect_right[r][c];
                     std::string mspec;
-                    if (c == 0)
+                    if (!tuack && c == 0)
                         mspec += '|';
                     mspec += col_types[c];
-                    if (c + 1 == col_count || !right_same_rect)
+                    // 右侧竖线：末列的是表格最右框线（Tuack 样式不画），
+                    // 其余位置是合并矩形右边界处的列间竖线（保留）
+                    if (tuack ? (c + 1 < col_count && !right_same_rect)
+                              : (c + 1 == col_count || !right_same_rect))
                         mspec += '|';
                     out += "\\multicolumn{1}{" + mspec + "}{}";
                 }
@@ -3190,8 +3261,9 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
             if (hend[r][c] >= 0)
                 hlen = static_cast<size_t>(hend[r][c]) - c + 1;
             std::string content = inline_to_latex(cell);
-            // 表头（表格第一行）加粗：\luogotablehead 同时加粗文字与公式
-            if (r == 0 && !content.empty())
+            // 表头（表格第一行）加粗：\luogotablehead 同时加粗文字与公式。
+            // Tuack 样式的表头不加粗（与洛谷「更像 Tuack 的表格」一致）
+            if (r == 0 && !tuack && !content.empty())
                 content = "\\luogotablehead{" + content + "}";
             if (vlen > 1)
                 content = "\\multirow{" + std::to_string(vlen) + "}{*}{" +
@@ -3199,13 +3271,16 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
             if (hlen > 1)
             {
                 // \multicolumn 的对齐规格只允许一个列类型：取被合并范围内
-                // 第一列的对齐方式；保留首列左侧竖线（表格首列时）与合并区域
-                // 右侧的竖线，列间竖线按 LaTeX 惯例省略
+                // 第一列的对齐方式；默认样式保留首列左侧竖线（表格首列时）
+                // 与合并区域右侧的竖线，列间竖线按 LaTeX 惯例省略；
+                // Tuack 样式没有最左/最右框线，只在合并区域右侧还有列时
+                // 保留右侧的列间竖线
                 std::string mspec;
-                if (c == 0)
+                if (!tuack && c == 0)
                     mspec += '|';
                 mspec += col_types[c];
-                mspec += '|';
+                if (!tuack || c + hlen < col_count)
+                    mspec += '|';
                 content = "\\multicolumn{" + std::to_string(hlen) + "}{" +
                           mspec + "}{" + content + "}";
             }
@@ -3213,7 +3288,10 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
         }
 
         // 行分隔线：跳过合并单元格内部（合并单元格不应被横线穿过）。
-        // 无合并的表格保持原来的 \hline 输出
+        // 无合并的表格保持原来的 \hline 输出；Tuack 样式的最上、最下框线
+        // 加粗，表头下方那条加粗一档（细于上下框线），其余行仍是普通 \hline。
+        // 分隔线被合并单元格挡住时（如 ^ 把表头与下面的行合并）只能退化为
+        // \cline 分段，此时保持默认粗细。
         bool any_blocked = false;
         for (size_t c = 0; c < col_count && !any_blocked; ++c)
         {
@@ -3222,7 +3300,15 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
         }
         if (!any_blocked)
         {
-            out += " \\\\\n\\hline\n";
+            std::string rule = "\\hline";
+            if (tuack)
+            {
+                if (r + 1 == row_count)
+                    rule = "\\luogotuackheavyrule"; // 最下框线
+                else if (r == 0)
+                    rule = "\\luogotuackmidrule"; // 表头下方框线
+            }
+            out += " \\\\\n" + rule + "\n";
         }
         else
         {
@@ -3246,7 +3332,10 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
             out += "\n";
         }
     }
-    out += "\\end{tabular}\n\n";
+    out += "\\end{tabular}\n";
+    if (tuack)
+        out += "\\end{center}\n";
+    out += "\n";
 }
 
 // 键存在但为 null 时按缺省处理（多语言字段）
@@ -3430,6 +3519,9 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
 
     std::string out;
     std::vector<std::string> env_stack; // 自定义块环境栈（quote/center/flushright）
+    // 上一行是 ::cute-table 指令：紧随其后的表格按 Tuack 样式渲染
+    // （指令与表格之间允许空行；被其他内容“消费”后即失效）
+    bool cute_table_pending = false;
 
     char fence = 0;        // 当前代码围栏字符（` 或 ~），0 表示不在代码块内
     size_t fence_len = 0;
@@ -3478,6 +3570,11 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
             ++i;
             continue;
         }
+
+        // 本行生效的表格样式：::cute-table 指令只作用于紧随其后的那个表格，
+        // 中间允许空行；这里先取走标记，其他内容自然把它作废
+        const bool cute_table = cute_table_pending;
+        cute_table_pending = false;
 
         // ---- 打开代码块（``` 或 ~~~）----
         if (line.size() >= 3 && (line[0] == '`' || line[0] == '~'))
@@ -3541,8 +3638,10 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
         }
 
         // ---- Luogu 扩展块：折叠框 / cute-table / align / epigraph 等 ----
-        if (line.rfind("::cute-table", 0) == 0)
+        // ::cute-table{tuack}：不是内容，只声明后面的表格用 Tuack 风格
+        if (is_cute_table_opener(line))
         {
+            cute_table_pending = true;
             ++i;
             continue;
         }
@@ -3882,7 +3981,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
                     ++i;
                 }
                 if (rows.size() >= 2)
-                    emit_table(rows, out);
+                    emit_table(rows, out, cute_table);
                 else
                     for (const auto &r : rows)
                         out += inline_to_latex(r) + "\n\n";
@@ -4234,6 +4333,15 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\setmathfont[version=bold, FakeBold=2]{Latin Modern Math}\n", out);
     // 表格表头：\textbf 加粗文字，\boldmath 切换上面定义的粗体数学版本
     std::fputs("\\newcommand{\\luogotablehead}[1]{\\textbf{\\boldmath #1}}\n", out);
+    // ::cute-table{tuack}（洛谷「更像 Tuack 的表格」）的框线：去掉表格最左、
+    // 最右两条竖线（列间竖线保留），最上、最下框线加粗
+    // （\luogotuackheavyrule），表头下方那条加粗一档但细于上下框线
+    // （\luogotuackmidrule），其余行仍用普通 \hline。
+    // 直接改 \arrayrulewidth 会让所有框线一起变粗，因此用 \noalign{\hrule
+    // height ...} 单独指定：不必引入 booktabs，也不会像 booktabs 那样在
+    // 框线上下额外留出竖直间距。
+    std::fputs("\\newcommand{\\luogotuackheavyrule}{\\noalign{\\hrule height 1.8pt}}\n", out);
+    std::fputs("\\newcommand{\\luogotuackmidrule}{\\noalign{\\hrule height 1.0pt}}\n", out);
     std::fputs("\\newcommand{\\bm}{\\symbfit}\n", out);
     std::fputs("\\renewcommand{\\boldsymbol}{\\symbfit}\n", out);
     std::fputs("\\usepackage{xcolor}\n", out);
