@@ -50,6 +50,12 @@ namespace latex
         // 置为 true；默认 false，即黑色）。与 display.difficulty 相互独立。
         bool toc_difficulty = false;
 
+        // 题目之间、文章（题解）之间是否分页（--paginate 置为 true；
+        // 默认 false，即连续排版）。开启后每道题、每篇文章都从新的一页
+        // 开始，只在两次写入之间插入 \newpage：不写 \addcontentsline、
+        // 也不生成书签，因此目录与 PDF 书签完全不受影响。
+        bool paginate = false;
+
         // 下载题面图片时是否忽略缓存中已有的图片、全部重新下载
         // （-RD, --new-download 置为 true；默认 false 即已有图片直接跳过）。
         // 新图片先下载到缓存目录中的临时文件，校验通过后再原子替换缓存中的

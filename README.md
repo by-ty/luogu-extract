@@ -30,6 +30,7 @@
   - `--no-toc-links`：目录条目不带跳转到对应题目页的超链接（默认带超链接）；
   - `--toc-backlinks`：每页页眉的页码变成跳回目录页的超链接（默认无超链接）；
   - `--show-contents-difficulty-tags`：目录中的题目标题按题目难度着色；
+  - `--paginate`：题目与题解（文章）之间分页——一道题目/文章结束后另起一页写下一篇（默认连续排版）；只在题目、文章之间插入换页命令，目录条目与 PDF 书签不受影响；
   - `--set-font-cover-page` / `--set-font-body-zh-CN` / `--set-font-body-en-US` / `--set-font-body-codes` / `--set-font-title-zh-CN` / `--set-font-title-en-US`：分别设置封面标题、正文中文、正文及题目大标题西文（不含公式）、代码块与正文黑体部分西文、标题中文（大标题、小节、目录与页眉）、标题西文（小节、目录与页眉；大标题西文随正文西文）的字体，参数既可填**系统已安装的字体名称**，也可填**字体文件地址**；
   - `--no-bilibili-link`：题面中的 B 站视频补全为完整网址后输出为普通文本而非超链接（默认超链接）；
   - `--set-cover-title`：自定义封面标题（`-M` 下对应一级标题）。
@@ -157,6 +158,15 @@ luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
 # 22. 只用保存站（第三方镜像）获取题解正文；该来源不发送任何 Cookie
 luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
     --solution-source save --output 题册.tex
+
+# 23. 分页排版：一道题目/文章结束后另起一页写下一篇
+#     （题解同样分页，目录与 PDF 书签不受影响）
+luogu-extract -L --tag 动态规划 --paginate --output 分页题册.tex
+
+# 24. 题解分页且紧跟各自题目
+luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
+    --with-solutions --solution-placement per-problem \
+    --paginate --output 分页题册.tex
 ```
 
 ### 参数说明
@@ -185,6 +195,7 @@ luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
 | `--no-toc-links` | 仅 `-L` 有效：目录条目不带跳转到对应题目页的超链接（默认带超链接） |
 | `--toc-backlinks` | 仅 `-L` 有效：每页页眉处的页码为跳回目录页的超链接（默认无超链接） |
 | `--show-contents-difficulty-tags` | 仅 `-L` 有效：目录中的题目标题按难度着色 |
+| `--paginate` | 仅 `-L` 有效：题目与题解（文章）之间分页，每道题、每篇文章都从新的一页开始（默认连续排版） |
 | `--set-font-cover-page <font>` | 仅 `-L` 有效：设置封面标题字体；`<font>` 为系统已安装的字体名称或字体文件地址 |
 | `--set-font-body-zh-CN <font>` | 仅 `-L` 有效：设置题面正文中文字符的字体（名称或字体文件地址） |
 | `--set-font-body-en-US <font>` | 仅 `-L` 有效：设置题面正文及题目大标题中的西文字符字体（名称或字体文件地址；不作用于公式） |

@@ -4326,6 +4326,14 @@ std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
     std::string out;
     out += "\\luogotocsolution{" + toc_text + "}{" + heading_latex + "}{" + anchor +
            "}{" + button + "}\n\n";
+    // 页眉：每篇题解都把自己的标题写进 \rightmark，逻辑与题目页一致
+    // （题目由 \section 设置页眉）。页眉取「本页第一个 \markright」并在
+    // 无标记的续页沿用，因此题解页显示的是这一篇题解的标题，而不是题面
+    // 最后一道题或所属题目的题目名；同一页上开始多篇时显示最先开始的那篇。
+    // \rightmark 是纯文本页眉：标题与题目页眉一样做「转义 + 去数学」处理
+    // （页眉里不放公式）；\markright 不写 \addcontentsline、也不生成书签，
+    // 目录与 PDF 书签不受影响。
+    out += "\\markright{" + escape_latex(strip_math_for_bookmark(heading_plain)) + "}\n";
 
     // 元信息（--no-solution-meta 关闭原文链接）
     if (sol_opt.solution_meta)
@@ -4644,6 +4652,13 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // \luogotag 完全一致（白字 + \colorbox[HTML]，\vphantom{涵} 与 \smash
     // 固定高度与深度，多个按钮完全等高）。文字是编译期常量（查看题解 /
     // 返回题目），不涉及用户输入。
+    // 按钮字体统一跟随正文：\normalfont 把西文字族与 CJK 字体族一起复位到
+    // 文档默认值（\setmainfont 指定的正文西文、\setCJKmainfont /
+    // ctex fontset 指定的正文中文；xeCJK 给 \normalfont 挂了钩子，会把
+    // CJK 字体族切回 \CJKfamilydefault）。「查看题解」嵌在 \section 标题里、
+    // 「返回题目」嵌在 \subsection* 标题里，都会继承标题字体
+    // （--set-font-title-* / 黑体 + 代码块西文），必须在宏内部显式复位，
+    // 否则两个按钮会各自跟着所在标题的字体走。
     //
     // \luogotocsolution{#1}{#2}{#3}{#4}：
     //   #1 = 目录与 PDF 书签的文字（纯文本，已转义；空串表示不进目录）
@@ -4657,7 +4672,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     {
         std::fputs("\\newcommand{\\luogosolutionlink}[2]{%\n", out);
         std::fputs("  \\hyperlink{#1}{\\textcolor{white}{\\colorbox[HTML]{3498db}{"
-                   "\\tagsfonts\\small\\vphantom{涵}\\smash{#2}}}}\n", out);
+                   "\\normalfont\\tagsfonts\\small\\vphantom{涵}\\smash{#2}}}}\n", out);
         std::fputs("}\n", out);
         std::fputs("\\newcommand{\\luogotocsolution}[4]{%\n", out);
         std::fputs("  \\phantomsection\n", out);
@@ -4953,6 +4968,19 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         return true;
     };
 
+    // --paginate：题目与文章（题解）分页——每道题、每篇文章都从新的一页开始，
+    // 即在两次写入之间插入 \newpage（正文第一个元素之前不插：目录末尾已经
+    // \newpage 换页了，题解区之前也已经 \clearpage）。
+    // \newpage 只结束当前页：不写 \addcontentsline、也不生成书签，因此目录
+    // 条目与 PDF 书签与不分页时完全一致（这是本参数「不影响目录与书签」的
+    // 实现方式）。未开启 --paginate 时 body_started 只是记录状态，
+    // 生成的文档与启用前逐字节相同。
+    bool body_started = false;
+    auto page_break = [&]() {
+        if (opt.paginate && body_started)
+            std::fputs("\\newpage\n", out);
+    };
+
     int cnt = 0;
     const int total = static_cast<int>(problems.size());
     for (const auto &p : problems)
@@ -4970,17 +4998,23 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 
         if (!solutions_only)
         {
+            page_break(); // 上一道题（含其题解）结束后另起一页
             if (!write_body(problem_to_latex(p, opt_lang, first_lid)))
                 return false;
             std::fputs("\n", out);
+            body_started = true;
         }
 
         // --solution-placement per-problem：题解紧跟对应题目
         if (per_problem && set)
         {
             for (const auto &view : set->solutions)
+            {
+                page_break(); // 上一道题或上一篇文章结束后另起一页
                 if (!write_body(solution_to_latex(*set, view, opt.solution_export)))
                     return false;
+                body_started = true;
+            }
         }
 
         ++cnt;
@@ -4999,11 +5033,16 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         // 题解区不再另起一个与目录同级的一级标题：直接从新的一页开始，
         // 每题一组，组标题与普通题目同为 \section 级（\section* 不进目录）
         std::fputs("\\clearpage\n", out);
+        // \clearpage 之后已经是一张新页：分组标题不必再换一次页
+        body_started = false;
         for (const auto &item : opt.solutions->items)
         {
             if (item.solutions.empty())
                 continue; // 该题无可用题解：不生成小节（也就不产生死链）
             const std::string group_title = item.pid + " " + item.problem_title;
+            // 分页时：上一组题解结束后另起一页；组标题与其下第一篇题解同页，
+            // 组内其余篇目各自另起一页（组标题单独占一页没有意义）
+            page_break();
             if (!write_body("\\section*{" + escape_latex(group_title) + "}\n"))
                 return false;
             // \section* 不会自动生成书签：补一个顶层（第 0 层）书签，
@@ -5011,9 +5050,20 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
             if (!write_body("\\pdfbookmark[0]{" + escape_latex(group_title) +
                             "}{solgroup-" + item.pid + "}\n"))
                 return false;
+            // 页眉不在这里设置：每篇题解自己用 \markright 写页眉
+            // （见 solution_to_latex），组标题只是分组用的 \section*，
+            // 和题解页页眉显示的「这一篇题解的标题」互不干扰。
+            body_started = true;
+            bool first_article = true;
             for (const auto &view : item.solutions)
+            {
+                if (!first_article)
+                    page_break(); // 上一篇文章结束后另起一页
                 if (!write_body(solution_to_latex(item, view, opt.solution_export)))
                     return false;
+                body_started = true;
+                first_article = false;
+            }
         }
         std::fputs("\n", out);
     }

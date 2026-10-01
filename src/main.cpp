@@ -84,6 +84,8 @@ struct Options
     bool show_difficulty_tags = false;  // --show-difficulty-tags：显示题目难度
     // --show-contents-difficulty-tags：目录中的题目标题按难度着色（仅 -L）
     bool show_contents_difficulty_tags = false;
+    // --paginate：题目之间、文章（题解）之间分页（仅 -L）
+    bool paginate = false;
     std::string font_cover;         // --set-font-cover-page（仅 -L）
     std::string font_body_zh;       // --set-font-body-zh-CN（仅 -L）
     std::string font_body_en;       // --set-font-body-en-US（仅 -L）
@@ -139,6 +141,7 @@ enum
     OPT_SHOW_ALGORITHM_TAGS,
     OPT_SHOW_DIFFICULTY_TAGS,
     OPT_SHOW_CONTENTS_DIFFICULTY_TAGS,
+    OPT_PAGINATE,
     OPT_FONT_COVER,
     OPT_FONT_BODY_ZH,
     OPT_FONT_BODY_EN,
@@ -234,8 +237,7 @@ inline std::string option_argument_hint(const std::string &token)
     return "";
 }
 
-// -h, --help 的帮助信息。文本与 README.md「参数说明」表格保持一致，
-// 新增参数时请同步更新 README.md。
+// -h, --help 的帮助信息
 const char *kUsage =
     "用法：luogu-extract [选项]\n"
     "\n"
@@ -288,6 +290,8 @@ const char *kUsage =
     "      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）\n"
     "      --show-contents-difficulty-tags\n"
     "                        目录中的题目标题按题目难度着色\n"
+    "      --paginate        题目与题解各自从新的一页开始（默认连续排版；\n"
+    "                        不影响目录与 PDF 书签）\n"
     "      --set-font-cover-page <font>\n"
     "                        设置封面标题字体；<font> 为系统已安装的字体名称或字体文件地址\n"
     "      --set-font-body-zh-CN <font>\n"
@@ -370,7 +374,7 @@ const char *kUsage =
     "  -V, --version         显示项目简介、版本号、版权声明与项目仓库链接\n"
     "                        （不能与其他参数同时使用）\n"
     "\n"
-    "合规提示：\n"
+    "声明：\n"
     "  题解著作权归原作者，导出物仅供个人离线阅读，请勿再分发或用于商业用途；\n"
     "  抓取频率与请求总量由你自行判断，后果自负；保存站 luogu.me 为第三方站点；\n"
     "  请遵守洛谷用户协议及相关法律法规。\n";
@@ -997,6 +1001,7 @@ int main(int argc, char *argv[])
         {"show-algorithm-tags",  no_argument,       nullptr, OPT_SHOW_ALGORITHM_TAGS},
         {"show-difficulty-tags", no_argument,       nullptr, OPT_SHOW_DIFFICULTY_TAGS},
         {"show-contents-difficulty-tags", no_argument, nullptr, OPT_SHOW_CONTENTS_DIFFICULTY_TAGS},
+        {"paginate",             no_argument,       nullptr, OPT_PAGINATE},
         {"set-font-cover-page",  required_argument, nullptr, OPT_FONT_COVER},
         {"set-font-body-zh-CN",  required_argument, nullptr, OPT_FONT_BODY_ZH},
         {"set-font-body-en-US",  required_argument, nullptr, OPT_FONT_BODY_EN},
@@ -1338,6 +1343,9 @@ int main(int argc, char *argv[])
         case OPT_SHOW_CONTENTS_DIFFICULTY_TAGS:
             options.show_contents_difficulty_tags = true;
             break;
+        case OPT_PAGINATE:
+            options.paginate = true;
+            break;
         case OPT_NO_BILIBILI_LINK:
             options.no_bilibili_link = true;
             break;
@@ -1586,6 +1594,7 @@ int main(int argc, char *argv[])
         if (options.no_toc_links) latex_only.push_back("--no-toc-links");
         if (options.toc_backlinks) latex_only.push_back("--toc-backlinks");
         if (options.show_contents_difficulty_tags) latex_only.push_back("--show-contents-difficulty-tags");
+        if (options.paginate) latex_only.push_back("--paginate");
         if (!options.font_cover.empty()) latex_only.push_back("--set-font-cover-page");
         if (!options.font_body_zh.empty()) latex_only.push_back("--set-font-body-zh-CN");
         if (!options.font_body_en.empty()) latex_only.push_back("--set-font-body-en-US");
@@ -1801,6 +1810,8 @@ int main(int argc, char *argv[])
         latex_opt.bilibili_links = !options.no_bilibili_link;
         latex_opt.display = display;
         latex_opt.toc_difficulty = options.show_contents_difficulty_tags;
+        // --paginate：题目之间、文章（题解）之间分页
+        latex_opt.paginate = options.paginate;
         // -RD, --new-download：下载题面图片时忽略已有缓存，全部重新下载
         // （新图片原子替换缓存中的同名图片，下载失败时保留原有缓存）
         latex_opt.new_download = options.new_download;
