@@ -155,49 +155,50 @@ bool is_temp_name(const std::string &name)
 }
 } // namespace
 
-std::filesystem::path solcache::solutions_dir()
+std::filesystem::path solcache::articles_dir()
 {
-    return crawler::get_cache_dir() / "solutions";
+    return crawler::get_cache_dir() / "articles";
 }
 
-std::filesystem::path solcache::list_path(const std::string &pid)
+std::filesystem::path solcache::solutions_index_path()
 {
-    return solutions_dir() / pid / "list.json";
+    return crawler::get_cache_dir() / "solutions.ndjson";
 }
 
-std::filesystem::path solcache::doc_path(const std::string &pid, const std::string &lid,
-                                         solution::Source src)
+std::filesystem::path solcache::article_path(const std::string &lid,
+                                             solution::Source src)
 {
-    return solutions_dir() / pid /
-           (lid + "." + solution::source_key(src) + ".json");
+    return articles_dir() / (lid + "." + solution::source_key(src) + ".json");
 }
 
-bool solcache::load_list(const std::string &pid, ListEntry &out)
+// 把一行 JSON 解析成列表缓存条目；该行不是本题目的记录时返回 false，
+// 结构非法时置 bad = true（调用方据此按「未命中」处理）
+bool parse_list_line(const std::string &line, const std::string &pid,
+                     solcache::ListEntry &out, bool &bad)
 {
-    out = ListEntry();
-    if (!safe_pid(pid))
-        return false;
-
-    std::string text;
-    if (!read_file(list_path(pid), text) || text.empty())
-        return false;
-
+    bad = false;
     json root;
     try
     {
-        root = json::parse(text);
+        root = json::parse(line);
     }
     catch (const std::exception &)
     {
-        return false; // 结构非法 → 视为未命中并重抓
-    }
-    if (!root.is_object() || int_value(root, "version") != 1)
+        bad = true;
         return false;
-    if (!root.contains("items") || !root["items"].is_array())
+    }
+    if (!root.is_object() || int_value(root, "version") != 1 ||
+        !root.contains("items") || !root["items"].is_array())
+    {
+        bad = true;
+        return false;
+    }
+    const std::string line_pid = str_value(root, "pid");
+    if (!safe_pid(line_pid) || line_pid != pid)
         return false;
 
     out.version = 1;
-    out.pid = safe_pid(str_value(root, "pid")) ? str_value(root, "pid") : pid;
+    out.pid = line_pid;
     out.fetched_at = ll_value(root, "fetched_at");
     out.etag = str_value(root, "etag");
     out.total_available = int_value(root, "total_available");
@@ -208,25 +209,25 @@ bool solcache::load_list(const std::string &pid, ListEntry &out)
     {
         if (!item.is_object())
             continue;
-        solution::Summary s;
-        s.lid = str_value(item, "lid");
-        if (!solution::valid_lid(s.lid))
+        solution::Summary sm;
+        sm.lid = str_value(item, "lid");
+        if (!solution::valid_lid(sm.lid))
             continue; // 缓存被篡改时同样按白名单过滤
-        s.title = str_value(item, "title");
-        s.author_uid = int_value(item, "author_uid");
-        s.author_name = str_value(item, "author_name");
-        s.time = ll_value(item, "time");
-        s.upvote = int_value(item, "upvote");
-        s.reply_count = int_value(item, "reply_count");
-        s.favor_count = int_value(item, "favor_count");
-        s.category = int_value(item, "category");
-        s.solution_type = int_value(item, "solution_type");
-        s.promote_status = int_value(item, "promote_status");
-        s.difficulty = int_value(item, "difficulty");
-        s.page = int_value(item, "page");
-        if (s.page <= 0)
-            s.page = 1;
-        out.items.push_back(std::move(s));
+        sm.title = str_value(item, "title");
+        sm.author_uid = int_value(item, "author_uid");
+        sm.author_name = str_value(item, "author_name");
+        sm.time = ll_value(item, "time");
+        sm.upvote = int_value(item, "upvote");
+        sm.reply_count = int_value(item, "reply_count");
+        sm.favor_count = int_value(item, "favor_count");
+        sm.category = int_value(item, "category");
+        sm.solution_type = int_value(item, "solution_type");
+        sm.promote_status = int_value(item, "promote_status");
+        sm.difficulty = int_value(item, "difficulty");
+        sm.page = int_value(item, "page");
+        if (sm.page <= 0)
+            sm.page = 1;
+        out.items.push_back(std::move(sm));
     }
     if (out.per_page <= 0)
         out.per_page = 10;
@@ -235,15 +236,9 @@ bool solcache::load_list(const std::string &pid, ListEntry &out)
     return true;
 }
 
-bool solcache::store_list(const ListEntry &entry, std::string &error)
+// 把列表缓存条目序列化成 solutions.ndjson 的一行
+json list_entry_json(const solcache::ListEntry &entry)
 {
-    error.clear();
-    if (!safe_pid(entry.pid))
-    {
-        error = "题目编号 '" + entry.pid + "' 不合法，拒绝写入题解缓存";
-        return false;
-    }
-
     json root = json::object();
     root["version"] = 1;
     root["pid"] = entry.pid;
@@ -274,7 +269,87 @@ bool solcache::store_list(const ListEntry &entry, std::string &error)
         items.push_back(std::move(item));
     }
     root["items"] = std::move(items);
-    return write_file_atomic(list_path(entry.pid), root.dump(2) + "\n", error);
+    return root;
+}
+
+// 按行拆分 NDJSON（忽略空行；不保留行尾换行）
+std::vector<std::string> split_index_lines(const std::string &text)
+{
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start < text.size())
+    {
+        const size_t nl = text.find('\n', start);
+        std::string line = (nl == std::string::npos) ? text.substr(start)
+                                                     : text.substr(start, nl - start);
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (!line.empty() && line.find_first_not_of(" \t") != std::string::npos)
+            lines.push_back(line);
+        if (nl == std::string::npos)
+            break;
+        start = nl + 1;
+    }
+    return lines;
+}
+
+bool solcache::load_list(const std::string &pid, ListEntry &out)
+{
+    out = ListEntry();
+    if (!safe_pid(pid))
+        return false;
+
+    std::string text;
+    if (!read_file(solutions_index_path(), text) || text.empty())
+        return false;
+
+    for (const std::string &line : split_index_lines(text))
+    {
+        ListEntry entry;
+        bool bad = false;
+        if (parse_list_line(line, pid, entry, bad))
+        {
+            out = std::move(entry);
+            return true;
+        }
+        if (bad)
+            return false; // 该行结构非法：按未命中处理并重抓
+    }
+    return false;
+}
+
+bool solcache::store_list(const ListEntry &entry, std::string &error)
+{
+    error.clear();
+    if (!safe_pid(entry.pid))
+    {
+        error = "题目编号 '" + entry.pid + "' 不合法，拒绝写入题解缓存";
+        return false;
+    }
+
+    // 读入现有各行（结构非法的行在重写时丢弃，自愈残留的半截记录），
+    // 替换本题目那一行后整体原子替换：一个题目一行，不会重复
+    std::vector<std::string> lines;
+    std::string text;
+    const std::filesystem::path path = solutions_index_path();
+    if (read_file(path, text) && !text.empty())
+    {
+        for (const std::string &line : split_index_lines(text))
+        {
+            bool bad = false;
+            ListEntry existing;
+            parse_list_line(line, entry.pid, existing, bad);
+            if (bad || existing.pid == entry.pid)
+                continue; // 丢弃坏行与本题目旧记录
+            lines.push_back(line);
+        }
+    }
+    lines.push_back(list_entry_json(entry).dump());
+
+    std::string data;
+    for (const std::string &line : lines)
+        data += line + "\n";
+    return write_file_atomic(path, data, error);
 }
 
 bool solcache::load_doc(const std::string &pid, const std::string &lid,
@@ -285,7 +360,7 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
         return false;
 
     std::string text;
-    if (!read_file(doc_path(pid, lid, src), text) || text.empty())
+    if (!read_file(article_path(lid, src), text) || text.empty())
         return false;
 
     json root;
@@ -309,10 +384,14 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
     const std::string stored_lid = str_value(root, "lid");
     if (!stored_lid.empty() && stored_lid != lid)
         return false;
+    // 正文缓存按文章编号存放（不再按题目分目录），题目编号必须与请求一致
+    const std::string stored_pid = str_value(root, "pid");
+    if (!stored_pid.empty() && stored_pid != pid)
+        return false;
 
     out.version = 1;
     out.lid = lid;
-    out.pid = pid;
+    out.pid = stored_pid.empty() ? pid : stored_pid;
     out.source = solution::source_key(src);
     out.fetched_at = ll_value(root, "fetched_at");
     out.etag = str_value(root, "etag");
@@ -367,9 +446,9 @@ bool solcache::store_doc(const DocEntry &entry, std::string &error)
     root["content_full"] = entry.content_full;
     root["url"] = entry.url;
     root["content"] = entry.content;
-    return write_file_atomic(doc_path(entry.pid, entry.lid, entry.source == "save"
-                                                                   ? solution::Source::Save
-                                                                   : solution::Source::Official),
+    return write_file_atomic(article_path(entry.lid, entry.source == "save"
+                                                          ? solution::Source::Save
+                                                          : solution::Source::Official),
                              root.dump(2) + "\n", error);
 }
 
@@ -388,65 +467,110 @@ bool solcache::is_fresh(long long fetched_at, int ttl_days)
     return now - fetched_at <= ttl;
 }
 
-void solcache::cleanup_stale_temp_files()
+namespace
+{
+// 删除目录里（含子目录）超过 1 小时的 .tmp.* 残留
+void remove_stale_temps(const std::filesystem::path &root, bool recursive)
 {
     std::error_code ec;
-    const std::filesystem::path root = solutions_dir();
     if (!std::filesystem::exists(root, ec) || ec)
         return;
 
-    const auto now = std::chrono::steady_clock::now();
+    auto handle = [](const std::filesystem::directory_entry &entry) {
+        std::error_code file_ec;
+        if (!entry.is_regular_file(file_ec) || file_ec)
+            return;
+        const std::string name = luogu::compat::path_to_utf8(entry.path().filename());
+        if (!is_temp_name(name))
+            return;
+        std::error_code time_ec;
+        const auto write_time = std::filesystem::last_write_time(entry.path(), time_ec);
+        if (time_ec)
+            return;
+        // last_write_time 的时钟与 steady_clock 不同源：用 file_time_type 的
+        // 当前时间做比较（同一时钟域）
+        const auto file_now = std::filesystem::file_time_type::clock::now();
+        if (file_now - write_time > std::chrono::hours(1))
+            std::filesystem::remove(entry.path(), time_ec);
+    };
+
+    if (!recursive)
+    {
+        for (std::filesystem::directory_iterator it(root, ec), end; it != end;
+             it.increment(ec))
+        {
+            if (ec)
+                break;
+            handle(*it);
+        }
+        return;
+    }
     for (std::filesystem::recursive_directory_iterator it(root, ec), end; it != end;
          it.increment(ec))
     {
         if (ec)
             break;
-        if (!it->is_regular_file(ec) || ec)
-            continue;
-        const std::string name = luogu::compat::path_to_utf8(it->path().filename());
-        if (!is_temp_name(name))
-            continue;
-        std::error_code time_ec;
-        const auto write_time = std::filesystem::last_write_time(it->path(), time_ec);
-        if (time_ec)
-            continue;
-        // last_write_time 的时钟与 steady_clock 不同源：用 file_time_type 的
-        // 当前时间做比较（同一时钟域）
-        const auto file_now = std::filesystem::file_time_type::clock::now();
-        const auto age = file_now - write_time;
-        if (age > std::chrono::hours(1))
-            std::filesystem::remove(it->path(), time_ec);
+        handle(*it);
     }
-    (void)now;
+}
+} // namespace
+
+void solcache::cleanup_stale_temp_files()
+{
+    // 正文缓存的临时文件在 articles/ 里（递归），题解列表的临时文件在
+    // 缓存目录根下（solutions.ndjson.tmp.*，只看这一层）
+    remove_stale_temps(articles_dir(), true);
+    remove_stale_temps(solutions_index_path().parent_path(), false);
 }
 
 std::uintmax_t solcache::cache_size()
 {
     std::error_code ec;
     std::uintmax_t total = 0;
-    const std::filesystem::path root = solutions_dir();
-    if (!std::filesystem::exists(root, ec) || ec)
-        return 0;
-    for (std::filesystem::recursive_directory_iterator it(root, ec), end; it != end;
-         it.increment(ec))
+    const std::filesystem::path root = articles_dir();
+    if (std::filesystem::exists(root, ec) && !ec)
     {
-        if (ec)
-            break;
-        std::error_code file_ec;
-        if (it->is_regular_file(file_ec) && !file_ec)
-            total += it->file_size(file_ec);
+        for (std::filesystem::recursive_directory_iterator it(root, ec), end;
+             it != end; it.increment(ec))
+        {
+            if (ec)
+                break;
+            std::error_code file_ec;
+            if (it->is_regular_file(file_ec) && !file_ec)
+                total += it->file_size(file_ec);
+        }
     }
+    std::error_code index_ec;
+    const std::filesystem::path index = solutions_index_path();
+    if (std::filesystem::exists(index, index_ec) && !index_ec)
+        total += std::filesystem::file_size(index, index_ec);
     return total;
 }
 
 crawler::derror solcache::clean_solutions()
 {
+    // -CS, --clean-solutions：只清除题解列表缓存（solutions.ndjson）
     std::error_code ec;
-    std::filesystem::remove_all(solutions_dir(), ec);
+    std::filesystem::remove(solutions_index_path(), ec);
     if (ec)
     {
-        print_error("无法删除题解缓存目录 '" +
-                    luogu::compat::path_to_utf8(solutions_dir()) + "'：" + ec.message());
+        print_error("无法删除题解列表缓存 '" +
+                    luogu::compat::path_to_utf8(solutions_index_path()) +
+                    "'：" + ec.message());
+        return crawler::CANT_REMOVE_FILE;
+    }
+    return crawler::SUCCESS;
+}
+
+crawler::derror solcache::clean_articles()
+{
+    // -CA, --clean-articles：只清除题解正文缓存（articles/ 目录）
+    std::error_code ec;
+    std::filesystem::remove_all(articles_dir(), ec);
+    if (ec)
+    {
+        print_error("无法删除题解正文缓存目录 '" +
+                    luogu::compat::path_to_utf8(articles_dir()) + "'：" + ec.message());
         return crawler::CANT_REMOVE_FILE;
     }
     return crawler::SUCCESS;

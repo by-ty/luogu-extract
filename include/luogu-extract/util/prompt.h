@@ -76,7 +76,7 @@ namespace prompt
         int confirmations = 0;         // 本档需要的确认次数（已扣除 --yes）
         long long problems = 0;        // 选中题目数
         int per_problem = 1;           // 每题篇数上限（all 时为 all_limit）
-        bool per_problem_all = false;  // --max-solutions all
+        bool per_problem_all = false;  // --max-articles all
         long long articles = 0;        // 本次实际待抓正文篇数 N（不含已命中缓存）
         long long cached_articles = 0; // 已命中缓存的篇数
         long long list_requests = 0;   // 需要重新获取列表的题目数 P

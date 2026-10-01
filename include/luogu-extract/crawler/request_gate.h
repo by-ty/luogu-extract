@@ -38,7 +38,7 @@
 
 namespace crawler
 {
-    /// 请求类别：只有题解相关请求受 --solution-delay 控制
+    /// 请求类别：只有题解相关请求受 --request-delay 控制
     enum class RequestClass
     {
         SolutionList,    // 题解列表接口（含分页）
@@ -57,14 +57,14 @@ namespace crawler
     };
     const Endpoints &endpoints();
 
-    /// --solution-delay 解析结果（毫秒）
+    /// --request-delay 解析结果（毫秒）
     struct DelaySpec
     {
         long min_ms = 3500;
         long max_ms = 6500;
     };
 
-    /// 解析 --solution-delay 的值：
+    /// 解析 --request-delay 的值：
     /// "5"（均值，实际为 ±30% 均匀抖动）、"2.5"（支持小数）、
     /// "8-15"（显式闭区间，不做均值换算）。
     /// 校验：必须为正数；区间需满足 0 < min ≤ max；单项上限 300 秒。

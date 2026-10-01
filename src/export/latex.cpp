@@ -4486,9 +4486,9 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     //   方括号里的短标题只用于目录与书签（与原本 \texorpdfstring 的
     //   书签备用串一致），按钮只出现在正文标题行右侧。
     const bool solutions_enabled = opt.solution_export.enabled &&
-                                   !opt.solution_export.solutions_only;
+                                   !opt.solution_export.articles_only;
     const bool with_button = solutions_enabled &&
-                             opt.solution_export.problem_to_solution_link &&
+                             opt.solution_export.problem_to_article_link &&
                              !first_solution_lid.empty();
     const std::string section_short =
         escape_latex(strip_math_for_bookmark(section_title));
@@ -4635,13 +4635,13 @@ std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
     // 目录与书签文字：注明所属题目（PID + 题目名），保持黑色（不随难度着色）
     std::string toc_text = escape_latex(heading_plain) + "（" +
                            escape_latex(set.pid + " " + set.problem_title) + "）";
-    if (!sol_opt.solution_toc)
+    if (!sol_opt.article_toc)
         toc_text.clear();
 
     const std::string anchor = luogu::solution_anchor(set.pid, view.lid);
 
     std::string button;
-    if (sol_opt.solution_to_problem_link && !sol_opt.solutions_only)
+    if (sol_opt.article_to_problem_link && !sol_opt.articles_only)
         button = "\\hfill\\luogosolutionlink{" +
                  luogu::problem_anchor(set.pid) + "}{返回题目}";
 
@@ -4657,8 +4657,8 @@ std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
     // 目录与 PDF 书签不受影响。
     out += "\\markright{" + escape_latex(strip_math_for_bookmark(heading_plain)) + "}\n";
 
-    // 元信息（--no-solution-meta 关闭原文链接）
-    if (sol_opt.solution_meta)
+    // 元信息（--no-article-meta 关闭原文链接）
+    if (sol_opt.article_meta)
     {
         out += "\\noindent{\\small 来源：" + escape_latex(view.source_name) +
                "　原文：\\href{" + escape_url(view.source_url) + "}{" +
@@ -4716,15 +4716,15 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 
     // ---- 题解导出（设计 §十）----
     const bool export_solutions = opt.solutions != nullptr && opt.solution_export.enabled;
-    const bool solutions_only = export_solutions && opt.solution_export.solutions_only;
+    const bool articles_only = export_solutions && opt.solution_export.articles_only;
     const bool per_problem = export_solutions && !opt.solution_export.document_end;
-    if (export_solutions && solutions_only &&
-        (opt.solution_export.problem_to_solution_link ||
-         opt.solution_export.solution_to_problem_link))
+    if (export_solutions && articles_only &&
+        (opt.solution_export.problem_to_article_link ||
+         opt.solution_export.article_to_problem_link))
     {
-        // --solutions-only 不导出题面，双向跳转按钮会指向不存在的锚点：
+        // --articles-only 不导出题面，双向跳转按钮会指向不存在的锚点：
         // 自动关闭以避免死链（只提示一次）
-        std::printf("提示：--solutions-only 模式下不导出题面，"
+        std::printf("提示：--articles-only 模式下不导出题面，"
                     "已关闭题目与题解之间的双向跳转按钮（避免死链）。\n");
     }
 
@@ -4738,7 +4738,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         std::error_code ec;
         // 题面与题解正文中引用的图片一并处理（题解图片同样走现有的
         // 图片下载通道：洛谷图床串行 + 0.5~3 秒随机间隔，不受
-        // --solution-delay 影响）
+        // --request-delay 影响）
         std::vector<std::string> candidate_urls;
         for (const auto &p : problems)
             for (const auto &url : p.image_urls())
@@ -5313,12 +5313,12 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         // 题目标题行右侧的「查看题解」按钮：固定指向该题第一篇题解
         // （同题题解连续排列，这是按钮指向可靠的前提）
         std::string first_lid;
-        if (export_solutions && !solutions_only &&
-            opt.solution_export.problem_to_solution_link && set &&
+        if (export_solutions && !articles_only &&
+            opt.solution_export.problem_to_article_link && set &&
             !set->solutions.empty())
             first_lid = set->solutions.front().lid;
 
-        if (!solutions_only)
+        if (!articles_only)
         {
             page_break(); // 上一道题（含其题解）结束后另起一页
             if (!write_body(problem_to_latex(p, opt_lang, first_lid)))
@@ -5327,7 +5327,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
             body_started = true;
         }
 
-        // --solution-placement per-problem：题解紧跟对应题目
+        // --article-placement per-problem：题解紧跟对应题目
         if (per_problem && set)
         {
             for (const auto &view : set->solutions)
@@ -5348,7 +5348,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         }
     }
 
-    // --solution-placement document-end（默认）：题解统一置于文档最后，
+    // --article-placement document-end（默认）：题解统一置于文档最后，
     // 每题一组、同题题解连续排列
     if (export_solutions && !per_problem)
     {

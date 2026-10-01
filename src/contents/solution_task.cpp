@@ -51,16 +51,16 @@ void print_warning(const std::string &message)
 long long now_seconds() { return static_cast<long long>(std::time(nullptr)); }
 
 // 该题本次打算抓取的篇数（含已命中缓存的部分）。
-// all（max_solutions < 0）没有任何篇数上限：列表已知时就是全部可用篇数；
+// all（max_articles < 0）没有任何篇数上限：列表已知时就是全部可用篇数；
 // 列表未知时按一页（10 篇）估算，仅用于给请求闸门一个初步的延时系数——
 // all 模式下计划阶段会把列表抓全，随后用精确值重新计算。
-int wanted_count(int max_solutions, int available, bool known)
+int wanted_count(int max_articles, int available, bool known)
 {
-    if (max_solutions < 0)
+    if (max_articles < 0)
         return known ? available : 10;
     if (known)
-        return std::min(max_solutions, available);
-    return max_solutions;
+        return std::min(max_articles, available);
+    return max_articles;
 }
 
 // 正文缓存是否可直接使用（未过期且完整、未要求强制刷新）。
@@ -124,7 +124,7 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
             {
                 // 计划阶段就把列表抓回来（受请求闸门控制）：
                 // 这样「实际待抓正文篇数」在风险确认前就是精确值
-                const int need = (opt.max_solutions < 0) ? -1 : opt.max_solutions;
+                const int need = (opt.max_articles < 0) ? -1 : opt.max_articles;
                 const std::string etag = has_cache ? cached.etag : std::string();
                 ListFetch fetched = fetch_list(p.pid, need, etag);
 
@@ -164,7 +164,7 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
 
         item.available = static_cast<int>(item.list_items.size());
         item.no_solution = item.list_known && item.list_items.empty();
-        item.wanted = wanted_count(opt.max_solutions, item.available, item.list_known);
+        item.wanted = wanted_count(opt.max_articles, item.available, item.list_known);
 
         // 逐篇计划：判定缓存命中（auto 模式下两个来源都算，优先原站），
         // 需要抓取的按来源轮流分配站点
@@ -664,7 +664,7 @@ void auto_worker(AutoContext &ctx, int site)
                     warning = "    题解 " + task.summary.lid + " 抓取失败：" +
                               outcome.error;
                     if (site == 1)
-                        warning += "；可用 --solution-source official 改用原站";
+                        warning += "；可用 --article-source official 改用原站";
                     break;
                 default:
                     break;
@@ -917,7 +917,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                 std::string hint = "    题解 " + summary.lid + " 抓取失败：" +
                                    outcome.error;
                 if (site == Source::Save)
-                    hint += "；可用 --solution-source official 改用原站";
+                    hint += "；可用 --article-source official 改用原站";
                 print_warning(hint);
                 bucket_state[pi][ai] = 2;
                 continue;
@@ -949,7 +949,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     {
         error = "题解正文全部抓取失败（" + std::to_string(stats.failed) + " 篇）";
         if (opt.source == Source::Save)
-            error += "；保存站请求失败，可用 --solution-source official 改用原站";
+            error += "；保存站请求失败，可用 --article-source official 改用原站";
         return false;
     }
 

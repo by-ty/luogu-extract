@@ -24,7 +24,7 @@
 // 三条硬约束（设计 §三）：
 // 1. 题解列表接口需要登录态，--cookie 是启用题解功能的前提；
 // 2. 题解列表恒取洛谷原站（保存站没有等价的「题目 → 题解列表」入口），
-//    --solution-source 只决定正文来源；
+//    --article-source 只决定正文来源；
 // 3. 列表一律走 JSON 接口，程序不解析任何题解列表页面的 HTML DOM。
 #ifndef LUOGU_EXTRACT_CONTENTS_SOLUTION_H
 #define LUOGU_EXTRACT_CONTENTS_SOLUTION_H

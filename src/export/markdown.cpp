@@ -89,7 +89,7 @@ std::vector<std::string> visible_tags(const std::vector<std::string> &tags,
 // 输出一篇题解（Markdown 侧，设计 §10.4）：
 // - 显式 HTML 锚点：中文标题的自动锚点在不同渲染器下不一致，必须显式指定；
 // - 题解 → 题目 的「返回题目」与 题目 → 题解 的「查看题解」两个开关独立；
-// - 元信息块（来源 / 原文）由 --no-solution-meta 关闭；
+// - 元信息块（来源 / 原文）由 --no-article-meta 关闭；
 // - 正文按洛谷 Markdown 原文输出（Markdown 侧既有语义）。
 bool write_markdown_solution(FILE *out,
                              const std::function<bool(const std::string &)> &write_str,
@@ -102,10 +102,10 @@ bool write_markdown_solution(FILE *out,
     std::fprintf(out, "<a id=\"%s\"></a>\n\n",
                  luogu::solution_anchor(pid, view.lid).c_str());
     std::fprintf(out, "### %s\n\n", luogu::solution_heading(view.title).c_str());
-    if (opt.solution_to_problem_link)
+    if (opt.article_to_problem_link)
         std::fprintf(out, "<a href=\"#%s\">返回题目</a>\n\n",
                      luogu::problem_anchor(pid).c_str());
-    if (opt.solution_meta)
+    if (opt.article_meta)
     {
         std::fprintf(out, "> 来源：%s\n", view.source_name.c_str());
         std::fprintf(out, "> 原文：%s\n\n", view.source_url.c_str());
@@ -245,7 +245,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         // （中文标题的自动锚点在不同 Markdown 渲染器下不一致，必须显式指定）
         const luogu::ProblemSolutionSet *sol_set =
             with_solutions ? solutions->find(p.pid) : nullptr;
-        if (with_solutions && solution_export.problem_to_solution_link && sol_set &&
+        if (with_solutions && solution_export.problem_to_article_link && sol_set &&
             !sol_set->solutions.empty())
         {
             const std::string anchor = luogu::solution_anchor(
@@ -342,7 +342,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
             std::fputs("\n\n", out);
         }
 
-        // --solution-placement per-problem：该题的题解紧跟题面之后
+        // --article-placement per-problem：该题的题解紧跟题面之后
         if (with_solutions && !solution_export.document_end && sol_set)
         {
             for (const auto &view : sol_set->solutions)
@@ -354,7 +354,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         }
     }
 
-    // --solution-placement document-end（默认）：题解统一置于文档最后，
+    // --article-placement document-end（默认）：题解统一置于文档最后，
     // 每题一组、同题题解连续排列
     if (with_solutions && solution_export.document_end)
     {

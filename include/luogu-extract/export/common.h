@@ -192,16 +192,16 @@ namespace luogu
         }
     };
 
-    // 题解导出的位置与开关（--solution-placement 与各 --no-solution-* 参数）
+    // 题解导出的位置与开关（--article-placement 与各 --no-article-* 参数）
     struct SolutionExportOptions
     {
         bool enabled = false;              // 是否导出题解
         bool document_end = true;          // true = document-end；false = per-problem
-        bool solutions_only = false;       // --solutions-only：只导出题解
-        bool problem_to_solution_link = true; // 「查看题解」按钮（仅 -L）
-        bool solution_to_problem_link = true; // 「返回题目」按钮（仅 -L）
-        bool solution_toc = true;          // 题解标题进目录（仅 -L）
-        bool solution_meta = true;         // 显示来源与原文链接
+        bool articles_only = false;        // --articles-only：只导出题解
+        bool problem_to_article_link = true; // 「查看题解」按钮（仅 -L）
+        bool article_to_problem_link = true; // 「返回题目」按钮（仅 -L）
+        bool article_toc = true;           // 题解标题进目录（仅 -L）
+        bool article_meta = true;          // 显示来源与原文链接
     };
 
     // 去掉题解标题开头与「题解：」重复的前缀：洛谷题解的标题常自带

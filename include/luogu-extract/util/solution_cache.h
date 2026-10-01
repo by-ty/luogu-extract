@@ -19,10 +19,15 @@
 // License for more details.
 
 // include/luogu-extract/util/solution_cache.h
-// 题解缓存：<cache_dir>/solutions/<PID>/list.json 与
-// <cache_dir>/solutions/<PID>/<lid>.<source>.json
+// 题解缓存：
+//   <cache_dir>/solutions.ndjson                  所有已获取到的题解列表
+//                                                 （一行一个题目）
+//   <cache_dir>/articles/<lid>.<source>.json      单篇题解正文
 //
-// - 正文缓存按来源入键（official / save）：两个来源的正文可能不一致，
+// - 题解列表集中在 solutions.ndjson 里：读取时按 pid 找对应行，写入时替换
+//   该行后整体原子替换，一个题目一行、不会重复；
+// - 正文直接按文章编号入键（不再按题目分目录；文章编号全局唯一），
+//   并按来源分别入键（official / save）：两个来源的正文可能不一致，
 //   切换来源时另一来源视为未命中；
 // - 一律「临时文件（同目录）+ fsync + 原子替换」，写入失败或中断时
 //   原缓存保持不变，进程被杀最多残留 .tmp.*，不会产生半截 JSON；
@@ -39,7 +44,7 @@
 
 namespace solcache
 {
-    /// 题解列表缓存（<cache_dir>/solutions/<PID>/list.json）
+    /// 题解列表缓存（<cache_dir>/solutions.ndjson 中的一行）
     struct ListEntry
     {
         int version = 1;
@@ -52,7 +57,7 @@ namespace solcache
         std::vector<solution::Summary> items;
     };
 
-    /// 单篇题解正文缓存（<cache_dir>/solutions/<PID>/<lid>.<source>.json）
+    /// 单篇题解正文缓存（<cache_dir>/articles/<lid>.<source>.json）
     struct DocEntry
     {
         int version = 1;
@@ -69,23 +74,24 @@ namespace solcache
         std::string url;   // 原文地址（来源为保存站时指向保存站）
     };
 
-    /// <cache_dir>/solutions/
-    std::filesystem::path solutions_dir();
+    /// <cache_dir>/articles/
+    std::filesystem::path articles_dir();
 
-    /// <cache_dir>/solutions/<PID>/list.json
-    std::filesystem::path list_path(const std::string &pid);
+    /// <cache_dir>/solutions.ndjson
+    std::filesystem::path solutions_index_path();
 
-    /// <cache_dir>/solutions/<PID>/<lid>.<source>.json
-    std::filesystem::path doc_path(const std::string &pid, const std::string &lid,
-                                   solution::Source src);
+    /// <cache_dir>/articles/<lid>.<source>.json
+    std::filesystem::path article_path(const std::string &lid, solution::Source src);
 
-    /// 读取列表缓存；文件不存在、结构非法或字段类型不符时返回 false
+    /// 读取某个题目的题解列表缓存；文件中没有该题目、结构非法或字段类型
+    /// 不符时返回 false
     bool load_list(const std::string &pid, ListEntry &out);
 
-    /// 写入列表缓存（原子替换）；失败时原缓存保持不变
+    /// 写入某个题目的题解列表缓存（替换 solutions.ndjson 中该题目那一行，
+    /// 其余行原样保留，整体原子替换）；失败时原缓存保持不变
     bool store_list(const ListEntry &entry, std::string &error);
 
-    /// 读取正文缓存
+    /// 读取正文缓存（pid 只用于校验缓存里的题目编号是否一致）
     bool load_doc(const std::string &pid, const std::string &lid,
                   solution::Source src, DocEntry &out);
 
@@ -101,12 +107,16 @@ namespace solcache
     /// 清理超过 1 小时的 .tmp.* 残留（进程被杀时可能留下）
     void cleanup_stale_temp_files();
 
-    /// 题解缓存占用的字节数（用于结束时打印）
+    /// 题解缓存（articles/ 与 solutions.ndjson）占用的字节数
     std::uintmax_t cache_size();
 
-    /// 清空题解缓存：删除 <cache_dir>/solutions/ 目录；
-    /// 目录不存在时视为已清空
+    /// -CS, --clean-solutions：删除题解列表缓存 <cache_dir>/solutions.ndjson；
+    /// 文件不存在时视为已清空
     crawler::derror clean_solutions();
+
+    /// -CA, --clean-articles：删除题解正文缓存目录 <cache_dir>/articles/；
+    /// 目录不存在时视为已清空
+    crawler::derror clean_articles();
 } // namespace solcache
 
 #endif // LUOGU_EXTRACT_UTIL_SOLUTION_CACHE_H

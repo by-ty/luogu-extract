@@ -329,8 +329,8 @@ bool crawler::parse_delay_spec(const std::string &spec, DelaySpec &out, std::str
     const std::string value = trim(spec);
     if (value.empty())
     {
-        error = "参数 '--solution-delay' 后缺少间隔秒数；正确用法："
-                "--solution-delay <平均秒数>（如 5）或 --solution-delay <最小>-<最大>"
+        error = "参数 '--request-delay' 后缺少间隔秒数；正确用法："
+                "--request-delay <平均秒数>（如 5）或 --request-delay <最小>-<最大>"
                 "（如 8-15）";
         return false;
     }
@@ -355,8 +355,8 @@ bool crawler::parse_delay_spec(const std::string &spec, DelaySpec &out, std::str
         double mean = 0.0;
         if (!parse_seconds(value, mean))
         {
-            error = "参数 '--solution-delay' 的值 '" + spec +
-                    "' 不是合法的秒数；正确用法：--solution-delay <平均秒数>"
+            error = "参数 '--request-delay' 的值 '" + spec +
+                    "' 不是合法的秒数；正确用法：--request-delay <平均秒数>"
                     "（正数，可带小数，如 5 或 2.5）";
             return false;
         }
@@ -371,15 +371,15 @@ bool crawler::parse_delay_spec(const std::string &spec, DelaySpec &out, std::str
         if (b.find('-') != std::string::npos || !parse_seconds(a, lo) ||
             !parse_seconds(b, hi))
         {
-            error = "参数 '--solution-delay' 的值 '" + spec +
-                    "' 不是合法的区间；正确用法：--solution-delay <最小>-<最大>"
+            error = "参数 '--request-delay' 的值 '" + spec +
+                    "' 不是合法的区间；正确用法：--request-delay <最小>-<最大>"
                     "（如 8-15，两端均为正数且最小不超过最大）";
             return false;
         }
         if (lo > hi)
         {
-            error = "参数 '--solution-delay' 的区间左端点不能大于右端点（'" + spec +
-                    "'）；正确用法：--solution-delay <最小>-<最大>（如 8-15）";
+            error = "参数 '--request-delay' 的区间左端点不能大于右端点（'" + spec +
+                    "'）；正确用法：--request-delay <最小>-<最大>（如 8-15）";
             return false;
         }
     }
@@ -387,9 +387,9 @@ bool crawler::parse_delay_spec(const std::string &spec, DelaySpec &out, std::str
     const double kMaxSeconds = 300.0;
     if (hi > kMaxSeconds)
     {
-        error = "参数 '--solution-delay' 的间隔上限为 300 秒，'" + spec +
-                "' 超过上限；正确用法：--solution-delay 5 或 "
-                "--solution-delay 8-15（单次间隔不超过 300 秒）";
+        error = "参数 '--request-delay' 的间隔上限为 300 秒，'" + spec +
+                "' 超过上限；正确用法：--request-delay 5 或 "
+                "--request-delay 8-15（单次间隔不超过 300 秒）";
         return false;
     }
 
