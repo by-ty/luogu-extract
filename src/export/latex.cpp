@@ -2213,6 +2213,100 @@ void merge_adjacent_math(std::string &s,
     s = std::move(out);
 }
 
+// ---- 下划线形式的强调（Markdown 的 _斜体_ / __粗体__）----
+// 洛谷的 remark 渲染器按 CommonMark 处理下划线强调，但下划线也是标识符、
+// 文件名里最常见的字符，直接全局配对会把 foo_bar_baz、a_1_b 弄坏。这里按
+// CommonMark 对 _ 的 flanking 规则判断定界符：开定界符的前一个字符不能是
+// 「词字符」，收定界符的后一个字符不能是「词字符」，位于词内部的下划线
+// 因此保持原样（最终按普通下划线转义成 \_）。
+
+// 取 pos 处（必须是 UTF-8 字符的起始字节）的码点，len 返回其字节数
+unsigned int utf8_codepoint_at(const std::string &s, size_t pos, size_t &len)
+{
+    const unsigned char c = static_cast<unsigned char>(s[pos]);
+    if (c < 0x80) { len = 1; return c; }
+    size_t n = 1;
+    unsigned int cp = 0;
+    if ((c & 0xE0) == 0xC0) { cp = c & 0x1Fu; n = 2; }
+    else if ((c & 0xF0) == 0xE0) { cp = c & 0x0Fu; n = 3; }
+    else if ((c & 0xF8) == 0xF0) { cp = c & 0x07u; n = 4; }
+    else { len = 1; return c; } // 非法起始字节：按单字节处理
+    if (pos + n > s.size()) { len = 1; return c; }
+    for (size_t k = 1; k < n; ++k)
+    {
+        const unsigned char cc = static_cast<unsigned char>(s[pos + k]);
+        if ((cc & 0xC0) != 0x80) { len = 1; return c; } // 截断序列：按单字节处理
+        cp = (cp << 6) | (cc & 0x3Fu);
+    }
+    len = n;
+    return cp;
+}
+
+// pos 之前那个字符的起始字节位置（pos == 0 时返回 npos）
+size_t utf8_prev_pos(const std::string &s, size_t pos)
+{
+    if (pos == 0)
+        return std::string::npos;
+    size_t k = pos - 1;
+    while (k > 0 && (static_cast<unsigned char>(s[k]) & 0xC0) == 0x80)
+        --k;
+    return k;
+}
+
+// 码点是否算「词字符」：ASCII 字母/数字/下划线、汉字、假名、全角字母数字等。
+// 常见标点区（通用标点、CJK 标点、全角标点）不算，否则「（_斜体_）」这类
+// 写法会被误判成词内下划线而不转换。
+bool is_word_codepoint(unsigned int cp)
+{
+    if (cp < 0x80)
+        return (cp >= '0' && cp <= '9') || (cp >= 'A' && cp <= 'Z') ||
+               (cp >= 'a' && cp <= 'z') || cp == '_';
+    if ((cp >= 0x2000 && cp <= 0x206F) ||  // 通用标点（—…“”‘’等）
+        (cp >= 0x3000 && cp <= 0x303F) ||  // CJK 标点（、。《》「」等）
+        (cp >= 0xFE30 && cp <= 0xFE4F) ||  // CJK 兼容形式
+        (cp >= 0xFF01 && cp <= 0xFF0F) ||  // 全角标点（！＂＃…）
+        (cp >= 0xFF1A && cp <= 0xFF20) ||  // ：；＜＝＞？＠
+        (cp >= 0xFF3B && cp <= 0xFF40) ||  // ［＼］＾＿｀
+        (cp >= 0xFF5B && cp <= 0xFF65))    // ｛｜｝～｟｠｡｢…
+        return false;
+    return true;
+}
+
+// 码点是否为空白（含全角空格 U+3000）
+bool is_space_codepoint(unsigned int cp)
+{
+    return cp == 0x3000 ||
+           (cp < 0x80 && std::isspace(static_cast<unsigned char>(cp)) != 0);
+}
+
+// 下划线强调定界符判断：s 中从 pos 开始的 run 个 '_' 能否作为开定界符
+bool underscore_can_open(const std::string &s, size_t pos, size_t run)
+{
+    if (pos + run >= s.size()) // 后面没有内容（不能以定界符结尾）
+        return false;
+    size_t len = 0;
+    if (is_space_codepoint(utf8_codepoint_at(s, pos + run, len)))
+        return false;
+    if (pos == 0)
+        return true;
+    const size_t prev = utf8_prev_pos(s, pos);
+    return !is_word_codepoint(utf8_codepoint_at(s, prev, len));
+}
+
+// s 中从 pos 开始的 run 个 '_' 能否作为收定界符
+bool underscore_can_close(const std::string &s, size_t pos, size_t run)
+{
+    if (pos == 0)
+        return false;
+    size_t len = 0;
+    const size_t prev = utf8_prev_pos(s, pos);
+    if (is_space_codepoint(utf8_codepoint_at(s, prev, len)))
+        return false;
+    if (pos + run >= s.size())
+        return true;
+    return !is_word_codepoint(utf8_codepoint_at(s, pos + run, len));
+}
+
 std::string inline_to_latex_impl(const std::string &text, std::vector<std::string> &raws,
                                  std::vector<bool> &is_math, int depth)
 {
@@ -2374,12 +2468,67 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             return protect("\\textbf{" + inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1) + "}");
         });
     }
-    // 8. 斜体（下划线形式的斜体不转换，避免误伤标识符中的 _）
+    // 8. 斜体
     {
         static const std::regex re("\\*([^*]+)\\*");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             return protect("\\textit{" + inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1) + "}");
         });
+    }
+    // 8.5 下划线形式的粗体/斜体（__粗体__ / _斜体_）
+    //     只在成对下划线位于词边界时转换（见 underscore_can_open/close），
+    //     标识符里的下划线保持原样；内层内容递归转换，因此 _a **b** c_、
+    //     _含 $x$ 的公式_ 都能正确嵌套
+    {
+        std::string t;
+        size_t i = 0;
+        while (i < s.size())
+        {
+            if (s[i] != '_')
+            {
+                t += s[i++];
+                continue;
+            }
+            size_t run = 1;
+            while (i + run < s.size() && s[i + run] == '_')
+                ++run;
+            // 只处理 1~2 个下划线（___x___ 之类不常见，按普通字符保留）
+            size_t close = std::string::npos;
+            size_t close_run = 0;
+            if (run <= 2 && underscore_can_open(s, i, run))
+            {
+                size_t j = i + run;
+                while (j < s.size())
+                {
+                    if (s[j] == '_')
+                    {
+                        size_t m = 1;
+                        while (j + m < s.size() && s[j + m] == '_')
+                            ++m;
+                        if (m == run && underscore_can_close(s, j, m))
+                        {
+                            close = j;
+                            close_run = m;
+                            break;
+                        }
+                        j += m;
+                        continue;
+                    }
+                    ++j;
+                }
+            }
+            if (close != std::string::npos)
+            {
+                const std::string inner = s.substr(i + run, close - i - run);
+                const std::string cmd = (run == 2) ? "\\textbf{" : "\\textit{";
+                t += protect(cmd + inline_to_latex_impl(inner, raws, is_math, depth + 1) + "}");
+                i = close + close_run;
+                continue;
+            }
+            t.append(run, '_'); // 不构成强调：保持原样，最后统一转义成 \_
+            i += run;
+        }
+        s = std::move(t);
     }
     // 9. 删除线
     {
@@ -2562,6 +2711,73 @@ bool is_colon_opener(const std::string &t)
     return n >= 2 && n < t.size();
 }
 
+// 洛谷的 remark-directive 指令：
+//   :::name[label]{attrs}   容器 Directive（冒号至少 3 个，有配对的收尾行）
+//   ::name[label]{attrs}    叶子 Directive（冒号恰好 2 个，没有收尾行）
+// name 为字母开头的标识符，[label] 与 {attrs} 都可省略、顺序不限。
+// 已知的容器类型有折叠框（info/success/warning/error）、epigraph、align{...}；
+// 未知类型的容器同样要按容器处理（丢掉指令行本身、内容照常渲染），
+// 否则 :::name 会原样显示在文档里、配对的收尾行还会吃掉后面的环境。
+struct ColonDirective
+{
+    size_t colons = 0; // 冒号个数（>=2）
+    std::string name;  // 指令名（小写）
+    std::string label; // [label] 的内容（可空）
+    std::string attrs; // {attrs} 的内容（可空）
+};
+
+bool parse_colon_directive(const std::string &line, ColonDirective &out)
+{
+    static const std::regex kDirective(
+        R"(^\s*(:{2,})\s*([A-Za-z][A-Za-z0-9_-]*)(.*)$)");
+    std::smatch m;
+    if (!std::regex_match(line, m, kDirective))
+        return false;
+    out = ColonDirective();
+    out.colons = m[1].str().size();
+    out.name = to_lower_ascii(m[2].str());
+
+    // 指令名之后只允许出现 [label] 与 {attrs}（各至多一个，顺序不限）；
+    // 出现别的内容说明这一行不是指令（例如正文里的「:: 注意」），保持原样
+    std::string rest = trim(m[3].str());
+    while (!rest.empty())
+    {
+        const char open = rest[0];
+        if (open != '[' && open != '{')
+            return false;
+        const char close = (open == '[') ? ']' : '}';
+        const size_t end = rest.find(close);
+        if (end == std::string::npos)
+            return false;
+        std::string &slot = (open == '[') ? out.label : out.attrs;
+        if (slot.empty())
+            slot = trim(rest.substr(1, end - 1));
+        rest = trim(rest.substr(end + 1));
+    }
+    return true;
+}
+
+// 是否为容器指令（:::name，有配对的收尾行）。叶子指令（::name）没有收尾行，
+// 不能计入嵌套层数，否则会找不到配对的收尾行。
+bool is_container_directive(const std::string &line)
+{
+    ColonDirective dir;
+    return parse_colon_directive(line, dir) && dir.colons >= 3;
+}
+
+// 自定义块环境栈的一层：
+// - env 为空：该容器不输出 LaTeX 环境（未知指令，epigraph 的 list 自己给全
+//   开合标签）；
+// - close_extra：收尾时先于 \end{env} 输出的内容（epigraph 的横线与署名行）；
+// - quote_like：容器内的小标题按普通粗体排版，不生成 \section（引文区只有
+//   2/5 版心宽，套一个真正的大标题会很难看）。
+struct EnvFrame
+{
+    std::string env;
+    std::string close_extra;
+    bool quote_like = false;
+};
+
 // 从起始行 open_idx 之后找到与之配对的收尾行（整行冒号行）并返回其下标。
 // 洛谷的嵌套写法有两种（内层冒号更多，如 :::info 套 ::::info；或内外层都用
 // :::info），收尾行与起始行的冒号数一一对应，因此按“开块 +1 / 收尾 -1”
@@ -2604,9 +2820,9 @@ size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
             if (--depth == 0)
                 return k;
         }
-        else if (is_colon_opener(t))
+        else if (is_container_directive(t))
         {
-            ++depth;
+            ++depth; // 叶子指令（::name）没有收尾行，不计入层数
         }
     }
     return lines.size();
@@ -2826,7 +3042,7 @@ std::vector<MarkdownBlock> scan_markdown_blocks(
 
         // ::: 块（折叠框 / epigraph / align 等）：整段作为一个块，
         // 块内是嵌套折叠框时把它的估算高度一并计入
-        if (is_colon_opener(t))
+        if (is_container_directive(t))
         {
             const size_t closer = find_block_closer(lines, i);
             const size_t inner_end = closer < end ? closer : end;
@@ -3404,6 +3620,11 @@ std::string safe_string(const nlohmann::json &j, const char *key)
 std::string fence_to_listings_lang(std::string tag)
 {
     tag = to_lower_ascii(trim(tag));
+    // 围栏信息串可能带洛谷的附加选项（```cpp line-numbers、```python title=...），
+    // 语言标记是其中的第一个词，其余选项忽略（行号由 lstset 统一开启）
+    const size_t space = tag.find_first_of(" \t");
+    if (space != std::string::npos)
+        tag = tag.substr(0, space);
     if (tag.empty() || tag == "text" || tag == "plain" || tag == "none" ||
         tag == "txt" || tag == "console" || tag == "output" ||
         tag == "input" || tag == "markdown" || tag == "md" ||
@@ -3528,6 +3749,24 @@ std::string split_long_line(std::string line,
     return out;
 }
 
+// 代码块（lstlisting）：breaklines 让超长行自动换行——listings 会先测量整行
+// 宽度，超长行（如几千个括号）会生成极宽的 hbox，XeTeX 会直接崩溃。
+std::string code_block_latex(const std::string &fence_lang,
+                             const std::vector<std::string> &code_lines)
+{
+    const std::string lang = fence_to_listings_lang(fence_lang);
+    std::string out = "\\begin{lstlisting}";
+    if (!lang.empty())
+        out += "[language=" + lang + ",breaklines=true]";
+    else
+        out += "[breaklines=true]";
+    out += "\n";
+    for (const auto &cl : code_lines)
+        out += split_long_line(cl) + "\n";
+    out += "\\end{lstlisting}\n\n";
+    return out;
+}
+
 // 按 '\n' 把字符串拆成行（不保留行尾换行；结尾换行不产生多余空行）
 std::vector<std::string> split_lines(const std::string &content)
 {
@@ -3571,7 +3810,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
     lines.emplace_back(); // 末尾哨兵，简化处理
 
     std::string out;
-    std::vector<std::string> env_stack; // 自定义块环境栈（quote/center/flushright）
+    std::vector<EnvFrame> env_stack; // 自定义块环境栈（center/flushright/未知容器）
     // 上一行是 ::cute-table 指令：紧随其后的表格按 Tuack 样式渲染
     // （指令与表格之间允许空行；被其他内容“消费”后即失效）
     bool cute_table_pending = false;
@@ -3593,18 +3832,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
             if (line.size() >= fence_len &&
                 std::string(line.begin(), line.begin() + fence_len) == std::string(fence_len, fence))
             {
-                // lstlisting + breaklines：超长行（如几千个括号）会生成
-                // 极宽的 hbox，XeTeX 会直接崩溃；开启自动换行后不再超宽
-                const std::string lang = fence_to_listings_lang(fence_lang);
-                out += "\\begin{lstlisting}";
-                if (!lang.empty())
-                    out += "[language=" + lang + ",breaklines=true]";
-                else
-                    out += "[breaklines=true]";
-                out += "\n";
-                for (const auto &cl : code_lines)
-                    out += split_long_line(cl) + "\n";
-                out += "\\end{lstlisting}\n\n";
+                out += code_block_latex(fence_lang, code_lines);
                 fence = 0;
                 fence_len = 0;
                 fence_lang.clear();
@@ -3701,16 +3929,28 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
         if (line.size() >= 2 && line[0] == ':' && line[1] == ':')
         {
             static const std::regex kCloser(R"(^\s*:+$)", std::regex::icase);
-            static const std::regex kCustom(
-                R"(^\s*:+\s*(align\{(center|right)\}|epigraph(?:\[[^\]]*\])?)\s*$)",
-                std::regex::icase);
 
             // 折叠框：找出配对的收尾行，把框内内容整段递归转换后放进
             // mdframed 盒子（标题条 + 白底黑字内容），嵌套的折叠框因此可以
-            // 一层层套进上一级框内
+            // 一层层套进上一级框内。
+            // 除了 ::info[标题] 这种标准写法，属性写在标题前面
+            // （:::info{open}[标题]）也按折叠框处理：先按通用指令解析，
+            // 名字命中折叠框类型即可。
+            ColonDirective dir;
+            const bool is_directive = parse_colon_directive(line, dir);
             const FoldStyle *fold = nullptr;
             std::string fold_title;
-            if (parse_fold_opener(line, fold, fold_title))
+            if (!parse_fold_opener(line, fold, fold_title) && is_directive &&
+                dir.colons >= 3)
+            {
+                // 标准写法 ::info[标题]{属性} 由 parse_fold_opener 处理；
+                // 属性写在标题前面的写法（:::info{open}[标题]）按通用指令
+                // 解析：名字命中折叠框类型时同样按折叠框渲染
+                fold = find_fold_style(dir.name);
+                if (fold)
+                    fold_title = dir.label;
+            }
+            if (fold)
             {
                 const size_t closer = find_block_closer(lines, i);
                 const size_t inner_begin = i + 1;
@@ -3774,30 +4014,90 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
             {
                 if (!env_stack.empty())
                 {
-                    out += "\\end{" + env_stack.back() + "}\n\n";
+                    // 收尾前先输出挂在这一层上的内容（epigraph 的署名行），
+                    // 未知指令对应的层没有环境也不输出任何东西
+                    out += env_stack.back().close_extra;
+                    if (!env_stack.back().env.empty())
+                        out += "\\end{" + env_stack.back().env + "}\n\n";
                     env_stack.pop_back();
                 }
                 ++i;
                 continue;
             }
-            if (std::regex_match(line, m, kCustom))
+            if (is_directive)
             {
-                const std::string spec = m[1].str();
-                std::string title;
-                std::smatch tm;
-                static const std::regex kTitle(R"(\[([^\]]*)\])");
-                if (std::regex_search(spec, tm, kTitle))
-                    title = tm[1].str();
-
-                std::string env = "quote";
-                if (spec.rfind("align{center}", 0) == 0)
-                    env = "center";
-                else if (spec.rfind("align{right}", 0) == 0)
-                    env = "flushright";
-                env_stack.push_back(env);
-                out += "\\begin{" + env + "}\n";
-                if (!title.empty())
-                    out += "\\textbf{" + inline_to_latex(title) + "}\\\\\n";
+                // 叶子指令（::name[...]{...}）：本身没有内容，也没有收尾行
+                if (dir.colons < 3)
+                {
+                    ++i;
+                    continue;
+                }
+                // epigraph（题记，洛谷模仿 Codeforces 的 :::epigraph[署名]）：
+                // - 引文区整体占页面总宽的 2/5，并整体靠右；
+                // - 引文在区内左对齐；一行写不下时在区内换行，不会超出 2/5；
+                // - 引文与署名之间有一条贯穿引文区的横线，署名在区内右对齐、
+                //   正体（署名里的破折号由作者写在 [..] 里，这里不再补）。
+                // 引文默认用正体：只有作者自己写了 _斜体_ / *斜体* 的片段才斜体
+                // （洛谷网页把整个 epigraph 显示成斜体，但导出成文档时默认斜体
+                // 会让整段引文难以阅读，因此这里只跟随行内标记）。
+                // 用 list（leftmargin = 0.6\textwidth）而不是 minipage：
+                // list 会把 \linewidth 设成区宽，区内的图片、表格、代码块、
+                // 嵌套列表同样不会超出 2/5；而且内容超长时可以跨页——
+                // minipage 是一整块不可分割的盒子，放不下一页时会直接溢出。
+                if (dir.name == "epigraph")
+                {
+                    EnvFrame frame; // env 为空：开合标签由 open/close_extra 给全
+                    frame.quote_like = true; // 区内的小标题按普通粗体排版
+                    if (!dir.label.empty())
+                    {
+                        // 横线与署名的间距：段落之间本来会插入一个 \baselineskip
+                        // 的行距，这里用负 \vspace 抵掉大部分，只留一点空隙
+                        // （否则引文与署名之间会空出将近一整行）。\par 保证横线
+                        // 另起一行：正文最后一行常用硬换行结束，若改用换行命令
+                        // 会触发 "There's no line here to end"。
+                        frame.close_extra =
+                            "\\par\\vspace{-0.45\\baselineskip}\\vspace{0.15\\baselineskip}\n"
+                            "\\noindent\\rule{\\linewidth}{0.4pt}\n"
+                            "\\par\\vspace{-0.1\\baselineskip}\n"
+                            "\\noindent\\hfill{\\upshape " +
+                            inline_to_latex(dir.label) + "}\n";
+                    }
+                    frame.close_extra += "\\end{list}\n\\endgroup\n";
+                    env_stack.push_back(frame);
+                    out += "\\begingroup\n\\begin{list}{}{%\n"
+                           "  \\setlength{\\leftmargin}{0.6\\textwidth}%\n"
+                           "  \\setlength{\\rightmargin}{0pt}%\n"
+                           "  \\setlength{\\listparindent}{0pt}%\n"
+                           "  \\setlength{\\itemindent}{0pt}%\n"
+                           "  \\setlength{\\topsep}{0pt}%\n"
+                           "  \\setlength{\\partopsep}{0pt}%\n"
+                           "  \\setlength{\\parsep}{0pt}%\n"
+                           "  \\setlength{\\itemsep}{0pt}%\n"
+                           "}\n\\item\\relax\n"
+                           // 区内的图片按区宽缩放，高度上限收紧到 0.4 版心高，
+                           // 否则竖长图片（按 2/5 宽缩放后仍然很高）会顶出页面
+                           "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
+                    ++i;
+                    continue;
+                }
+                // align{center} / align{right}：整块居中或居右，可选 [标题]
+                if (dir.name == "align" &&
+                    (dir.attrs == "center" || dir.attrs == "right"))
+                {
+                    EnvFrame frame;
+                    frame.env = (dir.attrs == "center") ? "center" : "flushright";
+                    env_stack.push_back(frame);
+                    out += "\\begin{" + frame.env + "}\n";
+                    if (!dir.label.empty())
+                        out += "\\textbf{" + inline_to_latex(dir.label) + "}\\\\\n";
+                    ++i;
+                    continue;
+                }
+                // 其余容器指令（洛谷将来新增的类型、其它 remark-directive
+                // 写法）：只丢掉指令行本身，内容照常渲染——洛谷不会把
+                // :::name 显示成正文，我们也不应该；入栈是为了让配对的收尾行
+                // 被正确吃掉（env 为空表示不输出环境）
+                env_stack.push_back(EnvFrame());
                 ++i;
                 continue;
             }
@@ -3812,10 +4112,12 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
             if (n == line.size() || line[n] == ' ')
             {
                 const std::string title = inline_to_latex(trim(line.substr(n)));
-                const bool in_quote_like = (!env_stack.empty() &&
-                                            (env_stack.back() == "quote" ||
-                                             env_stack.back() == "center" ||
-                                             env_stack.back() == "flushright"));
+                const bool in_quote_like =
+                    (!env_stack.empty() &&
+                     (env_stack.back().quote_like ||
+                      env_stack.back().env == "quote" ||
+                      env_stack.back().env == "center" ||
+                      env_stack.back().env == "flushright"));
                 static const char *kCmds[] = {"section*", "subsection*", "subsubsection*",
                                               "paragraph*", "subparagraph*"};
                 if (in_quote_like || n > 5)
@@ -4121,10 +4423,30 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
         ++i;
     }
 
-    // 收尾：关闭未闭合的块环境
+    // ---- 收尾：依次闭合所有未闭合的块 ----
+    // 题面与题解都按「一个字段一次转换」调用本函数（背景/描述/提示各一次，
+    // 每篇题解正文各一次），所以这里的收尾就是「一段题面/题解写完时的收尾」：
+    // 作者漏写、上游把正文截断、或者内容正好在块中间结束时，未闭合的内容一律
+    // 按嵌套次序从内到外自动补齐，绝不因为缺少收尾标记而丢内容。
+    // 各类块的闭合方式：
+    // - 折叠框 / 嵌套折叠框：渲染时就整段包进 mdframed，开合标签在
+    //   fold_box_latex / fold_piece_latex 里成对生成，本身不会不闭合；
+    // - 显示公式（$$...$$）：扫描到内容结尾时把已收集的公式照常输出成
+    //   \[...\]（公式开合由这一处统一生成）；
+    // - 代码围栏（``` / ~~~）：已收集的代码行照常输出成 lstlisting
+    //   （洛谷的渲染器同样把「到结尾都没闭合」的围栏当代码块渲染）；
+    // - 引言（:::epigraph）：先输出横线与署名，再 \end{list}\endgroup；
+    // - 居中/居右（:::align{...}）：输出 \end{center} / \end{flushright}；
+    // - 未知容器：本身不输出环境，只把指令行与收尾行吃掉。
+    // env_stack 从栈顶弹出即「最内层先闭合」，与嵌套次序一致。
+    if (fence)
+        out += code_block_latex(fence_lang, code_lines);
+
     while (!env_stack.empty())
     {
-        out += "\\end{" + env_stack.back() + "}\n\n";
+        out += env_stack.back().close_extra;
+        if (!env_stack.back().env.empty())
+            out += "\\end{" + env_stack.back().env + "}\n\n";
         env_stack.pop_back();
     }
     return out;
