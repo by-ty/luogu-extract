@@ -96,58 +96,79 @@ article::Article::Article(std::string html)
     try
     {
         json data = json::parse(jsonStr);
-        json articleData = data["data"]["article"];
-
-        // 基本字段（过滤控制字符，避免 NUL 截断输出/破坏 LaTeX）
-        lid = luogu::compat::strip_control_chars(articleData.value("lid", ""));
-        title = luogu::compat::strip_control_chars(articleData.value("title", ""));
-        category = articleData.value("category", 0);
-        time = articleData.value("time", 0LL);
-
-        // 作者信息
-        if (articleData.contains("author") && !articleData["author"].is_null())
+        if (!data.contains("data") || !data["data"].is_object() ||
+            !data["data"].contains("article"))
         {
-            author_uid = articleData["author"].value("uid", 0);
-            author_name = luogu::compat::strip_control_chars(
-                articleData["author"].value("name", ""));
-            author_avatar = luogu::compat::strip_control_chars(
-                articleData["author"].value("avatar", ""));
+            std::fprintf(stderr, "题解页面结构不符合预期（找不到 data.article）\n");
+            return;
         }
-
-        // 统计数据
-        upvote = articleData.value("upvote", 0);
-        reply_count = articleData.value("replyCount", 0);
-        favor_count = articleData.value("favorCount", 0);
-        status = articleData.value("status", 0);
-
-        // 对应的题解信息
-        if (articleData.contains("solutionFor") && !articleData["solutionFor"].is_null())
-        {
-            solution_pid = luogu::compat::strip_control_chars(
-                articleData["solutionFor"].value("pid", ""));
-            solution_type = luogu::compat::strip_control_chars(
-                articleData["solutionFor"].value("type", ""));
-            solution_name = luogu::compat::strip_control_chars(
-                articleData["solutionFor"].value("name", ""));
-            solution_difficulty = articleData["solutionFor"].value("difficulty", 0);
-        }
-
-        promote_status = articleData.value("promoteStatus", 0);
-
-        // 文章内容
-        content = luogu::compat::strip_control_chars(
-            articleData.value("content", ""));
-        content_full = articleData.value("contentFull", false);
-
-        if (articleData.contains("adminNote") && !articleData["adminNote"].is_null())
-            admin_note = luogu::compat::strip_control_chars(
-                articleData["adminNote"].get<std::string>());
+        std::string parse_error;
+        from_json(data["data"]["article"], parse_error);
     }
     catch (const std::exception &e)
     {
         // JSON 解析失败，保留默认值
         std::fprintf(stderr, "解析 JSON 失败：%s\n", e.what());
     }
+}
+
+bool article::Article::from_json(const json &articleData, std::string &error)
+{
+    error.clear();
+    if (!articleData.is_object())
+    {
+        error = "题解数据不是 JSON 对象";
+        return false;
+    }
+
+    // 基本字段（过滤控制字符，避免 NUL 截断输出/破坏 LaTeX）
+    lid = luogu::compat::strip_control_chars(articleData.value("lid", ""));
+    title = luogu::compat::strip_control_chars(articleData.value("title", ""));
+    category = articleData.value("category", 0);
+    time = articleData.value("time", 0LL);
+
+    // 作者信息
+    if (articleData.contains("author") && !articleData["author"].is_null())
+    {
+        author_uid = articleData["author"].value("uid", 0);
+        author_name = luogu::compat::strip_control_chars(
+            articleData["author"].value("name", ""));
+        author_avatar = luogu::compat::strip_control_chars(
+            articleData["author"].value("avatar", ""));
+    }
+
+    // 统计数据
+    upvote = articleData.value("upvote", 0);
+    reply_count = articleData.value("replyCount", 0);
+    favor_count = articleData.value("favorCount", 0);
+    status = articleData.value("status", 0);
+
+    // 对应的题解信息
+    if (articleData.contains("solutionFor") && !articleData["solutionFor"].is_null() &&
+        articleData["solutionFor"].is_object())
+    {
+        solution_pid = luogu::compat::strip_control_chars(
+            articleData["solutionFor"].value("pid", ""));
+        solution_type = luogu::compat::strip_control_chars(
+            articleData["solutionFor"].value("type", ""));
+        solution_name = luogu::compat::strip_control_chars(
+            articleData["solutionFor"].value("name", ""));
+        solution_difficulty = articleData["solutionFor"].value("difficulty", 0);
+    }
+
+    promote_status = articleData.value("promoteStatus", 0);
+
+    // 文章内容
+    content = luogu::compat::strip_control_chars(
+        articleData.value("content", ""));
+    content_full = articleData.value("contentFull", false);
+
+    if (articleData.contains("adminNote") && !articleData["adminNote"].is_null() &&
+        articleData["adminNote"].is_string())
+        admin_note = luogu::compat::strip_control_chars(
+            articleData["adminNote"].get<std::string>());
+
+    return true;
 }
 
 std::vector<std::string> Article::image_urls() const

@@ -71,6 +71,12 @@ namespace latex
 
         // 封面标题文字（--set-cover-title；空串表示默认 "luogu extract"）
         std::string cover_title;
+
+        // ---- 题解导出（设计 §十）----
+        // 题解包（nullptr 表示不导出题解）；题解与题面在同一文件内，
+        // 位置由 solution_export.document_end 决定
+        const luogu::SolutionBundle *solutions = nullptr;
+        luogu::SolutionExportOptions solution_export;
     };
 
     // 把一段 markdown / HTML 文本转换为 LaTeX。
@@ -92,8 +98,11 @@ namespace latex
     std::string markdown_to_latex(const std::string &markdown);
 
     // 把一题转换为以 \section 开头的 LaTeX 内容（结构同 markdown 导出：
-    // 难度/标签/作者/时空限制 + 背景/描述/输入输出格式/样例/提示）
-    std::string problem_to_latex(const problem::Problem &p, const Options &opt = {});
+    // 难度/标签/作者/时空限制 + 背景/描述/输入输出格式/样例/提示）。
+    // first_solution_lid 非空且启用了题解导出时，题目标题行右侧生成
+    // 「查看题解」按钮，指向该题第一篇题解的锚点（设计 §10.2）。
+    std::string problem_to_latex(const problem::Problem &p, const Options &opt = {},
+                                 const std::string &first_solution_lid = "");
 
     // 把一篇文章转换为以 \section 开头的 LaTeX 内容
     std::string article_to_latex(const article::Article &a);
@@ -106,10 +115,13 @@ namespace latex
     // @param error       失败时返回的错误信息
     // @param opt         显示选项（目录超链接/回链、字体、封面标题、bilibili 链接等）
     // @return 成功返回 true
+    /// @param preselected 可选的预筛选结果（题解流程已筛选过一次时传入，
+    ///                    避免重复读取与解析题目列表缓存）；nullptr 时自行筛选
     bool export_latex(const luogu::ExportFilter &filter,
                       const std::filesystem::path &output_path,
                       std::string &error,
-                      const Options &opt = {});
+                      const Options &opt = {},
+                      const luogu::ProblemSelection *preselected = nullptr);
 }
 
 #endif // LUOGU_EXTRACT_LATEX_H

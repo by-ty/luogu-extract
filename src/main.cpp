@@ -38,11 +38,15 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "luogu-extract/contents/solution_task.h"
 #include "luogu-extract/crawler/crawler.h"
+#include "luogu-extract/crawler/request_gate.h"
 #include "luogu-extract/export/common.h"
 #include "luogu-extract/export/latex.h"
 #include "luogu-extract/export/markdown.h"
 #include "luogu-extract/util/compat.h"
+#include "luogu-extract/util/prompt.h"
+#include "luogu-extract/util/solution_cache.h"
 #include "luogu-extract/util/tag_cache.h"
 #include "luogu-extract/util/version.h"
 
@@ -89,6 +93,35 @@ struct Options
     std::string cover_title;        // --set-cover-title（-L / -M 均支持）
 
     luogu::ExportFilter filter; // -M / -L 共用的筛选条件
+
+    // ---- 题解抓取与导出（--with-solutions 等，设计 §十二）----
+    bool with_solutions = false;          // --with-solutions
+    bool solutions_only = false;          // --solutions-only
+    bool solutions_only_download = false; // --solutions-only-download
+    std::string cookie_file;              // --cookie
+    std::string cookie_string;            // --cookie-string
+    std::string solution_source;          // --solution-source（空 = auto）
+    int max_solutions = 1;                // --max-solutions（-1 表示 all）
+    std::string solution_delay;           // --solution-delay（原始文本）
+    bool no_delay_auto_scale = false;     // --no-delay-auto-scale
+    // --solution-ttl：题解**列表**有效期（天）；-1 表示无限（默认）
+    int solution_ttl = -1;
+    // --article-ttl：题解**正文**有效期（天）；-1 表示无限（默认）
+    int article_ttl = -1;
+    int rate_limit_wait = 120;            // --rate-limit-wait
+    bool allow_partial = false;           // --allow-partial
+    bool refresh_solutions = false;       // --refresh-solutions
+    bool refresh_articles = false;        // --refresh-articles
+    bool clean_solutions = false;         // -CS, --clean-solutions
+    std::string solution_placement = "document-end"; // --solution-placement
+    bool no_problem_to_solution_link = false; // --no-problem-to-solution-link
+    bool no_solution_to_problem_link = false; // --no-solution-to-problem-link
+    bool no_solution_toc = false;         // --no-solution-toc
+    bool no_solution_meta = false;        // --no-solution-meta
+    bool yes = false;                     // --yes
+
+    // 题解相关参数是否被显式给出（用于「缺少 --with-solutions」校验）
+    bool solution_option_used = false;
 };
 
 // 只作为长选项使用的选项码（getopt_long 返回值）
@@ -120,6 +153,27 @@ enum
     OPT_CLEAN_IMAGES,
     OPT_CLEAN_PROBLEMS,
     OPT_NEW_DOWNLOAD,
+    OPT_COOKIE,
+    OPT_COOKIE_STRING,
+    OPT_WITH_SOLUTIONS,
+    OPT_SOLUTION_SOURCE,
+    OPT_MAX_SOLUTIONS,
+    OPT_SOLUTION_DELAY,
+    OPT_NO_DELAY_AUTO_SCALE,
+    OPT_SOLUTION_TTL,
+    OPT_ARTICLE_TTL,
+    OPT_RATE_LIMIT_WAIT,
+    OPT_ALLOW_PARTIAL,
+    OPT_REFRESH_SOLUTIONS,
+    OPT_REFRESH_ARTICLES,
+    OPT_CLEAN_SOLUTIONS,
+    OPT_SOLUTIONS_ONLY,
+    OPT_SOLUTIONS_ONLY_DOWNLOAD,
+    OPT_SOLUTION_PLACEMENT,
+    OPT_NO_PROBLEM_TO_SOLUTION_LINK,
+    OPT_NO_SOLUTION_TO_PROBLEM_LINK,
+    OPT_NO_SOLUTION_TOC,
+    OPT_NO_SOLUTION_META,
 };
 
 // 选项码 → 长选项名（用于报错信息）
@@ -139,6 +193,14 @@ inline const char *option_name_for(int code)
     case OPT_FONT_TITLE_ZH: return "--set-font-title-zh-CN";
     case OPT_FONT_TITLE_EN: return "--set-font-title-en-US";
     case OPT_COVER_TITLE: return "--set-cover-title";
+    case OPT_COOKIE: return "--cookie";
+    case OPT_COOKIE_STRING: return "--cookie-string";
+    case OPT_SOLUTION_SOURCE: return "--solution-source";
+    case OPT_MAX_SOLUTIONS: return "--max-solutions";
+    case OPT_SOLUTION_DELAY: return "--solution-delay";
+    case OPT_SOLUTION_TTL: return "--solution-ttl";
+    case OPT_RATE_LIMIT_WAIT: return "--rate-limit-wait";
+    case OPT_SOLUTION_PLACEMENT: return "--solution-placement";
     default: return "";
     }
 }
@@ -160,6 +222,15 @@ inline std::string option_argument_hint(const std::string &token)
     if (token == "--set-cover-title") return "封面标题";
     if (token == "--pid") return "题号（如 P1001，可多个，空格分隔或重复 --pid）";
     if (token == "--pid-range") return "题号范围（如 P1001-P1010，可多组，空格分隔或重复 --pid-range）";
+    if (token == "--cookie") return "Netscape 格式的 cookies.txt 路径";
+    if (token == "--cookie-string") return "Cookie 串（形如 \"k=v; k2=v2\"）";
+    if (token == "--solution-source") return "题解正文来源（auto / official / save）";
+    if (token == "--max-solutions") return "每题抓取的题解篇数（正整数或 all）";
+    if (token == "--solution-delay") return "请求间隔秒数（如 5 或 8-15）";
+    if (token == "--solution-ttl") return "题解列表缓存有效期天数（0 表示只用 ETag）";
+    if (token == "--article-ttl") return "题解正文缓存有效期天数（0 表示只用 ETag）";
+    if (token == "--rate-limit-wait") return "限流等待秒数（0 表示检测到限流直接停止）";
+    if (token == "--solution-placement") return "题解位置（document-end 或 per-problem）";
     return "";
 }
 
@@ -177,13 +248,14 @@ const char *kUsage =
     "  -RD, --new-download   下载题目时不使用之前缓存的图片，而是重新下载图片\n"
     "                        （仅在使用 -L 时有效）\n"
     "  -C, --clean-all       清空 luogu-extract 缓存文件夹（含题目列表、标签、图片\n"
-    "                        与字体缓存）；不能与其他参数一起使用\n"
+    "                        与字体缓存）\n"
     "  -CIMG, --clean-images\n"
-    "                        清除 luogu-extract/images/ 下的图片缓存；\n"
-    "                        不能与其他参数一起使用\n"
+    "                        清除 luogu-extract/images/ 下的图片缓存\n"
     "  -CP, --clean-problems\n"
-    "                        清除题面缓存（latest.ndjson 与 latest.ndjson.gz）；\n"
-    "                        不能与其他参数一起使用\n"
+    "                        清除题面缓存（latest.ndjson 与 latest.ndjson.gz）\n"
+    "  -CS, --clean-solutions\n"
+    "                        清除题解缓存（<缓存目录>/solutions/）\n"
+    "  （以上清除缓存的参数只能彼此组合使用，不能与其他参数同时使用）\n"
     "      --tags            按官方分类打印标签 ID 对照表（可与 -h 组合使用）\n"
     "      --tag <name|ID>...\n"
     "                        按标签筛选；多个值可用空格分隔或重复 --tag，题目须包含全部标签；\n"
@@ -238,9 +310,70 @@ const char *kUsage =
     "      --set-cover-title <title>\n"
     "                        设置封面标题（-L，默认 luogu extract）或 Markdown 一级标题\n"
     "                        （-M，默认 洛谷题目导出）\n"
+    "\n"
+    "题解下载选项（需先登录洛谷并导出 cookies.txt）：\n"
+    "      --with-solutions  启用题解抓取与导出；\n"
+    "                        需与 -M 或 -L 同用，题解与题面导出到同一个文件\n"
+    "      --cookie <file>   Netscape 格式的 cookies.txt（含登录态）；题解列表\n"
+    "                        接口需要登录态，该参数是启用题解功能的前提\n"
+    "      --cookie-string <k=v; ...>\n"
+    "                        直接传入 Cookie 串（与 --cookie 二选一）\n"
+    "      --solution-source <auto|official|save>\n"
+    "                        题解正文来源，默认 auto：缓存里已有的题解一律优先\n"
+    "                        使用（两个来源都有时优先原站），未命中的在原站与\n"
+    "                        保存站之间轮流分配并**并行**抓取（两个站点各自计算\n"
+    "                        延时；某一站点被限流时任务暂时转给另一站点，连续\n"
+    "                        被限流 3 次则放弃该站点，两个站点都放弃则终止）。\n"
+    "                        official 只用洛谷原站，save 只用第三方镜像洛谷保存站\n"
+    "                        题解列表恒取洛谷原站\n"
+    "      --max-solutions <n|all>\n"
+    "                        每题抓取篇数，默认 1，按列表顺序取最靠前的 n 篇；\n"
+    "                        all 表示该题全部题解\n"
+    "      --solution-delay <mean|min-max>\n"
+    "                        题解请求的平均间隔秒数，默认 5（实际为均值 ±30% 均匀抖动，\n"
+    "                        即 3.5~6.5 秒）；也支持显式区间（如 8-15）与小数；\n"
+    "                        单次间隔上限 300 秒。图片下载不受该参数影响\n"
+    "      --no-delay-auto-scale\n"
+    "                        关闭「随抓取量自动递增延时」与限流后的额外放大\n"
+    "      --solution-ttl <days>\n"
+    "                        题解列表缓存有效期天数；默认无限；0 表示每次都发\n"
+    "                        ETag 条件请求（304 时只刷新时间戳）\n"
+    "      --article-ttl <days>\n"
+    "                        题解正文缓存有效期天数，语义同上，默认无限\n"
+    "      --rate-limit-wait <seconds>\n"
+    "                        检测到限流后的等待时长，默认 120；0 表示检测到限流\n"
+    "                        直接停止（等待期间可按 S 立即停止、按 C 确认后继续）\n"
+    "      --allow-partial   允许导出正文不完整的题解（默认跳过并汇总）\n"
+    "      --refresh-solutions\n"
+    "                        强制重新获取题解列表（忽略 TTL 与 ETag）\n"
+    "      --refresh-articles\n"
+    "                        强制重新获取题解正文（忽略 TTL 与 ETag）\n"
+
+    "      --solutions-only  只导出题解，不导出题面（需与 -M 或 -L 同用）\n"
+    "      --solutions-only-download\n"
+    "                        只抓取并缓存题解，不导出任何文件（不需要 -M / -L）\n"
+    "      --solution-placement <document-end|per-problem>\n"
+    "                        题解在文档中的位置，默认 document-end（统一置于文档\n"
+    "                        最后）；per-problem 表示紧跟对应题目之后\n"
+    "      --no-problem-to-solution-link\n"
+    "                        关闭题目到题解的跳转（-L 为题目标题右侧的「查看题解」\n"
+    "                        按钮，-M 为 Markdown 中的跳转链接）\n"
+    "      --no-solution-to-problem-link\n"
+    "                        关闭题解到题目的跳转（-L 为题解标题右侧的「返回题目」\n"
+    "                        按钮，-M 为 Markdown 中的跳转链接）\n"
+    "      --no-solution-toc 题解标题不进目录（仅 -L；默认进目录并注明所属题目）\n"
+    "      --no-solution-meta\n"
+    "                        不显示题解的来源与原文链接\n"
+    "  -y, --yes             把爬取风险的确认次数减少 1 次（减到 0 为止）；\n"
+    "                        不能把第 5 档变为无需确认\n"
     "  -h, --help            显示帮助\n"
     "  -V, --version         显示项目简介、版本号、版权声明与项目仓库链接\n"
-    "                        （不能与其他参数同时使用）\n";
+    "                        （不能与其他参数同时使用）\n"
+    "\n"
+    "合规提示：\n"
+    "  题解著作权归原作者，导出物仅供个人离线阅读，请勿再分发或用于商业用途；\n"
+    "  抓取频率与请求总量由你自行判断，后果自负；保存站 luogu.me 为第三方站点；\n"
+    "  请遵守洛谷用户协议及相关法律法规。\n";
 
 void printUsage()
 {
@@ -316,6 +449,7 @@ inline void expand_multichar_short_options(std::vector<std::string> &args_utf8)
         const char *long_form;
     } kAliases[] = {
         {"-CIMG", "--clean-images"},
+        {"-CS", "--clean-solutions"},
         {"-CP", "--clean-problems"},
         {"-RD", "--new-download"},
     };
@@ -446,6 +580,23 @@ inline std::string validate_font_option(const std::string &option_name,
     return "";
 }
 
+// 解析非负/正整数参数：允许首尾空白，超出 [min,max] 或含非数字字符时返回 false
+inline bool parse_positive_int(const std::string &value, long min_value,
+                               long max_value, long &out)
+{
+    const std::string text = value;
+    if (text.empty())
+        return false;
+    char *end = nullptr;
+    const long parsed = std::strtol(text.c_str(), &end, 10);
+    if (end == text.c_str() || (end && *end != '\0'))
+        return false;
+    if (parsed < min_value || parsed > max_value)
+        return false;
+    out = parsed;
+    return true;
+}
+
 // 解析难度规格："N"（单个数字）或 "A-B"（闭区间），展开后追加到 difficulties
 inline bool parse_difficulty_spec(const std::string &spec, std::vector<int> &difficulties)
 {
@@ -541,6 +692,223 @@ inline bool parse_pid_range_arg(const std::string &spec,
     }
     out = {to_upper_ascii(a), to_upper_ascii(b)};
     return true;
+}
+
+// 题解抓取的整体流程（设计 §四 / §五 / §六 / §八）：
+// 计划（只读缓存）→ 延时与系数 → 风险分级确认 → 逐题串行抓取。
+// 返回值即进程退出码；proceed 为 false 表示不要再导出（取消或中止）。
+struct SolutionRun
+{
+    int exit_code = 0;
+    bool proceed = true;
+};
+
+SolutionRun run_solutions(const Options &options,
+                          const luogu::ProblemSelection &selection,
+                          luogu::SolutionBundle &bundle,
+                          solution::CrawlStats &stats)
+{
+    SolutionRun run;
+
+    // ---- 凭据通道：Cookie 只在洛谷原站请求上使用（保存站一律不带）----
+    std::string cookie_error;
+    std::string cookie_warnings;
+    if (!options.cookie_string.empty())
+    {
+        if (!crawler::gate_set_cookie_string(options.cookie_string, cookie_error))
+        {
+            printError(cookie_error);
+            run.exit_code = 1;
+            run.proceed = false;
+            return run;
+        }
+    }
+    else if (!options.cookie_file.empty())
+    {
+        if (!crawler::gate_load_cookies(
+                luogu::compat::path_from_utf8(options.cookie_file), cookie_error,
+                &cookie_warnings))
+        {
+            printError(cookie_error);
+            run.exit_code = 1;
+            run.proceed = false;
+            return run;
+        }
+    }
+    if (!cookie_warnings.empty())
+        std::fputs(cookie_warnings.c_str(), stdout);
+    if (!crawler::gate_has_cookies())
+    {
+        printError("题解列表接口需要登录态；请登录洛谷后导出 cookies.txt，"
+                   "并用 --cookie <file> 指定（或使用 --cookie-string）");
+        run.exit_code = 1;
+        run.proceed = false;
+        return run;
+    }
+    std::printf("已载入 %zu 条 Cookie（来源：%s；Cookie 不会用于保存站等第三方域名）\n",
+                crawler::gate_cookie_count(),
+                crawler::gate_cookie_file_hint().c_str());
+
+    // ---- 抓取参数 ----
+    solution::TaskOptions task;
+    // 默认 auto：缓存优先 + 两个站点轮流分配、并行抓取
+    if (options.solution_source == "save")
+        task.source = solution::Source::Save;
+    else if (options.solution_source == "official")
+        task.source = solution::Source::Official;
+    else
+        task.source = solution::Source::Auto;
+    task.max_solutions = options.max_solutions;
+    task.list_ttl_days = options.solution_ttl;
+    task.article_ttl_days = options.article_ttl;
+    task.refresh_solutions = options.refresh_solutions;
+    task.refresh_articles = options.refresh_articles;
+    task.allow_partial = options.allow_partial;
+
+    if (task.source == solution::Source::Save)
+        std::printf("题解正文来源：洛谷保存站（第三方镜像，内容可能滞后或缺失；"
+                    "该来源不发送任何 Cookie）\n");
+    else if (task.source == solution::Source::Official)
+        std::printf("题解正文来源：洛谷原站\n");
+    else
+        std::printf("题解正文来源：auto（缓存优先；未命中的在原站与保存站之间"
+                    "轮流分配、并行抓取；保存站为第三方镜像，内容可能滞后或缺失）\n");
+
+    crawler::GateConfig gate_config;
+    if (!options.solution_delay.empty() &&
+        !crawler::parse_delay_spec(options.solution_delay, gate_config.delay,
+                                   cookie_error))
+    {
+        printError(cookie_error);
+        run.exit_code = 1;
+        run.proceed = false;
+        return run;
+    }
+    gate_config.auto_scale = !options.no_delay_auto_scale;
+    gate_config.rate_limit_wait_sec = options.rate_limit_wait;
+    // 计划阶段的列表请求走原站通道，保留交互式等待与重试
+    gate_config.interactive_retry = true;
+
+    // ---- 计划阶段（第一遍：只读缓存）----
+    // 先给请求闸门一个初步的延时系数，保证「按需获取题解列表」这一步本身
+    // 也受 --solution-delay 控制
+    solution::Plan plan;
+    solution::PlanResult plan_result =
+        solution::make_plan(selection.problems, task, false, plan);
+    crawler::gate_configure_channel(crawler::Channel::Official, gate_config,
+                                    plan.total_requests);
+    crawler::gate_configure_channel(crawler::Channel::Save, gate_config,
+                                    plan.total_requests);
+
+    // 计划阶段把缓存缺失/过期的题解列表抓回来（列表请求本来就要发，属于
+    // N + P 中的 P），这样风险确认看到的篇数是精确值
+    plan_result = solution::make_plan(selection.problems, task, true, plan);
+    if (plan_result.status == solution::PlanStatus::Stopped)
+    {
+        std::printf("已按你的选择取消；本次未抓取任何题解正文。\n");
+        run.exit_code = 0;
+        run.proceed = false;
+        return run;
+    }
+    if (plan_result.status == solution::PlanStatus::RateLimited)
+    {
+        printError("获取题解列表时被限流：" + plan_result.error);
+        printError("已停止本次抓取；缓存已保留，可稍后重跑续传");
+        run.exit_code = 3;
+        run.proceed = false;
+        return run;
+    }
+    if (plan_result.status != solution::PlanStatus::Ok)
+    {
+        printError(plan_result.error);
+        run.exit_code = 1;
+        run.proceed = false;
+        return run;
+    }
+    // auto 模式下，正文由调度器处理限流（临时转给另一站点），因此进入
+    // 并行抓取阶段前把两条通道切到「命中限流立即返回」；计划阶段的列表请求
+    // 只能走原站、没有备用站点，仍保留闸门内部的交互式等待与重试
+    if (task.source == solution::Source::Auto)
+    {
+        crawler::GateConfig parallel_config = gate_config;
+        parallel_config.interactive_retry = false;
+        crawler::gate_configure_channel(crawler::Channel::Official, parallel_config,
+                                        plan.total_requests);
+        crawler::gate_configure_channel(crawler::Channel::Save, parallel_config,
+                                        plan.total_requests);
+    }
+
+    // 用精确的正文篇数重新计算延时系数（只会更保守）
+    crawler::gate_set_planned_requests(crawler::Channel::Official,
+                                       plan.total_requests);
+    crawler::gate_set_planned_requests(crawler::Channel::Save,
+                                       plan.total_requests);
+    // 预计 0 次请求（全部命中缓存）：不打印延时与规模提示，
+    // 由 confirm_risk 给出一行精简说明
+    if (plan.total_requests > 0)
+        crawler::gate_print_delay_notice(plan.total_requests);
+
+    // ---- 风险分级与确认（设计 §五）----
+    prompt::RiskInfo risk = prompt::plan_risk(plan.total_requests, options.yes);
+    risk.problems = plan.problems;
+    risk.per_problem = options.max_solutions < 0 ? 0 : options.max_solutions;
+    risk.per_problem_all = options.max_solutions < 0;
+    risk.articles = plan.articles_to_fetch;
+    risk.cached_articles = plan.cached_articles;
+    risk.list_requests = plan.list_requests;
+    risk.total_requests = plan.total_requests;
+    risk.seconds_per_request = crawler::gate_effective_delay_seconds();
+    risk.eta_seconds = static_cast<long long>(
+        risk.seconds_per_request * static_cast<double>(plan.total_requests));
+
+    const prompt::ConfirmResult confirm = prompt::confirm_risk(risk);
+    if (confirm == prompt::ConfirmResult::Cancelled)
+    {
+        // 用户拒绝确认：立即退出，退出码 0
+        run.exit_code = 0;
+        run.proceed = false;
+        return run;
+    }
+    if (confirm == prompt::ConfirmResult::CannotConfirm)
+    {
+        run.exit_code = 1;
+        run.proceed = false;
+        return run;
+    }
+
+    // ---- 抓取阶段 ----
+    std::string crawl_error;
+    if (!solution::crawl(plan, task, bundle, stats, crawl_error))
+    {
+        printError(crawl_error);
+        run.exit_code = 1;
+        run.proceed = false;
+        return run;
+    }
+
+    printSuccess("题解抓取完成：" + solution::describe_crawl_stats(stats));
+    const std::uintmax_t used = solcache::cache_size();
+    std::printf("题解缓存占用：%.2f MB（%s）\n",
+                static_cast<double>(used) / (1024.0 * 1024.0),
+                luogu::compat::path_to_utf8(solcache::solutions_dir()).c_str());
+
+    if (stats.stopped_by_rate_limit)
+    {
+        if (!stats.stop_reason.empty())
+            printError("因限流中止：" + stats.stop_reason);
+        printError("已停止本次抓取；缓存已保留，可稍后重跑续传");
+        run.exit_code = 3; // 与用户主动取消（0）区分，便于脚本判断
+        run.proceed = false;
+        return run;
+    }
+    if (stats.stopped_by_user)
+    {
+        std::printf("已按你的选择取消；已抓取的缓存全部保留，可稍后重跑续传。\n");
+        run.exit_code = 0;
+        run.proceed = false;
+        return run;
+    }
+    return run;
 }
 
 // --tags：按官方分类（type）打印标签 ID 对照表
@@ -643,6 +1011,28 @@ int main(int argc, char *argv[])
         {"clean-images",         no_argument,       nullptr, OPT_CLEAN_IMAGES},
         {"clean-problems",       no_argument,       nullptr, OPT_CLEAN_PROBLEMS},
         {"new-download",         no_argument,       nullptr, OPT_NEW_DOWNLOAD},
+        {"cookie",               required_argument, nullptr, OPT_COOKIE},
+        {"cookie-string",        required_argument, nullptr, OPT_COOKIE_STRING},
+        {"with-solutions",       no_argument,       nullptr, OPT_WITH_SOLUTIONS},
+        {"solution-source",      required_argument, nullptr, OPT_SOLUTION_SOURCE},
+        {"max-solutions",        required_argument, nullptr, OPT_MAX_SOLUTIONS},
+        {"solution-delay",       required_argument, nullptr, OPT_SOLUTION_DELAY},
+        {"no-delay-auto-scale",  no_argument,       nullptr, OPT_NO_DELAY_AUTO_SCALE},
+        {"solution-ttl",         required_argument, nullptr, OPT_SOLUTION_TTL},
+        {"article-ttl",          required_argument, nullptr, OPT_ARTICLE_TTL},
+        {"rate-limit-wait",      required_argument, nullptr, OPT_RATE_LIMIT_WAIT},
+        {"allow-partial",        no_argument,       nullptr, OPT_ALLOW_PARTIAL},
+        {"refresh-solutions",    no_argument,       nullptr, OPT_REFRESH_SOLUTIONS},
+        {"refresh-articles",     no_argument,       nullptr, OPT_REFRESH_ARTICLES},
+        {"clean-solutions",      no_argument,       nullptr, OPT_CLEAN_SOLUTIONS},
+        {"solutions-only",       no_argument,       nullptr, OPT_SOLUTIONS_ONLY},
+        {"solutions-only-download", no_argument,    nullptr, OPT_SOLUTIONS_ONLY_DOWNLOAD},
+        {"solution-placement",   required_argument, nullptr, OPT_SOLUTION_PLACEMENT},
+        {"no-problem-to-solution-link", no_argument, nullptr, OPT_NO_PROBLEM_TO_SOLUTION_LINK},
+        {"no-solution-to-problem-link", no_argument, nullptr, OPT_NO_SOLUTION_TO_PROBLEM_LINK},
+        {"no-solution-toc",      no_argument,       nullptr, OPT_NO_SOLUTION_TOC},
+        {"no-solution-meta",     no_argument,       nullptr, OPT_NO_SOLUTION_META},
+        {"yes",                  no_argument,       nullptr, 'y'},
         {"help",       no_argument,       nullptr, 'h'},
         {"version",    no_argument,       nullptr, 'V'},
         {nullptr,      0,                 nullptr, 0},
@@ -650,14 +1040,19 @@ int main(int argc, char *argv[])
 
     Options options;
     int opt;
-    // -V, --version 与清除类参数（-C / -CIMG / -CP）都必须单独使用：
-    // 统计出现的选项个数，与位置参数（optind）一起判断是否属于参数使用错误
+    // -V, --version 必须单独使用；清除类参数（-C / -CIMG / -CP / -CS）
+    // 只能彼此组合使用：分别统计总选项数与非清除类选项数，
+    // 与位置参数（optind）一起判断是否属于参数使用错误
     int option_count = 0;
+    int non_clean_option_count = 0;
     // 短选项串以 ':' 开头：getopt 出错时不打印英文提示，
     // 由下面的 '?' / ':' 分支输出统一的中文错误信息
-    while ((opt = getopt_long(arg_count, arg_vector, ":UMLhVC", kLongOptions, nullptr)) != -1)
+    while ((opt = getopt_long(arg_count, arg_vector, ":UMLhVCy", kLongOptions, nullptr)) != -1)
     {
         ++option_count;
+        if (opt != 'C' && opt != OPT_CLEAN_ALL && opt != OPT_CLEAN_IMAGES &&
+            opt != OPT_CLEAN_PROBLEMS && opt != OPT_CLEAN_SOLUTIONS)
+            ++non_clean_option_count;
         switch (opt)
         {
         case 'U':
@@ -753,6 +1148,177 @@ int main(int argc, char *argv[])
             break;
         case OPT_NEW_DOWNLOAD:
             options.new_download = true;
+            break;
+        case OPT_COOKIE:
+            if (optarg == nullptr || optarg[0] == '\0')
+            {
+                printError("参数 '--cookie' 后缺少 Cookie 文件路径；正确用法：--cookie <cookies.txt>");
+                return 1;
+            }
+            options.cookie_file = optarg;
+            options.solution_option_used = true;
+            break;
+        case OPT_COOKIE_STRING:
+            if (optarg == nullptr || optarg[0] == '\0')
+            {
+                printError("参数 '--cookie-string' 后缺少 Cookie 串；"
+                           "正确用法：--cookie-string \"k=v; k2=v2\"");
+                return 1;
+            }
+            options.cookie_string = optarg;
+            options.solution_option_used = true;
+            break;
+        case OPT_WITH_SOLUTIONS:
+            options.with_solutions = true;
+            break;
+        case OPT_SOLUTIONS_ONLY:
+            options.solutions_only = true;
+            break;
+        case OPT_SOLUTIONS_ONLY_DOWNLOAD:
+            options.solutions_only_download = true;
+            break;
+        case OPT_SOLUTION_SOURCE:
+        {
+            const std::string value = optarg ? optarg : "";
+            if (value != "official" && value != "save" && value != "auto")
+            {
+                printError("参数 '--solution-source' 的值 '" + value +
+                           "' 不是合法的来源；正确用法："
+                           "--solution-source <auto|official|save>"
+                           "（auto 为默认：缓存优先，未命中的题解在原站与保存站"
+                           "之间轮流分配并并行抓取；official 只用洛谷原站；"
+                           "save 只用第三方镜像保存站。题解列表恒取洛谷原站）");
+                return 1;
+            }
+            options.solution_source = value;
+            options.solution_option_used = true;
+            break;
+        }
+        case OPT_MAX_SOLUTIONS:
+        {
+            const std::string value = to_lower_ascii(optarg ? optarg : "");
+            if (value == "all")
+            {
+                options.max_solutions = -1;
+            }
+            else
+            {
+                long parsed = 0;
+                if (!parse_positive_int(value, 1, 100000, parsed))
+                {
+                    printError("参数 '--max-solutions' 的值 '" + std::string(optarg ? optarg : "") +
+                               "' 不是合法的篇数；正确用法：--max-solutions <n|all>"
+                               "（n 为正整数，all 表示该题全部题解）");
+                    return 1;
+                }
+                options.max_solutions = static_cast<int>(parsed);
+            }
+            options.solution_option_used = true;
+            break;
+        }
+        case OPT_SOLUTION_DELAY:
+        {
+            crawler::DelaySpec spec;
+            std::string err;
+            if (!crawler::parse_delay_spec(optarg ? optarg : "", spec, err))
+            {
+                printError(err);
+                return 1;
+            }
+            options.solution_delay = optarg ? optarg : "";
+            options.solution_option_used = true;
+            break;
+        }
+        case OPT_NO_DELAY_AUTO_SCALE:
+            options.no_delay_auto_scale = true;
+            options.solution_option_used = true;
+            break;
+        case OPT_SOLUTION_TTL:
+        case OPT_ARTICLE_TTL:
+        {
+            const std::string name =
+                (opt == OPT_SOLUTION_TTL) ? "--solution-ttl" : "--article-ttl";
+            long parsed = 0;
+            if (!parse_positive_int(optarg ? optarg : "", 0, 36500, parsed))
+            {
+                printError("参数 '" + name + "' 的值 '" +
+                           std::string(optarg ? optarg : "") +
+                           "' 不是合法的天数；正确用法：" + name + " <days>"
+                           "（不小于 0 的整数；不指定时为无限，即一律优先使用缓存；"
+                           "0 表示每次都发 ETag 条件请求）");
+                return 1;
+            }
+            if (opt == OPT_SOLUTION_TTL)
+                options.solution_ttl = static_cast<int>(parsed);
+            else
+                options.article_ttl = static_cast<int>(parsed);
+            options.solution_option_used = true;
+            break;
+        }
+        case OPT_RATE_LIMIT_WAIT:
+        {
+            long parsed = 0;
+            if (!parse_positive_int(optarg ? optarg : "", 0, 86400, parsed))
+            {
+                printError("参数 '--rate-limit-wait' 的值 '" +
+                           std::string(optarg ? optarg : "") +
+                           "' 不是合法的秒数；正确用法：--rate-limit-wait <seconds>"
+                           "（不小于 0 的整数，默认 120；0 表示检测到限流直接停止）");
+                return 1;
+            }
+            options.rate_limit_wait = static_cast<int>(parsed);
+            options.solution_option_used = true;
+            break;
+        }
+        case OPT_ALLOW_PARTIAL:
+            options.allow_partial = true;
+            options.solution_option_used = true;
+            break;
+        case OPT_REFRESH_SOLUTIONS:
+            options.refresh_solutions = true;
+            options.solution_option_used = true;
+            break;
+        case OPT_REFRESH_ARTICLES:
+            options.refresh_articles = true;
+            options.solution_option_used = true;
+            break;
+        case OPT_CLEAN_SOLUTIONS:
+            options.clean_solutions = true;
+            break;
+        case OPT_SOLUTION_PLACEMENT:
+        {
+            const std::string value = optarg ? optarg : "";
+            if (value != "document-end" && value != "per-problem")
+            {
+                printError("参数 '--solution-placement' 的值 '" + value +
+                           "' 不是合法位置；正确用法："
+                           "--solution-placement <document-end|per-problem>"
+                           "（默认 document-end，即题解统一置于文档最后）");
+                return 1;
+            }
+            options.solution_placement = value;
+            options.solution_option_used = true;
+            break;
+        }
+        case OPT_NO_PROBLEM_TO_SOLUTION_LINK:
+            options.no_problem_to_solution_link = true;
+            options.solution_option_used = true;
+            break;
+        case OPT_NO_SOLUTION_TO_PROBLEM_LINK:
+            options.no_solution_to_problem_link = true;
+            options.solution_option_used = true;
+            break;
+        case OPT_NO_SOLUTION_TOC:
+            options.no_solution_toc = true;
+            options.solution_option_used = true;
+            break;
+        case OPT_NO_SOLUTION_META:
+            options.no_solution_meta = true;
+            options.solution_option_used = true;
+            break;
+        case 'y':
+            options.yes = true;
+            options.solution_option_used = true;
             break;
         case OPT_NO_TOC_LINKS:
             options.no_toc_links = true;
@@ -903,35 +1469,26 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    // 清除类参数（-C / -CIMG / -CP）同样只能单独使用：与其他任何参数
-    // （含 -h、--tags、-U、-M、-L 等）或多余的位置参数同时出现即拒绝执行
+    // 清除类参数（-C / -CIMG / -CP / -CS）只能彼此组合使用：
+    // 与非清除类参数（含 -h、--tags、-U、-M、-L 等）或位置参数同时出现即拒绝执行
     {
-        const struct
+        std::vector<std::string> used_clean;
+        if (options.clean_all) used_clean.push_back("-C, --clean-all");
+        if (options.clean_images) used_clean.push_back("-CIMG, --clean-images");
+        if (options.clean_problems) used_clean.push_back("-CP, --clean-problems");
+        if (options.clean_solutions) used_clean.push_back("-CS, --clean-solutions");
+        if (!used_clean.empty() &&
+            (non_clean_option_count > 0 || optind < arg_count))
         {
-            bool used;
-            const char *name;
-            const char *example;
-            const char *effect;
-        } kExclusiveCleanOptions[] = {
-            {options.clean_all, "-C, --clean-all", "-C",
-             "清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）"},
-            {options.clean_images, "-CIMG, --clean-images", "-CIMG",
-             "清除 luogu-extract/images/ 下的图片缓存"},
-            {options.clean_problems, "-CP, --clean-problems", "-CP",
-             "清除题面缓存（latest.ndjson 与 latest.ndjson.gz）"},
-        };
-        for (const auto &clean_opt : kExclusiveCleanOptions)
-        {
-            if (!clean_opt.used)
-                continue;
-            if (option_count > 1 || optind < arg_count)
-            {
-                printError("参数 " + std::string(clean_opt.name) +
-                           " 不能与其他参数同时使用；正确用法：luogu-extract " +
-                           clean_opt.example + "，单独执行该参数即可" +
-                           clean_opt.effect);
-                return 1;
-            }
+            std::string joined;
+            for (size_t i = 0; i < used_clean.size(); ++i)
+                joined += (i ? "、" : "") + used_clean[i];
+            printError("清除缓存的参数（" + joined +
+                       "）只能与其他清除缓存的参数（-C、-CIMG、-CP、-CS）"
+                       "同时使用，不能与其它参数或多余的位置参数一起使用；"
+                       "正确用法：luogu-extract -CIMG -CP -CS"
+                       "（互相组合，一次清除多类缓存），或单独执行其中一个");
+            return 1;
         }
     }
 
@@ -945,15 +1502,23 @@ int main(int argc, char *argv[])
         return print_tag_list() ? 0 : 1;
 
     // 清除类参数只操作本地缓存，不访问网络、也不需要 libcurl：直接执行后退出
-    if (options.clean_all || options.clean_images || options.clean_problems)
+    if (options.clean_all || options.clean_images || options.clean_problems ||
+        options.clean_solutions)
     {
+        // 依次执行所有被指定的清除动作（可组合）：-C 会删掉整个缓存目录，
+        // 其余动作随后按「目录不存在 = 已清空」正常返回
         crawler::derror clean_result = crawler::SUCCESS;
-        if (options.clean_all)
-            clean_result = crawler::clean_all();
-        else if (options.clean_images)
-            clean_result = crawler::clean_images();
-        else
-            clean_result = crawler::clean_problems();
+        auto run_clean = [&clean_result](bool used, crawler::derror (*action)()) {
+            if (!used)
+                return;
+            const crawler::derror result = action();
+            if (result != crawler::SUCCESS && clean_result == crawler::SUCCESS)
+                clean_result = result;
+        };
+        run_clean(options.clean_all, crawler::clean_all);
+        run_clean(options.clean_images, crawler::clean_images);
+        run_clean(options.clean_problems, crawler::clean_problems);
+        run_clean(options.clean_solutions, solcache::clean_solutions);
         return clean_result == crawler::SUCCESS ? 0 : 1;
     }
 
@@ -963,6 +1528,53 @@ int main(int argc, char *argv[])
     {
         printError("参数 -M 与 -L 不能同时使用；请分两次导出（-M 导出 Markdown，-L 导出 LaTeX）");
         return 1;
+    }
+
+    // ---- 题解功能：参数使用校验（设计 §十二）----
+    const bool solutions_enabled = options.with_solutions || options.solutions_only ||
+                                   options.solutions_only_download;
+    if (options.solutions_only && options.solutions_only_download)
+    {
+        printError("参数 --solutions-only 与 --solutions-only-download 不能同时使用；"
+                   "--solutions-only 只导出题解（不导出题面），"
+                   "--solutions-only-download 只抓取并缓存、不导出任何文件");
+        return 1;
+    }
+    if (!solutions_enabled && options.solution_option_used)
+    {
+        printError("题解相关参数（--cookie、--cookie-string、--solution-*、"
+                   "--max-solutions、--refresh-*、--no-solution-*、-y/--yes 等）"
+                   "需要与 --with-solutions（或 --solutions-only / "
+                   "--solutions-only-download）一起使用；正确用法："
+                   "luogu-extract -L --cookie cookies.txt --with-solutions ..."
+                   "（未启用题解功能时程序完全不碰题解）");
+        return 1;
+    }
+    if (solutions_enabled)
+    {
+        // --with-solutions / --solutions-only 需与 -M 或 -L 同用；
+        // --solutions-only-download 例外（只抓缓存，不需要导出模式）
+        if (!options.solutions_only_download && !options.markdown && !options.latex)
+        {
+            printError("参数 --with-solutions / --solutions-only 需要与 -M（导出 "
+                       "Markdown）或 -L（导出 LaTeX）一起使用；若只想抓取并缓存题解，"
+                       "请改用 --solutions-only-download");
+            return 1;
+        }
+        if (options.cookie_file.empty() && options.cookie_string.empty())
+        {
+            printError("题解列表接口需要登录态；请登录洛谷后导出 cookies.txt，"
+                       "并用 --cookie <file> 指定（或使用 --cookie-string）。"
+                       "题解功能必须带登录态，未提供 Cookie 时无法启用");
+            return 1;
+        }
+        if (!options.cookie_file.empty() && !options.cookie_string.empty())
+        {
+            printError("参数 --cookie 与 --cookie-string 不能同时使用；"
+                       "请只保留其中一个（--cookie 指定 Netscape 格式的 cookies.txt，"
+                       "--cookie-string 直接给出 Cookie 串）");
+            return 1;
+        }
     }
 
     // 仅 -L 支持的参数与 -M 一起使用属于参数填用错误：拒绝执行并提示正确用法
@@ -981,6 +1593,9 @@ int main(int argc, char *argv[])
         if (!options.font_title_zh.empty()) latex_only.push_back("--set-font-title-zh-CN");
         if (!options.font_title_en.empty()) latex_only.push_back("--set-font-title-en-US");
         if (options.no_bilibili_link) latex_only.push_back("--no-bilibili-link");
+        // 双向跳转按钮与目录条目只对 LaTeX 有意义（Markdown 侧两个跳转开关
+        // 同样有效，但 --no-solution-toc 仅 -L）
+        if (options.no_solution_toc) latex_only.push_back("--no-solution-toc");
         // -RD 只在 -L 导出下载题面图片时才有意义（-M 不下载图片）
         if (options.new_download) latex_only.push_back("--new-download");
         if (!latex_only.empty())
@@ -994,9 +1609,15 @@ int main(int argc, char *argv[])
         }
     }
 
+    // --pid / --pid-range / --tag / --difficulty 支持「空格分隔多个值」的写法，
+    // 后面跟的裸参数按这些选项的后续值处理；只有导出模式与题解抓取模式
+    // （--solutions-only-download 只抓缓存、不需要 -M/-L）才允许这样写
+    const bool bare_args_allowed = options.markdown || options.latex ||
+                                   options.with_solutions || options.solutions_only ||
+                                   options.solutions_only_download;
     if (optind < arg_count)
     {
-        if (!options.markdown && !options.latex)
+        if (!bare_args_allowed)
         {
             printError("多余的参数 '" + std::string(arg_vector[optind]) +
                        "'：该参数不是任何选项的值；请检查命令行，"
@@ -1065,10 +1686,12 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    if (!options.update && !options.markdown && !options.latex)
+    if (!options.update && !options.markdown && !options.latex &&
+        !options.solutions_only_download)
     {
         printError("未指定任何操作；请至少使用 -U（更新缓存）、-M（导出 Markdown）、"
-                   "-L（导出 LaTeX）、-C（清空缓存）或 --tags（查看标签对照表）之一，"
+                   "-L（导出 LaTeX）、-C（清空缓存）、--tags（查看标签对照表）或 "
+                   "--solutions-only-download（只抓取题解缓存）之一，"
                    "并可用 -h, --help 查看帮助信息");
         return 1;
     }
@@ -1102,6 +1725,49 @@ int main(int argc, char *argv[])
         }
     }
 
+    // ---- 题解抓取（--with-solutions / --solutions-only*）----
+    // 先按筛选条件选中题目（与后面导出共用同一份结果，避免重复解析题目缓存），
+    // 再走「计划 → 风险确认 → 抓取」，最后与题面一起导出到同一份文件
+    luogu::ProblemSelection selection;
+    luogu::SolutionBundle solution_bundle;
+    solution::CrawlStats solution_stats;
+    luogu::SolutionExportOptions solution_export;
+    if (solutions_enabled)
+    {
+        std::string select_error;
+        if (!luogu::select_problems(options.filter, selection.problems,
+                                    &selection.resolved_tags, select_error))
+        {
+            printError(select_error);
+            curl_global_cleanup();
+            return 1;
+        }
+
+        const SolutionRun run =
+            run_solutions(options, selection, solution_bundle, solution_stats);
+        if (!run.proceed)
+        {
+            curl_global_cleanup();
+            return run.exit_code;
+        }
+
+        solution_export.enabled = true;
+        solution_export.document_end = (options.solution_placement != "per-problem");
+        solution_export.solutions_only = options.solutions_only;
+        solution_export.problem_to_solution_link = !options.no_problem_to_solution_link;
+        solution_export.solution_to_problem_link = !options.no_solution_to_problem_link;
+        solution_export.solution_toc = !options.no_solution_toc;
+        solution_export.solution_meta = !options.no_solution_meta;
+
+        if (options.solutions_only_download)
+        {
+            // 只抓取并缓存，不导出文件
+            printSuccess("已按 --solutions-only-download 完成抓取，未导出任何文件");
+            curl_global_cleanup();
+            return 0;
+        }
+    }
+
     if (options.markdown)
     {
         // 输出路径按 UTF-8 构造 filesystem::path（Windows 下中文路径可用）
@@ -1109,7 +1775,10 @@ int main(int argc, char *argv[])
             options.output.empty() ? "problems.md" : options.output);
         std::string error;
         if (markdown::export_markdown(options.filter, out_path, error,
-                                      options.cover_title, display))
+                                      options.cover_title, display,
+                                      solutions_enabled ? &solution_bundle : nullptr,
+                                      solution_export,
+                                      solutions_enabled ? &selection : nullptr))
             printSuccess("已把筛选出的题目导出到 '" +
                          luogu::compat::path_to_utf8(out_path) + "'");
         else
@@ -1143,8 +1812,12 @@ int main(int argc, char *argv[])
         latex_opt.font_title_en = options.font_title_en;
         latex_opt.cover_title = options.cover_title;
 
+        latex_opt.solutions = solutions_enabled ? &solution_bundle : nullptr;
+        latex_opt.solution_export = solution_export;
+
         std::string error;
-        if (!latex::export_latex(options.filter, out_path, error, latex_opt))
+        if (!latex::export_latex(options.filter, out_path, error, latex_opt,
+                                 solutions_enabled ? &selection : nullptr))
         {
             printError(error);
             result = 1;

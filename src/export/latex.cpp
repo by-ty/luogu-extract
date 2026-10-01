@@ -37,6 +37,7 @@
 #include "luogu-extract/export/latex.h"
 #include "luogu-extract/export/latex_fonts.h"
 #include "luogu-extract/util/compat.h"
+#include "luogu-extract/util/image_util.h"
 #include "luogu-extract/util/problem_info.h"
 #include "luogu-extract/util/version.h"
 
@@ -70,6 +71,57 @@ std::string trim(const std::string &s)
         return "";
     const size_t b = s.find_last_not_of(" \t");
     return s.substr(a, b - a + 1);
+}
+
+// 表格单元格的空白清理：除 ASCII 空格外，还要去掉洛谷题面里用来「对齐
+// 源码」的全角空格（U+3000）以及不换行空格、各种 Unicode 空格。
+// 表格按列居中/右对齐排版时，残留的填充空格会把文字挤偏——例如 tuack
+// 表格的表头写成「|测试点编号　　|」，两个全角空格会让标题相对列中心
+// 左偏整整一个全角空格，看起来就是「表头没有居中」。
+std::string trim_cell(const std::string &s)
+{
+    static const char *kSpaces[] = {
+        "\xE3\x80\x80", // U+3000 全角空格（洛谷表格最常见的填充）
+        "\xC2\xA0",     // U+00A0 不换行空格
+        "\xE2\x80\x80", // U+2000 EN QUAD
+        "\xE2\x80\x81", // U+2001 EM QUAD
+        "\xE2\x80\x82", // U+2002 EN SPACE
+        "\xE2\x80\x83", // U+2003 EM SPACE
+        "\xE2\x80\x84", // U+2004
+        "\xE2\x80\x85", // U+2005
+        "\xE2\x80\x86", // U+2006
+        "\xE2\x80\x87", // U+2007
+        "\xE2\x80\x88", // U+2008
+        "\xE2\x80\x89", // U+2009
+        "\xE2\x80\x8A", // U+200A
+        "\xE2\x80\x8B", // U+200B 零宽空格
+        "\xE2\x80\xAF", // U+202F 窄不换行空格
+        "\xE2\x81\xA0", // U+2060 WORD JOINER
+        "\xEF\xBB\xBF", // U+FEFF BOM
+    };
+    std::string out = trim(s);
+    bool changed = true;
+    while (changed && !out.empty())
+    {
+        changed = false;
+        for (const char *space : kSpaces)
+        {
+            const size_t n = std::strlen(space);
+            if (out.size() >= n && out.compare(0, n, space) == 0)
+            {
+                out.erase(0, n);
+                changed = true;
+            }
+            if (out.size() >= n && out.compare(out.size() - n, n, space) == 0)
+            {
+                out.erase(out.size() - n);
+                changed = true;
+            }
+        }
+        if (changed)
+            out = trim(out);
+    }
+    return out;
 }
 
 std::string to_lower_ascii(std::string s)
@@ -3000,8 +3052,8 @@ bool has_unclosed_paren_or_bracket(const std::string &s)
 // 无法表达的交叉/ L 形合并会安全退化为空单元格，保证输出可编译。
 // tuack = true 时按洛谷「更像 Tuack 的表格」（::cute-table{tuack}）渲染：
 // 表格整体居中、去掉最左与最右两条竖线（列间竖线保留）、表头不加粗，
-// 最上/最下框线加粗，表头下方的框线加粗一档（细于上下框线）；合并语法
-// 支持完全相同。
+// 最上/最下框线加粗，表头下方的框线加粗一档（细于上下框线）；列对齐、
+// 合并语法、单元格空白处理与普通表格一致。
 // tuack = false 时保持原来的默认样式（四周边框、表头加粗、每行 \hline）。
 void emit_table(const std::vector<std::string> &rows, std::string &out,
                 bool tuack)
@@ -3028,7 +3080,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
         }
         cells.push_back(cur);
         // 去掉末尾的空单元格（源数据里常见 "||" 多出的空列）
-        while (!cells.empty() && trim(cells.back()).empty())
+        while (!cells.empty() && trim_cell(cells.back()).empty())
             cells.pop_back();
         return cells;
     };
@@ -3048,7 +3100,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
     col_types.reserve(col_count);
     for (size_t c = 0; c < col_count; ++c)
     {
-        const std::string t = trim(align_row[c]);
+        const std::string t = trim_cell(align_row[c]);
         char type;
         if (t.size() >= 3 && t.front() == ':' && t.back() == ':')
             type = 'c';
@@ -3100,12 +3152,13 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
     {
         for (size_t r = 1; r < row_count; ++r)
         {
-            if (trim(grid[r][c]) != "^")
+            if (trim_cell(grid[r][c]) != "^")
                 continue;
             long top = -1;
             if (vtop[r - 1][c] >= 0) // 上方是合并成功的 ^（链式）
                 top = vtop[r - 1][c];
-            else if (trim(grid[r - 1][c]) != "^" && trim(grid[r - 1][c]) != "<")
+            else if (trim_cell(grid[r - 1][c]) != "^" &&
+                     trim_cell(grid[r - 1][c]) != "<")
                 top = static_cast<long>(r - 1); // 上方是普通内容单元格
             if (top < 0)
                 continue; // 无法合并：按空单元格处理
@@ -3122,10 +3175,10 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
     {
         for (size_t c = 1; c < col_count; ++c)
         {
-            if (trim(grid[r][c]) != "<")
+            if (trim_cell(grid[r][c]) != "<")
                 continue;
             long src = -1;
-            const std::string left = trim(grid[r][c - 1]);
+            const std::string left = trim_cell(grid[r][c - 1]);
             if (left == "<")
                 src = hsrc[r][c - 1]; // 链式：接左侧 < 的起点（失败则为 -1）
             else if (left != "^")
@@ -3143,7 +3196,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
                     for (long cc = src; cc <= static_cast<long>(c); ++cc)
                     {
                         const std::string t =
-                            trim(grid[static_cast<size_t>(rr)][static_cast<size_t>(cc)]);
+                            trim_cell(grid[static_cast<size_t>(rr)][static_cast<size_t>(cc)]);
                         if (t != "^" && t != "<")
                         {
                             rect_ok = false;
@@ -3192,7 +3245,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
 
     // 行 r 之后、列 c 处的横向分隔线是否穿过合并单元格内部
     auto boundary_blocked = [&](size_t r, size_t c) -> bool {
-        const std::string cell = trim(grid[r][c]);
+        const std::string cell = trim_cell(grid[r][c]);
         // 纵向合并跨过该边界继续向下
         const long t = (cell == "^" && vtop[r][c] >= 0)
                            ? vtop[r][c]
@@ -3214,7 +3267,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
     {
         for (size_t c = 0; c < col_count; ++c)
         {
-            const std::string cell = trim(grid[r][c]);
+            const std::string cell = trim_cell(grid[r][c]);
             // 横向合并的内部单元格：由起始列的 \multicolumn 占用，不输出
             if (cell == "<" && hsrc[r][c] >= 0)
                 continue;
@@ -3954,6 +4007,19 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
                         item = "{" + item + "}";
                     out += "\\item " + item + "\n";
                     ++i;
+
+                    // 松散列表（loose list）：条目之间允许有空行。CommonMark
+                    // 与洛谷的渲染都把它当作**同一个**列表，编号连续；这里
+                    // 向后跳过空行，若下一非空行仍是列表条目就继续当前列表
+                    // （不跳过则每个条目各自成一个 enumerate，全部显示 1.）。
+                    // 空行后面不是条目时保持 i 不变，空行交给外层按段落处理，
+                    // 列表到此结束。
+                    size_t next = i;
+                    while (next < lines.size() && trim(lines[next]).empty())
+                        ++next;
+                    if (next > i && next < lines.size() &&
+                        std::regex_match(lines[next], kItem))
+                        i = next;
                 }
                 while (!stack.empty())
                     close_env();
@@ -4071,7 +4137,8 @@ std::string latex::markdown_to_latex(const std::string &markdown)
     return render_markdown(markdown, 0);
 }
 
-std::string latex::problem_to_latex(const problem::Problem &p, const Options &opt)
+std::string latex::problem_to_latex(const problem::Problem &p, const Options &opt,
+                                     const std::string &first_solution_lid)
 {
     const bool use_en = (opt.lang == "en");
 
@@ -4090,13 +4157,41 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
                                             inline_to_latex(section_title) + "}{" +
                                             escape_latex(strip_math_for_bookmark(section_title)) +
                                             "}";
+    // 题解导出的锚点与「查看题解」按钮（设计 §10.2）：
+    // - 锚点 sol-problem-<PID> 由已校验的题号拼成，供「返回题目」跳转；
+    // - 按钮绝不能放进 \section 的参数里，否则目录条目与 PDF 书签会被按钮
+    //   污染；正确写法是「锚点 + \section[短标题]{标题 + \hfill + 按钮}」，
+    //   方括号里的短标题只用于目录与书签（与原本 \texorpdfstring 的
+    //   书签备用串一致），按钮只出现在正文标题行右侧。
+    const bool solutions_enabled = opt.solution_export.enabled &&
+                                   !opt.solution_export.solutions_only;
+    const bool with_button = solutions_enabled &&
+                             opt.solution_export.problem_to_solution_link &&
+                             !first_solution_lid.empty();
+    const std::string section_short =
+        escape_latex(strip_math_for_bookmark(section_title));
+    std::string section_button;
+    if (with_button)
+        section_button = "\\hfill\\luogosolutionlink{" +
+                         luogu::solution_anchor(p.pid, first_solution_lid) +
+                         "}{查看题解}";
+    if (solutions_enabled)
+        out += "\\hypertarget{" + luogu::problem_anchor(p.pid) + "}{}%\n";
+
     // --show-contents-difficulty-tags：目录中的题目标题按难度着色
     // （\luogotocsection 只给写进目录的标题文字上色，正文标题、页眉、
     //   PDF 书签与目录中的引导点/页码都保持黑色）
+    // 注意：可选参数必须写成 [{...}]。题目名里常有 ']'（如
+    // 「P3953 [NOIP 2017 提高组] 逛公园」），不加花括号时 LaTeX 会在第一个
+    // ']' 处提前结束可选参数，导致标题被截断、剩余文字漏进正文，目录与
+    // 页眉也跟着出错。
     if (opt.toc_difficulty)
         out += "\\luogotocsection{" +
                std::string(luogu::difficulty_color(p.difficulty)) + "}{" +
-               section_title_latex + "}\n\n";
+               section_short + "}{" + section_title_latex + section_button + "}\n\n";
+    else if (with_button)
+        out += "\\section[{" + section_short + "}]{" + section_title_latex +
+               section_button + "}\n\n";
     else
         out += "\\section{" + section_title_latex + "}\n\n";
 
@@ -4198,10 +4293,75 @@ std::string latex::article_to_latex(const article::Article &a)
     return out;
 }
 
+namespace
+{
+// 把一篇题解渲染为 LaTeX（设计 §10.1 / §10.2 / §10.3）：
+// - 标题统一格式「题解：<题解标题>」（超过 60 字符截断，避免撑爆目录与书签）；
+// - \luogotocsolution 负责锚点、目录条目（注明所属题目）与正文标题；
+// - 「返回题目」按钮放在标题行右侧（\hfill），不进入目录与书签。
+std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
+                              const luogu::SolutionView &view,
+                              const luogu::SolutionExportOptions &sol_opt)
+{
+    const std::string title = luogu::truncate_utf8(
+        view.title.empty() ? std::string("（无标题）")
+                           : luogu::strip_solution_title_prefix(view.title),
+        60);
+    const std::string heading_plain = "题解：" + title;
+    const std::string heading_latex = "题解：" + inline_to_latex(title);
+
+    // 目录与书签文字：注明所属题目（PID + 题目名），保持黑色（不随难度着色）
+    std::string toc_text = escape_latex(heading_plain) + "（" +
+                           escape_latex(set.pid + " " + set.problem_title) + "）";
+    if (!sol_opt.solution_toc)
+        toc_text.clear();
+
+    const std::string anchor = luogu::solution_anchor(set.pid, view.lid);
+
+    std::string button;
+    if (sol_opt.solution_to_problem_link && !sol_opt.solutions_only)
+        button = "\\hfill\\luogosolutionlink{" +
+                 luogu::problem_anchor(set.pid) + "}{返回题目}";
+
+    std::string out;
+    out += "\\luogotocsolution{" + toc_text + "}{" + heading_latex + "}{" + anchor +
+           "}{" + button + "}\n\n";
+
+    // 元信息（--no-solution-meta 关闭原文链接）
+    if (sol_opt.solution_meta)
+    {
+        out += "\\noindent{\\small 来源：" + escape_latex(view.source_name) +
+               "　原文：\\href{" + escape_url(view.source_url) + "}{" +
+               escape_latex(view.source_url) + "}}\n\n";
+    }
+    if (view.upvote > 0 || view.author_name.size() > 0)
+    {
+        out += "\\noindent{\\small ";
+        if (!view.author_name.empty())
+            out += "作者：" + escape_latex(view.author_name);
+        if (view.upvote > 0)
+        {
+            if (!view.author_name.empty())
+                out += "　";
+            out += "点赞数：" + std::to_string(view.upvote);
+        }
+        out += "}\n\n";
+    }
+    if (!view.content_full)
+        out += "\\noindent{\\small\\textcolor{red}{注意：本篇正文不完整"
+               "（因 --allow-partial 导出）。}}\n\n";
+
+    if (!view.content.empty())
+        out += render_markdown(view.content, 0) + "\n";
+    return out;
+}
+} // namespace
+
 bool latex::export_latex(const luogu::ExportFilter &filter,
                          const std::filesystem::path &output_path,
                          std::string &error,
-                         const Options &opt)
+                         const Options &opt,
+                         const luogu::ProblemSelection *preselected)
 {
     error.clear();
 
@@ -4209,11 +4369,34 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 函数返回（含提前返回）时自动还原
     OptionsGuard options_guard(&opt);
 
-    // 筛选（-M / -L 共用），结果已按题号排序
-    std::vector<problem::Problem> problems;
+    // 筛选（-M / -L 共用），结果已按题号排序。
+    // 题解流程已筛选过一次时直接复用（preselected），避免重复解析题目列表缓存
+    std::vector<problem::Problem> local_problems;
     std::vector<std::string> resolved_tags;
-    if (!luogu::select_problems(filter, problems, &resolved_tags, error))
+    if (preselected)
+    {
+        local_problems = preselected->problems;
+        resolved_tags = preselected->resolved_tags;
+    }
+    else if (!luogu::select_problems(filter, local_problems, &resolved_tags, error))
+    {
         return false;
+    }
+    const std::vector<problem::Problem> &problems = local_problems;
+
+    // ---- 题解导出（设计 §十）----
+    const bool export_solutions = opt.solutions != nullptr && opt.solution_export.enabled;
+    const bool solutions_only = export_solutions && opt.solution_export.solutions_only;
+    const bool per_problem = export_solutions && !opt.solution_export.document_end;
+    if (export_solutions && solutions_only &&
+        (opt.solution_export.problem_to_solution_link ||
+         opt.solution_export.solution_to_problem_link))
+    {
+        // --solutions-only 不导出题面，双向跳转按钮会指向不存在的锚点：
+        // 自动关闭以避免死链（只提示一次）
+        std::printf("提示：--solutions-only 模式下不导出题面，"
+                    "已关闭题目与题解之间的双向跳转按钮（避免死链）。\n");
+    }
 
     // 检查图片是否都已下载到缓存；缺失时在终端用中文询问是否下载。
     // 同一 URL 跨题目去重，避免重复下载与并发写同一缓存文件。
@@ -4223,21 +4406,32 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     {
         std::set<std::string> seen_missing;
         std::error_code ec;
+        // 题面与题解正文中引用的图片一并处理（题解图片同样走现有的
+        // 图片下载通道：洛谷图床串行 + 0.5~3 秒随机间隔，不受
+        // --solution-delay 影响）
+        std::vector<std::string> candidate_urls;
         for (const auto &p : problems)
-        {
             for (const auto &url : p.image_urls())
+                candidate_urls.push_back(url);
+        if (export_solutions)
+        {
+            for (const auto &item : opt.solutions->items)
+                for (const auto &view : item.solutions)
+                    for (const auto &url : image_util::extract_urls(view.content))
+                        candidate_urls.push_back(url);
+        }
+        for (const auto &url : candidate_urls)
+        {
+            // 视频等非图片链接不算“未下载的图片”
+            if (!looks_like_url(url) || is_video_url(url))
+                continue;
+            if (seen_missing.count(url))
+                continue;
+            if (opt.new_download ||
+                !std::filesystem::exists(crawler::image_cache_path(url), ec) || ec)
             {
-                // 视频等非图片链接不算“未下载的图片”
-                if (!looks_like_url(url) || is_video_url(url))
-                    continue;
-                if (seen_missing.count(url))
-                    continue;
-                if (opt.new_download ||
-                    !std::filesystem::exists(crawler::image_cache_path(url), ec) || ec)
-                {
-                    seen_missing.insert(url);
-                    missing.push_back(url);
-                }
+                seen_missing.insert(url);
+                missing.push_back(url);
             }
         }
     }
@@ -4434,13 +4628,52 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 生成的文档与启用前完全一致。
     if (opt.toc_difficulty)
     {
-        std::fputs("\\newcommand{\\luogotocsection}[2]{%\n", out);
+        // #1 = HTML 颜色；#2 = 目录/书签用的纯文本短标题；#3 = 正文标题
+        // （可含 \hfill 与「查看题解」按钮，按钮不会进入目录与书签）
+        std::fputs("\\newcommand{\\luogotocsection}[3]{%\n", out);
         std::fputs("  \\begingroup\n", out);
         std::fputs("    \\let\\luogotocaddcontentsline\\addcontentsline\n", out);
         std::fputs("    \\renewcommand{\\addcontentsline}[3]{%\n", out);
         std::fputs("      \\luogotocaddcontentsline{##1}{##2}{\\textcolor[HTML]{#1}{##3}}}%\n", out);
-        std::fputs("    \\section{#2}%\n", out);
+        std::fputs("    \\section[{#2}]{#3}%\n", out);
         std::fputs("  \\endgroup}\n", out);
+    }
+
+    // ---- 题解导出用的宏（设计 §10.2 / §10.3）----
+    // \luogosolutionlink{<锚点>}{<文字>}：蓝底白字的跳转按钮，外观与
+    // \luogotag 完全一致（白字 + \colorbox[HTML]，\vphantom{涵} 与 \smash
+    // 固定高度与深度，多个按钮完全等高）。文字是编译期常量（查看题解 /
+    // 返回题目），不涉及用户输入。
+    //
+    // \luogotocsolution{#1}{#2}{#3}{#4}：
+    //   #1 = 目录与 PDF 书签的文字（纯文本，已转义；空串表示不进目录）
+    //   #2 = 正文标题（题解：<标题>，已做行内转换）
+    //   #3 = 锚点名 sol-<PID>-<lid>
+    //   #4 = 标题行右侧的按钮（可为空）
+    // 说明：这里只用 \addcontentsline 而不额外调用 \pdfbookmark ——
+    // hyperref 会为 \addcontentsline 的条目自动补一个同层级书签，
+    // 两者同时使用会产生重复书签（已实测）。
+    if (opt.solutions != nullptr && opt.solution_export.enabled)
+    {
+        std::fputs("\\newcommand{\\luogosolutionlink}[2]{%\n", out);
+        std::fputs("  \\hyperlink{#1}{\\textcolor{white}{\\colorbox[HTML]{3498db}{"
+                   "\\tagsfonts\\small\\vphantom{涵}\\smash{#2}}}}\n", out);
+        std::fputs("}\n", out);
+        std::fputs("\\newcommand{\\luogotocsolution}[4]{%\n", out);
+        std::fputs("  \\phantomsection\n", out);
+        std::fputs("  \\hypertarget{#3}{}%\n", out);
+        std::fputs("  \\ifx\\relax#1\\relax\\else\\addcontentsline{toc}{luogosolution}{#1}\\fi\n", out);
+        std::fputs("  \\subsection*{#2#4}%\n", out);
+        std::fputs("}\n", out);
+        // 目录条目类型 luogosolution：
+        // - \l@luogosolution 直接取 \l@section，条目缩进与题目完全对齐
+        //   （此前用 subsection，题解会比题目多缩进 2.3em，看起来没有对齐）；
+        // - \toclevel@luogosolution 固定为 2，PDF 书签层级仍是 subsection
+        //   层级（书签不参与目录排版，两者互不影响）。
+        std::fputs("\\makeatletter\n", out);
+        std::fputs("\\def\\toclevel@luogosolution{2}\n", out);
+        std::fputs("\\let\\l@luogosolution\\l@section\n", out);
+        std::fputs("\\makeatother\n", out);
     }
 
     std::fputs("\\lstset{\n", out);
@@ -4588,6 +4821,10 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\providecommand{\\argmax}{\\operatorname*{arg\\,max}}\n", out);
     std::fputs("\\providecommand{\\argmin}{\\operatorname*{arg\\,min}}\n", out);
     std::fputs("\\providecommand{\\ctg}{\\cot}\n", out);
+    // 任务列表用的 \square（未勾选方框）由 amssymb 提供，而本模板不加载
+    // amssymb；unicode-math 收录的是 \mdlgwhtsquare，这里补齐别名，
+    // 避免任务列表渲染成 Undefined control sequence。
+    std::fputs("\\providecommand{\\square}{\\mdlgwhtsquare}\n", out);
     // amssymb 的 \circledR / \circledS 未被 unicode-math 收录，而本模板不加载
     // amssymb；洛谷题面（KaTeX 支持这两个命令）用到时补齐为等价符号，
     // 避免 Undefined control sequence。
@@ -4699,22 +4936,53 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\newpage\n", out);
 
     std::fputs("\n\n", out);
-    int cnt = 0;
-    const int total = static_cast<int>(problems.size());
-    for (const auto &p : problems)
-    {
-        // 题目内容按字节数写出：内容含控制字符（缓存被篡改时）也不会被
+
+    // 写入助手：失败时统一清理临时文件（题解与题面共用）
+    auto write_body = [&](const std::string &body) -> bool {
+        // 内容按字节数写出：含控制字符（缓存被篡改时）也不会被
         // C 字符串终止符静默截断
-        const std::string body = problem_to_latex(p, opt_lang);
         if (std::fwrite(body.data(), 1, body.size(), out) != body.size())
         {
             std::fclose(out);
             std::error_code ec;
             std::filesystem::remove(tmp_path, ec);
-            error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
+            error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) +
+                    "' 失败";
             return false;
         }
-        std::fputs("\n", out);
+        return true;
+    };
+
+    int cnt = 0;
+    const int total = static_cast<int>(problems.size());
+    for (const auto &p : problems)
+    {
+        const luogu::ProblemSolutionSet *set =
+            export_solutions ? opt.solutions->find(p.pid) : nullptr;
+
+        // 题目标题行右侧的「查看题解」按钮：固定指向该题第一篇题解
+        // （同题题解连续排列，这是按钮指向可靠的前提）
+        std::string first_lid;
+        if (export_solutions && !solutions_only &&
+            opt.solution_export.problem_to_solution_link && set &&
+            !set->solutions.empty())
+            first_lid = set->solutions.front().lid;
+
+        if (!solutions_only)
+        {
+            if (!write_body(problem_to_latex(p, opt_lang, first_lid)))
+                return false;
+            std::fputs("\n", out);
+        }
+
+        // --solution-placement per-problem：题解紧跟对应题目
+        if (per_problem && set)
+        {
+            for (const auto &view : set->solutions)
+                if (!write_body(solution_to_latex(*set, view, opt.solution_export)))
+                    return false;
+        }
+
         ++cnt;
         // total == 0（筛选结果为空）时不做百分比计算，避免整数除零崩溃
         if (total > 0)
@@ -4722,6 +4990,32 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
             std::printf("\r正在导出：%3d %% (%d/%d)。 ", cnt * 100 / total, cnt, total);
             fflush(stdout);
         }
+    }
+
+    // --solution-placement document-end（默认）：题解统一置于文档最后，
+    // 每题一组、同题题解连续排列
+    if (export_solutions && !per_problem)
+    {
+        // 题解区不再另起一个与目录同级的一级标题：直接从新的一页开始，
+        // 每题一组，组标题与普通题目同为 \section 级（\section* 不进目录）
+        std::fputs("\\clearpage\n", out);
+        for (const auto &item : opt.solutions->items)
+        {
+            if (item.solutions.empty())
+                continue; // 该题无可用题解：不生成小节（也就不产生死链）
+            const std::string group_title = item.pid + " " + item.problem_title;
+            if (!write_body("\\section*{" + escape_latex(group_title) + "}\n"))
+                return false;
+            // \section* 不会自动生成书签：补一个顶层（第 0 层）书签，
+            // 各篇题解的书签仍以第 2 层级挂在它下面
+            if (!write_body("\\pdfbookmark[0]{" + escape_latex(group_title) +
+                            "}{solgroup-" + item.pid + "}\n"))
+                return false;
+            for (const auto &view : item.solutions)
+                if (!write_body(solution_to_latex(item, view, opt.solution_export)))
+                    return false;
+        }
+        std::fputs("\n", out);
     }
     // total == 0 时输出固定的完成提示（不计算百分比）
     if (total > 0)

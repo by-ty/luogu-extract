@@ -31,6 +31,7 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <vector>
 #include <zlib.h>
@@ -112,6 +113,39 @@ namespace compat
     // POSIX 用 fflush + fsync(fileno)；Windows 用 fflush + _commit。
     // 返回 true 表示成功（某些平台/文件系统不支持时按成功处理，尽力而为）。
     bool flush_and_sync(FILE *file);
+
+    // 目标文件是否已存在且可写（用于「覆盖前确认」一类的判断）。
+    // 路径不存在或无法访问时返回 false。
+    bool file_exists(const std::filesystem::path &path);
+
+    // 原子替换：把 from 改名到 to（to 已存在时覆盖）。
+    // POSIX 用 rename()；Windows 用 MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)，
+    // 保证与 POSIX 一致的覆盖语义（MinGW-w64 的 std::filesystem::rename 会因
+    // 目标已存在而失败）。from 必须与 to 在同一目录（同一文件系统）。
+    // 失败时返回 false 并把系统错误写入 error。
+    bool atomic_replace(const std::filesystem::path &from,
+                        const std::filesystem::path &to, std::string &error);
+
+    // ---- 终端交互（题解抓取的风险确认与限流暂停使用）----
+
+    // 标准输入是否连接到交互式终端（POSIX: isatty；Windows: _isatty）。
+    // 无 TTY 时所有确认一律失败闭合（拒绝执行），绝不默认继续。
+    bool stdin_is_tty();
+
+    // 判断标准输出是否连接到终端（彩色/转义序列是否值得输出）
+    bool stdout_is_tty();
+
+    // 睡眠指定毫秒（可被 std::this_thread::sleep_for 之外的信号打断，
+    // 返回后剩余时间不再补足）。仅用于极短的分片睡眠。
+    void sleep_ms(long ms);
+
+    // 以毫秒为单位等待，期间每 200 毫秒检查一次按键（只识别 ASCII 单字符，
+    // 规避 Windows 与 POSIX 终端编码差异）：
+    // - on_key 返回 true 时立即结束等待并返回 true（被按键中断）；
+    // - 无 TTY（输入被重定向）时不检测按键，睡满后返回 false；
+    // - on_key 为空时退化为纯睡眠；
+    // - 不使用线程，也不注册信号处理器（Ctrl+C 交给系统默认行为）。
+    bool sleep_interruptible_ms(long ms, const std::function<bool(char)> &on_key);
 
     // 初始化控制台输出。Windows 传统控制台默认不解析 ANSI 转义序列
     // （彩色、\033[K 清行、\033[s/\033[u 光标保存恢复等会乱码），

@@ -1213,3 +1213,73 @@ std::string luogu::describe_filter(const ExportFilter &filter,
         conds.push_back("不显示来源类标签");
     return join_strings(conds, "；");
 }
+
+// ---- 题解导出：标题、锚点（设计 §十）----
+
+std::string luogu::truncate_utf8(const std::string &text, size_t max_chars)
+{
+    size_t chars = 0;
+    size_t i = 0;
+    while (i < text.size())
+    {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        size_t len = 1;
+        if ((c & 0x80) == 0x00)
+            len = 1;
+        else if ((c & 0xE0) == 0xC0)
+            len = 2;
+        else if ((c & 0xF0) == 0xE0)
+            len = 3;
+        else if ((c & 0xF8) == 0xF0)
+            len = 4;
+        if (i + len > text.size())
+            break; // 截断在多字节序列中间：直接丢弃该残片
+        ++chars;
+        if (chars > max_chars)
+            return text.substr(0, i) + "…";
+        i += len;
+    }
+    return text;
+}
+
+std::string luogu::strip_solution_title_prefix(const std::string &title)
+{
+    size_t i = 0;
+    while (i < title.size() && (title[i] == ' ' || title[i] == '\t'))
+        ++i;
+    static const char *kPrefixes[] = {"题解：", "题解:", "题解 "};
+    for (const char *prefix : kPrefixes)
+    {
+        const std::string p = prefix;
+        if (title.compare(i, p.size(), p) != 0)
+            continue;
+        size_t j = i + p.size();
+        while (j < title.size() && (title[j] == ' ' || title[j] == '\t'))
+            ++j;
+        if (j >= title.size())
+            return title; // 只有前缀：保持原样，避免空标题
+        return title.substr(j);
+    }
+    return title;
+}
+
+std::string luogu::solution_heading(const std::string &title)
+{
+    std::string name = title.empty() ? "（无标题）"
+                                     : strip_solution_title_prefix(title);
+    // 去掉标题里可能出现的换行，避免破坏目录条目与书签
+    for (char &c : name)
+        if (c == '\n' || c == '\r' || c == '\t')
+            c = ' ';
+    return "题解：" + truncate_utf8(name, 60);
+}
+
+std::string luogu::problem_anchor(const std::string &pid)
+{
+    return "sol-problem-" + pid;
+}
+
+std::string luogu::solution_anchor(const std::string &pid, const std::string &lid)
+{
+    return "sol-" + pid + "-" + lid;
+}

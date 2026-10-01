@@ -140,11 +140,88 @@ namespace luogu
                          std::vector<std::string> *resolved_tags,
                          std::string &error);
 
+    // 一次筛选的结果（题解流程需要先拿到题目集合做计划阶段，
+    // 再把同一份结果交给导出函数，避免重复解析题目列表缓存）
+    struct ProblemSelection
+    {
+        std::vector<problem::Problem> problems;      // 已按题号排序
+        std::vector<std::string> resolved_tags;      // 解析后的标签名
+    };
+
     // 生成筛选条件的中文说明；无筛选时返回空字符串。
     // display 可选：把「不显示…」一类的题目信息显示设置也一并写入说明
     std::string describe_filter(const ExportFilter &filter,
                                 const std::vector<std::string> &resolved_tags,
                                 const DisplayOptions &display = {});
+
+    // ---- 题解导出（设计 §十）----
+
+    // 一篇已抓到的题解（导出阶段的只读视图；正文为洛谷 Markdown 原文）
+    struct SolutionView
+    {
+        std::string lid;
+        std::string title;         // 题解标题（未截断）
+        std::string author_name;
+        long long time = 0;
+        int upvote = 0;
+        std::string content;       // markdown 原文
+        bool content_full = true;
+        std::string source_name;   // 洛谷原站 / 洛谷保存站
+        std::string source_url;    // 原文地址
+    };
+
+    // 一道题的题解集合
+    struct ProblemSolutionSet
+    {
+        std::string pid;
+        std::string problem_title;              // 题目名（目录条目用）
+        std::vector<SolutionView> solutions;    // 顺序 = 题解列表顺序
+    };
+
+    // 全部题解；items 与筛选出的题目顺序一致
+    struct SolutionBundle
+    {
+        std::vector<ProblemSolutionSet> items;
+
+        const ProblemSolutionSet *find(const std::string &pid) const
+        {
+            for (const auto &item : items)
+                if (item.pid == pid)
+                    return &item;
+            return nullptr;
+        }
+    };
+
+    // 题解导出的位置与开关（--solution-placement 与各 --no-solution-* 参数）
+    struct SolutionExportOptions
+    {
+        bool enabled = false;              // 是否导出题解
+        bool document_end = true;          // true = document-end；false = per-problem
+        bool solutions_only = false;       // --solutions-only：只导出题解
+        bool problem_to_solution_link = true; // 「查看题解」按钮（仅 -L）
+        bool solution_to_problem_link = true; // 「返回题目」按钮（仅 -L）
+        bool solution_toc = true;          // 题解标题进目录（仅 -L）
+        bool solution_meta = true;         // 显示来源与原文链接
+    };
+
+    // 去掉题解标题开头与「题解：」重复的前缀：洛谷题解的标题常自带
+    // 「题解：」「题解:」「题解 」开头，直接再加前缀会出现「题解：题解：…」。
+    // 只有前缀、后面没有内容时原样返回（避免产生空标题）。
+    std::string strip_solution_title_prefix(const std::string &title);
+
+    // 题解标题统一格式「题解：<标题>」（标题自带的「题解」前缀会先去掉）；
+    // 超过 60 个字符时截断并加「…」，避免目录与书签被超长标题撑爆
+    // （按 Unicode 码点计数）
+    std::string solution_heading(const std::string &title);
+
+    // 按 Unicode 码点截断（不切断多字节序列）
+    std::string truncate_utf8(const std::string &text, size_t max_chars);
+
+    // 锚点名：题目 sol-problem-<PID>，题解 sol-<PID>-<lid>。
+    // 两者均由已校验的 PID 与 lid 拼成（PID 为字母数字，lid 为
+    // [a-z0-9]{6,32}），因此不存在注入风险。
+    std::string problem_anchor(const std::string &pid);
+    std::string solution_anchor(const std::string &pid, const std::string &lid);
 }
 
 #endif // LUOGU_EXTRACT_EXPORT_COMMON_H

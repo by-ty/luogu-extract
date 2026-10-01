@@ -85,21 +85,73 @@ std::vector<std::string> visible_tags(const std::vector<std::string> &tags,
     return out;
 }
 
+
+// 输出一篇题解（Markdown 侧，设计 §10.4）：
+// - 显式 HTML 锚点：中文标题的自动锚点在不同渲染器下不一致，必须显式指定；
+// - 题解 → 题目 的「返回题目」与 题目 → 题解 的「查看题解」两个开关独立；
+// - 元信息块（来源 / 原文）由 --no-solution-meta 关闭；
+// - 正文按洛谷 Markdown 原文输出（Markdown 侧既有语义）。
+bool write_markdown_solution(FILE *out,
+                             const std::function<bool(const std::string &)> &write_str,
+                             const std::function<bool()> &fail_write,
+                             const std::string &pid, const std::string &problem_title,
+                             const luogu::SolutionView &view,
+                             const luogu::SolutionExportOptions &opt)
+{
+    (void)problem_title;
+    std::fprintf(out, "<a id=\"%s\"></a>\n\n",
+                 luogu::solution_anchor(pid, view.lid).c_str());
+    std::fprintf(out, "### %s\n\n", luogu::solution_heading(view.title).c_str());
+    if (opt.solution_to_problem_link)
+        std::fprintf(out, "<a href=\"#%s\">返回题目</a>\n\n",
+                     luogu::problem_anchor(pid).c_str());
+    if (opt.solution_meta)
+    {
+        std::fprintf(out, "> 来源：%s\n", view.source_name.c_str());
+        std::fprintf(out, "> 原文：%s\n\n", view.source_url.c_str());
+    }
+    if (!view.content_full)
+        std::fputs("> 注意：本篇正文不完整（因 --allow-partial 导出）。\n\n", out);
+
+    const std::string content = luogu::markdown_bilibili_links(view.content);
+    if (!content.empty())
+    {
+        if (!write_str(content))
+            return fail_write();
+        if (content.back() != '\n')
+            std::fputs("\n", out);
+        std::fputs("\n", out);
+    }
+    return true;
+}
+
 } // namespace
 
 bool markdown::export_markdown(const luogu::ExportFilter &filter,
                                const std::filesystem::path &output_path,
                                std::string &error,
                                const std::string &cover_title,
-                               const luogu::DisplayOptions &display)
+                               const luogu::DisplayOptions &display,
+                               const luogu::SolutionBundle *solutions,
+                               const luogu::SolutionExportOptions &solution_export,
+                               const luogu::ProblemSelection *preselected)
 {
     error.clear();
 
-    // 筛选（-M / -L 共用），结果已按题号排序
-    std::vector<problem::Problem> problems;
+    // 筛选（-M / -L 共用），结果已按题号排序。
+    // 题解流程已筛选过一次时直接复用（preselected），避免重复解析题目列表缓存
+    std::vector<problem::Problem> local_problems;
     std::vector<std::string> resolved_tags;
-    if (!luogu::select_problems(filter, problems, &resolved_tags, error))
+    if (preselected)
+    {
+        local_problems = preselected->problems;
+        resolved_tags = preselected->resolved_tags;
+    }
+    else if (!luogu::select_problems(filter, local_problems, &resolved_tags, error))
+    {
         return false;
+    }
+    const std::vector<problem::Problem> &problems = local_problems;
 
     // 显示开关（与 -L 共用同一组参数）：
     // --show-difficulty-tags 显示难度（默认不显示）；
@@ -131,9 +183,20 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         return false;
     };
 
+    // 题解导出相关（设计 §十）：题解与题面同文件，默认统一置于文档最后
+    const bool with_solutions = solutions != nullptr && solution_export.enabled;
+    size_t solution_total = 0;
+    if (with_solutions)
+        for (const auto &item : solutions->items)
+            solution_total += item.solutions.size();
+
     // 一级标题：--set-cover-title 指定时使用指定标题，否则用默认标题
     const std::string cover = cover_title.empty() ? "洛谷题目导出" : cover_title;
-    std::fprintf(out, "# %s（共 %zu 道题）\n\n", cover.c_str(), problems.size());
+    if (with_solutions)
+        std::fprintf(out, "# %s（共 %zu 道题，%zu 篇题解）\n\n", cover.c_str(),
+                     problems.size(), solution_total);
+    else
+        std::fprintf(out, "# %s（共 %zu 道题）\n\n", cover.c_str(), problems.size());
 
     const std::string conds = luogu::describe_filter(filter, resolved_tags, display);
     std::fputs("筛选条件：", out);
@@ -177,6 +240,18 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
 
         std::fputs("---\n\n", out);
         std::fprintf(out, "# %s %s\n\n", p.pid.c_str(), title.c_str());
+
+        // 题面处的「查看题解」链接：目标为文末该题第一篇题解的显式锚点
+        // （中文标题的自动锚点在不同 Markdown 渲染器下不一致，必须显式指定）
+        const luogu::ProblemSolutionSet *sol_set =
+            with_solutions ? solutions->find(p.pid) : nullptr;
+        if (with_solutions && solution_export.problem_to_solution_link && sol_set &&
+            !sol_set->solutions.empty())
+        {
+            const std::string anchor = luogu::solution_anchor(
+                p.pid, sol_set->solutions.front().lid);
+            std::fprintf(out, "<a href=\"#%s\">查看题解</a>\n\n", anchor.c_str());
+        }
 
         if (show_difficulty)
             std::fprintf(out, "难度：%s\n\n", luogu::difficulty_label(p.difficulty));
@@ -265,6 +340,38 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
             if (!write_str(hint))
                 return fail_write();
             std::fputs("\n\n", out);
+        }
+
+        // --solution-placement per-problem：该题的题解紧跟题面之后
+        if (with_solutions && !solution_export.document_end && sol_set)
+        {
+            for (const auto &view : sol_set->solutions)
+            {
+                if (!write_markdown_solution(out, write_str, fail_write, p.pid,
+                                             title, view, solution_export))
+                    return false;
+            }
+        }
+    }
+
+    // --solution-placement document-end（默认）：题解统一置于文档最后，
+    // 每题一组、同题题解连续排列
+    if (with_solutions && solution_export.document_end)
+    {
+        std::fputs("---\n\n# 题解\n\n", out);
+        for (const auto &item : solutions->items)
+        {
+            if (item.solutions.empty())
+                continue; // 该题无可用题解：不生成小节（也就不产生死链）
+            std::fprintf(out, "## %s %s\n\n", item.pid.c_str(),
+                         item.problem_title.c_str());
+            for (const auto &view : item.solutions)
+            {
+                if (!write_markdown_solution(out, write_str, fail_write, item.pid,
+                                             item.problem_title, view,
+                                             solution_export))
+                    return false;
+            }
         }
     }
 

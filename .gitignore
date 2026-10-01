@@ -1,2 +1,4 @@
 build/
 .dev/
+cookies.txt
+*.cookies.txt

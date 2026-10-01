@@ -24,6 +24,7 @@
 
 #include <string>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace article
 {
@@ -44,6 +45,12 @@ namespace article
 
         Article();
         Article(std::string html);
+
+        // 从 lentille JSON 的 data.article 对象填充字段（洛谷原站
+        // ?_contentOnly=1 的响应即为此结构）。
+        // 未知/缺失字段一律取默认值，不抛异常；返回 false 表示结构不符合
+        // 预期（error 给出中文说明）。
+        bool from_json(const nlohmann::json &article_data, std::string &error);
 
         // 扫描文章正文 markdown 中的图片链接，返回去重后的链接列表
         std::vector<std::string> image_urls() const;

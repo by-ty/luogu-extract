@@ -35,12 +35,17 @@ namespace markdown
     // @param cover_title 一级标题文字（--set-cover-title；空串表示默认“洛谷题目导出”）
     // @param display     题目信息显示开关（与 -L 共用：来源/算法标签、难度；
     //                    默认显示来源类标签，隐藏算法标签与难度）
+    // @param solutions   题解包（nullptr 表示不导出题解）；题解与题面同文件
+    // @param solution_export 题解导出的位置与开关（--solution-placement 等）
     // @return 成功返回 true
     bool export_markdown(const luogu::ExportFilter &filter,
                          const std::filesystem::path &output_path,
                          std::string &error,
                          const std::string &cover_title = "",
-                         const luogu::DisplayOptions &display = {});
+                         const luogu::DisplayOptions &display = {},
+                         const luogu::SolutionBundle *solutions = nullptr,
+                         const luogu::SolutionExportOptions &solution_export = {},
+                         const luogu::ProblemSelection *preselected = nullptr);
 }
 
 #endif // LUOGU_EXTRACT_MARKDOWN_H

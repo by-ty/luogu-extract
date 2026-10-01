@@ -22,16 +22,22 @@
 #include "luogu-extract/util/compat.h"
 
 #include <cstring>
+#include <cerrno>
+#include <mutex>
 #include <cwchar>
+#include <thread>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <conio.h>
 #include <io.h>
 #include <shellapi.h>
 #else
+#include <poll.h>
+#include <termios.h>
 #include <unistd.h>
 #endif
 
@@ -205,6 +211,191 @@ bool flush_and_sync(FILE *file)
     const int fd = fileno(file);
     return fd >= 0 && fsync(fd) == 0;
 #endif
+}
+
+bool file_exists(const std::filesystem::path &path)
+{
+    std::error_code ec;
+    return std::filesystem::exists(path, ec) && !ec;
+}
+
+bool atomic_replace(const std::filesystem::path &from,
+                    const std::filesystem::path &to, std::string &error)
+{
+    error.clear();
+#ifdef _WIN32
+    // MoveFileExW 默认不覆盖已存在的目标：必须显式给出 REPLACE_EXISTING，
+    // 才能与 POSIX rename() 的语义一致（MinGW-w64 的 std::filesystem::rename
+    // 走 _wrename，目标存在时直接失败）
+    if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING))
+        return true;
+    const DWORD code = GetLastError();
+    error = "系统错误码 " + std::to_string(static_cast<unsigned long>(code));
+    return false;
+#else
+    // POSIX rename() 在同一文件系统内是原子的，且目标存在时覆盖
+    if (std::rename(from.c_str(), to.c_str()) == 0)
+        return true;
+    error = std::strerror(errno);
+    return false;
+#endif
+}
+
+bool stdin_is_tty()
+{
+#ifdef _WIN32
+    return _isatty(_fileno(stdin)) != 0;
+#else
+    return isatty(fileno(stdin)) != 0;
+#endif
+}
+
+bool stdout_is_tty()
+{
+#ifdef _WIN32
+    return _isatty(_fileno(stdout)) != 0;
+#else
+    return isatty(fileno(stdout)) != 0;
+#endif
+}
+
+void sleep_ms(long ms)
+{
+    if (ms <= 0)
+        return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+}
+
+#ifndef _WIN32
+namespace
+{
+    // POSIX 终端默认是规范模式（行缓冲）：单个按键要等到回车才会交给进程，
+    // 「按 S 立即停止」就无从谈起。这里在每次按键轮询期间临时切到 cbreak
+    // 模式（关掉 ICANON 与 ECHO，保留 ISIG 让 Ctrl+C 仍然是中断信号），
+    // 离开作用域立刻还原。作用域只有一次 200 毫秒的轮询，异常路径由
+    // 析构函数兜底；不注册信号处理器。
+    class CbreakGuard
+    {
+    public:
+        CbreakGuard()
+        {
+            if (!isatty(STDIN_FILENO))
+                return;
+            if (tcgetattr(STDIN_FILENO, &saved_) != 0)
+                return;
+            termios raw = saved_;
+            raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
+            raw.c_cc[VMIN] = 0;
+            raw.c_cc[VTIME] = 0;
+            if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
+                return;
+            active_ = true;
+        }
+        ~CbreakGuard()
+        {
+            if (active_)
+                tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
+        }
+        CbreakGuard(const CbreakGuard &) = delete;
+        CbreakGuard &operator=(const CbreakGuard &) = delete;
+
+    private:
+        bool active_ = false;
+        termios saved_{};
+    };
+} // namespace
+#endif
+
+namespace
+{
+    // 非阻塞读取一个按键（只识别 ASCII 单字符）。
+    // 没有待处理输入时返回 false。stdin 非 TTY 时始终返回 false。
+    //
+    // POSIX 下一次 read 可能一次拿到多个字节（用户连按或提前输入），
+    // 只取首字节会把其余字节丢掉（可能拆散一行预输入的文本），
+    // 因此把多读到的字节留在内部缓冲里，逐字节返回。
+    bool read_key_async(char &out)
+    {
+        // auto 模式下有两条通道并行等待，可能同时轮询按键：加锁串行化
+        static std::mutex key_mutex;
+        std::lock_guard<std::mutex> key_lock(key_mutex);
+#ifdef _WIN32
+        if (!_kbhit())
+            return false;
+        const int ch = _getch();
+        if (ch == 0 || ch == 224)
+        {
+            // 功能键/方向键会先给出 0 或 224，再给出扫描码：两个字节都丢掉
+            if (_kbhit())
+                _getch();
+            return false;
+        }
+        out = static_cast<char>(ch & 0x7F);
+        return true;
+#else
+        static unsigned char pending[256];
+        static size_t pending_len = 0;
+        static size_t pending_pos = 0;
+
+        if (pending_pos < pending_len)
+        {
+            // 多字节 UTF-8 输入：只取首字节（不解析中文，确认只认 ASCII 单字符）
+            out = static_cast<char>(pending[pending_pos++] & 0x7F);
+            return true;
+        }
+
+        struct pollfd pfd;
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        const int ready = ::poll(&pfd, 1, 0);
+        if (ready <= 0 || !(pfd.revents & (POLLIN | POLLHUP)))
+            return false;
+        const ssize_t n = ::read(STDIN_FILENO, pending, sizeof(pending));
+        if (n <= 0)
+            return false;
+        pending_len = static_cast<size_t>(n);
+        pending_pos = 1;
+        out = static_cast<char>(pending[0] & 0x7F);
+        return true;
+#endif
+    }
+} // namespace
+
+bool sleep_interruptible_ms(long ms, const std::function<bool(char)> &on_key)
+{
+    if (ms <= 0)
+        return false;
+    if (!on_key || !stdin_is_tty())
+    {
+        sleep_ms(ms);
+        return false;
+    }
+
+    const long kStepMs = 200;
+    long remaining = ms;
+    while (remaining > 0)
+    {
+        const long chunk = remaining < kStepMs ? remaining : kStepMs;
+#ifndef _WIN32
+        // 轮询期间临时切到 cbreak，让单键（S / C）无需回车即可被读到
+        CbreakGuard cbreak;
+#endif
+        sleep_ms(chunk);
+        remaining -= chunk;
+        char key = 0;
+        // 一次可能积累多个按键：逐个消费，任一命中即中断。
+        // 上限 32 个/轮：输入被重定向或被人为灌入时（如 `yes |`），
+        // 无上限的消费循环会一直有数据可读而永不返回
+        int consumed = 0;
+        while (consumed < 32 && read_key_async(key))
+        {
+            ++consumed;
+            if (on_key(key))
+                return true;
+        }
+    }
+    return false;
 }
 
 void init_console()
