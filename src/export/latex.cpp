@@ -2081,6 +2081,7 @@ std::string regex_transform(const std::string &s, const std::regex &re,
 std::string inline_to_latex(const std::string &text);
 std::string inline_to_latex_impl(const std::string &text, std::vector<std::string> &raws,
                                  std::vector<bool> &is_math, int depth = 0);
+std::string inline_code_latex(const std::string &raw);
 
 // 当前导出过程的 LaTeX 显示选项。仅 export_latex 通过 OptionsGuard 设置；
 // 行内转换（如 bilibili 视频 URL 是否输出为超链接）据此判断。
@@ -2362,7 +2363,8 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
         // 避免 ``code`` 这类写法留下多余反引号
         static const std::regex re("`+([^`]+?)`+");
         s = regex_transform(s, re, [&](const std::smatch &m) {
-            return protect("\\texttt{" + escape_latex(m[1].str()) + "}");
+            // 行内代码在任意字符之间可断行，长代码不会顶出右边距
+            return protect(inline_code_latex(m[1].str()));
         });
     }
     // 4. 图片包在链接里：[![](img)](url) → \href{url}{图片}；
@@ -2587,6 +2589,30 @@ std::string inline_to_latex(const std::string &text)
     std::vector<std::string> raws;
     std::vector<bool> is_math;
     return inline_to_latex_impl(text, raws, is_math);
+}
+
+// 行内代码（Markdown 的 `code`）的 LaTeX 形式：\texttt{...}，并在任意两个
+// 字符之间插入 \allowbreak。行内代码里通常没有空格可以断行，长代码（如
+// 解压密码 `!noip@Nov29,2025:dream`、长文件名）会整段顶出右边距；插入断点
+// 后 TeX 可以在行末任意两个字符之间断开、代码在下一行接着排（不显示连字符）。
+// 断点只能是“字符与字符之间”，不能落在 \& 、\_ 这类转义序列或
+// \textbackslash{} 这类命令中间，因此这里按 UTF-8 字符逐个转义后再拼接：
+// 先整体转义再插断点会切断这些命令。
+std::string inline_code_latex(const std::string &raw)
+{
+    std::string out = "\\texttt{";
+    for (size_t i = 0; i < raw.size();)
+    {
+        size_t len = 1;
+        utf8_codepoint_at(raw, i, len);
+        out += escape_latex(raw.substr(i, len));
+        // \allowbreak 后面固定跟一个空组而不是空格：控制词后的空格会被 TeX
+        // 全部跳过，代码里的空格（如 `int main()`）会因此消失
+        out += "\\allowbreak{}";
+        i += len;
+    }
+    out += "}";
+    return out;
 }
 
 // 是否以某种“块级”语法开头（用于结束普通段落）
@@ -3179,6 +3205,43 @@ std::string fold_box_latex(const FoldStyle &style, const std::string &title,
     if (!content.empty() && content.back() != '\n')
         out += '\n';
     out += "\\end{mdframed}\n\n";
+    return out;
+}
+
+// 区块引用（Markdown 的 >）的渲染：mdframed 环境，样式见导言区的
+// \mdfdefinestyle{luogoquote}——只在左侧画一条浅灰竖条（颜色与洛谷网页
+// 一致），其余三条边线不画，竖条随内容跨页延续（顶层的 mdframed 可以
+// 自然跨页，嵌套的引用见 quote_piece_latex）。
+std::string quote_box_latex(const std::string &content)
+{
+    std::string out;
+    out += "\\begin{mdframed}[style=luogoquote]\n";
+    out += content;
+    if (!content.empty() && content.back() != '\n')
+        out += '\n';
+    out += "\\end{mdframed}\n\n";
+    return out;
+}
+
+// 嵌套区块引用的一块（引用里的引用，或折叠框里的引用）：与嵌套折叠框
+// 同理，mdframed 的嵌套盒子不能跨页，内容按顶层块切成若干矮块后首尾相接，
+// 竖条看起来仍是连续的一条（切块与间距处理见 fold_piece_latex 的注释）。
+// 只有第一块留上内边距、最后一块留下内边距，中间的块紧贴在一起。
+std::string quote_piece_latex(const std::string &content, bool first, bool last)
+{
+    std::string out;
+    out += "\\begin{mdframed}[style=luogoquote";
+    out += first ? ", innertopmargin=2pt" : ", innertopmargin=0pt";
+    out += last ? ", innerbottommargin=2pt" : ", innerbottommargin=0pt";
+    out += ", skipabove=0pt, skipbelow=0pt]\n";
+    // 小块不能跨页，框内图片高度上限与切块时的估算（18 行）保持一致
+    out += "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
+    out += content;
+    if (!content.empty() && content.back() != '\n')
+        out += '\n';
+    out += "\\luogofoldnoparlist\n"; // 让本块结束后不再补竖直间距
+    out += "\\end{mdframed}\n";
+    out += "\\luogofoldparlist\n"; // 还原开关，避免影响后面的列表/盒子
     return out;
 }
 
@@ -3818,9 +3881,16 @@ std::string split_long_lines(const std::string &content)
 }
 
 // 把一段 markdown / HTML 文本转换为 LaTeX（块级处理）。
-// 折叠框需要把框内内容整体放进盒子里，因此按嵌套层递归调用自身：
+// 折叠框 / 区块引用需要把框内内容整体放进盒子里，因此按嵌套层递归调用自身：
 // @param fold_depth 当前所在的折叠框嵌套层数（0 = 不在任何折叠框内）
-std::string render_markdown(const std::string &markdown, int fold_depth)
+// @param quote_depth 当前所在的区块引用嵌套层数（0 = 不在任何引用内）
+// @param box_para_indent 本层内容的第一个段落是否需要手动补首行缩进：
+//        mdframed 的内容从水平模式开始排，盒子里的第一段不会自动缩进，
+//        要自己补 \hspace{\parindent}（见文件下方的段落处理）；嵌套盒子被
+//        切成多块时只有第一块需要补，续块的首段接着上一块排（见
+//        quote_piece_latex / fold_piece_latex）。
+std::string render_markdown(const std::string &markdown, int fold_depth,
+                            int quote_depth = 0, bool box_para_indent = true)
 {
     std::vector<std::string> lines;
     lines = split_lines(markdown);
@@ -4014,11 +4084,13 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
                             piece += lines[k];
                         }
                         // 各块首尾相接：只有第一块画标题条与上框线、
-                        // 最后一块画下框线，视觉上仍是一个完整的框
+                        // 最后一块画下框线，视觉上仍是一个完整的框；
+                        // 首行缩进同样只有第一块的第一段要补
                         out += fold_piece_latex(
                             *fold, inline_to_latex(fold_title),
-                            render_markdown(piece, fold_depth + 1), c == 0,
-                            c + 1 == chunks.size());
+                            render_markdown(piece, fold_depth + 1,
+                                            quote_depth, c == 0),
+                            c == 0, c + 1 == chunks.size());
                     }
                 }
                 // 找不到收尾行时把剩余内容都当作框内内容（不再前进到哨兵后）
@@ -4143,12 +4215,16 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
                     // 与代码块同字体（\luogomarkdownheading）
                     out += "\\textbf{{\\luogomarkdownheading " + title + "}}\n\n";
                 }
-                else if (n >= 2 && n <= 4)
+                else if (n >= 2 && n <= 5)
                 {
-                    // Markdown 的 ## / ### / #### 对应 LaTeX 的 subsection /
-                    // subsubsection / paragraph：默认使用 ctex fontset 预设的
-                    // 黑体；\luogomarkdownheading 在用户指定 --set-font-title-*
-                    // 时优先切换为用户标题字体，保证该系列参数优先级最高。
+                    // Markdown 的 ## / ### / #### / ##### 对应 LaTeX 的
+                    // subsection / subsubsection / paragraph / subparagraph：
+                    // 默认使用 ctex fontset 预设的黑体；\luogomarkdownheading
+                    // 在用户指定 --set-font-title-* 时优先切换为用户标题字体，
+                    // 保证该系列参数优先级最高。
+                    // \paragraph / \subparagraph 在 LaTeX 里默认是“接排标题”
+                    // （标题与后面的正文排在同一行），导言区用 titlesec 把它们
+                    // 改成独占一行的悬挂标题，与洛谷网页的 h4 / h5 一致。
                     out += "\\" + std::string(kCmds[n - 1]) +
                            "{{\\luogomarkdownheading " + title + "}}\n\n";
                 }
@@ -4181,79 +4257,71 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
         }
 
         // ---- 区块引用 ----
+        // Markdown 的 >（可嵌套：> > 表示引用里的引用）。这里只剥掉一层
+        // “>”标记，剩下的内容交给递归调用按普通块级语法渲染：引用里的
+        // 标题、列表、代码块、表格与 :::info / :::align 等指令因此都能正常
+        // 处理，而不是被当成一行普通文字（旧实现只把引用行当行内片段拼接，
+        // 引用里的 # 标题还会被二次转义成字面量）。
+        // > 后的一个空格属于标记的一部分，其余空白原样保留——行尾的两个
+        // 空格是 Markdown 的硬换行标记，交给递归转换去识别（不能用 trim，
+        // 否则硬换行会退化成普通空格）。
         if (line[0] == '>')
         {
-            using Part = std::pair<std::string, bool>;
-            std::vector<std::vector<Part>> groups; // 空行分段
-            std::vector<Part> cur;
+            std::vector<std::string> quoted;
             while (i < lines.size())
             {
-                const std::string l = trim(lines[i]);
-                if (l.empty() || l[0] != '>')
+                const std::string &raw_line = lines[i];
+                const size_t start = raw_line.find_first_not_of(" \t");
+                if (start == std::string::npos || raw_line[start] != '>')
                     break;
-                size_t pos = 0;
-                while (pos < l.size() && l[pos] == '>')
+                size_t pos = start + 1; // 跳过这一层的 '>'
+                if (pos < raw_line.size() && raw_line[pos] == ' ')
                     ++pos;
-                if (pos < l.size() && l[pos] == ' ')
-                    ++pos;
-                std::string body = l.substr(pos);
-                bool hard = false;
-                if (body.size() >= 2 && body.back() == ' ' && body[body.size() - 2] == ' ')
-                {
-                    hard = true;
-                    body = body.substr(0, body.size() - 2);
-                }
-                else if (!body.empty() && body.back() == ' ')
-                {
-                    body.pop_back();
-                }
-
-                if (trim(body).empty())
-                {
-                    if (!cur.empty())
-                    {
-                        groups.push_back(cur);
-                        cur.clear();
-                    }
-                }
-                else if (body[0] == '#')
-                {
-                    if (!cur.empty())
-                    {
-                        groups.push_back(cur);
-                        cur.clear();
-                    }
-                    size_t n = 0;
-                    while (n < body.size() && body[n] == '#')
-                        ++n;
-                    // 引用块内的 # 标题：中文黑体、西文与代码块同字体
-                    groups.push_back({{"\\textbf{{\\luogomarkdownheading " +
-                                        inline_to_latex(trim(body.substr(n))) + "}}",
-                                        false}});
-                }
-                else
-                {
-                    if (!cur.empty() &&
-                        has_unclosed_paren_or_bracket(cur.back().first))
-                    {
-                        // 上一行链接未闭合（如 [![](img)]( 换行 url），并入同一片段
-                        cur.back().first += " " + body;
-                        cur.back().second = cur.back().second || hard;
-                    }
-                    else
-                    {
-                        cur.emplace_back(body, hard);
-                    }
-                }
+                quoted.push_back(raw_line.substr(pos));
                 ++i;
             }
-            if (!cur.empty())
-                groups.push_back(cur);
 
-            out += "\\begin{quote}\n";
-            for (const auto &g : groups)
-                out += join_inline_parts(g) + "\n\n";
-            out += "\\end{quote}\n\n";
+            std::string inner;
+            for (size_t k = 0; k < quoted.size(); ++k)
+            {
+                if (k)
+                    inner += '\n';
+                inner += quoted[k];
+            }
+
+            if (fold_depth == 0 && quote_depth == 0)
+            {
+                // 顶层引用：mdframed 可以自然跨页，整段放进一个框
+                const std::string body =
+                    render_markdown(inner, fold_depth, quote_depth + 1);
+                if (!trim(body).empty())
+                    out += quote_box_latex(body);
+            }
+            else
+            {
+                // 嵌套引用（引用里的引用 / 折叠框里的引用）不能跨页：
+                // 与嵌套折叠框同样按顶层块切成矮块，竖条首尾相接。
+                // 引用里没有内容时 blocks 为空，不输出空框。
+                const auto blocks =
+                    scan_markdown_blocks(quoted, 0, quoted.size());
+                const auto chunks =
+                    group_blocks_into_chunks(blocks, kFoldBoxMaxRows);
+                for (size_t c = 0; c < chunks.size(); ++c)
+                {
+                    const auto &chunk = chunks[c];
+                    std::string piece;
+                    for (size_t k = chunk.first; k < chunk.second; ++k)
+                    {
+                        if (k > chunk.first)
+                            piece += '\n';
+                        piece += quoted[k];
+                    }
+                    out += quote_piece_latex(
+                        render_markdown(piece, fold_depth, quote_depth + 1,
+                                        c == 0),
+                        c == 0, c + 1 == chunks.size());
+                }
+            }
             continue;
         }
 
@@ -4430,14 +4498,17 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
                     para = "\\vspace{\\medskipamount}\n" + para +
                            "\n\\vspace{\\medskipamount}";
                 }
-                else if (fold_depth > 0 && out.empty() &&
+                else if ((fold_depth > 0 || quote_depth > 0) &&
+                         box_para_indent && out.empty() &&
                          !line_starts_with_image(parts.front().first))
                 {
-                    // 折叠框内第一段的首行缩进要自己补：mdframed 的内容从水平
-                    // 模式开始排，LaTeX 不会给它加首行缩进，\indent 此时也无效，
-                    // 只能用 \hspace 手动缩进两格。只补这一处：其他位置的段落
-                    // LaTeX 会自己缩进（补了会缩进两次）。以图片开头的段落不
-                    // 缩进：图片按 \linewidth 缩放，再加缩进会超出右边界。
+                    // 折叠框 / 区块引用内的第一段的首行缩进要自己补：mdframed
+                    // 的内容从水平模式开始排，LaTeX 不会给它加首行缩进，
+                    // \indent 此时也无效，只能用 \hspace 手动缩进两格。
+                    // 只补这一处：其他位置的段落 LaTeX 会自己缩进（补了会缩进
+                    // 两次）；嵌套盒子切成多块时只有第一块补（box_para_indent），
+                    // 续块的首段接着上一块排。以图片开头的段落不缩进：图片按
+                    // \linewidth 缩放，再加缩进会超出右边界。
                     para = "\\hspace{\\parindent}" + para;
                 }
                 out += para + "\n\n";
@@ -4803,6 +4874,11 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     // bookmark 宏包在单次 xelatex 编译中也能写入 PDF 书签，确保「目录」
     // 和每个题目的书签不依赖 .out 的多遍重跑；必须在 hyperref 之后加载。
     std::fputs("\\usepackage{bookmark}\n", out);
+    // 行内代码（inline_code_latex）会在任意两个字符之间插入 \allowbreak，
+    // 使长代码能在行末断开。标题里出现行内代码时，hyperref 会把标题展开成
+    // PDF 书签字符串，遇到 \allowbreak 会刷出 "Token not allowed in a PDF
+    // string" 警告（书签里它也没有意义），这里在 PDF 字符串中把它定义为空。
+    std::fputs("\\pdfstringdefDisableCommands{\\def\\allowbreak{}}\n", out);
     std::fputs("\\usepackage[normalem]{ulem}\n", out);
     std::fputs("\\usepackage{amsmath}\n", out);
     std::fputs("\\usepackage{mathtools}\n", out);
@@ -4910,6 +4986,16 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
                  subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
     std::fprintf(out, "\\titleformat{\\subsubsection}\n{%s%s\\color{gray}}\n{}\n{1em}{}\n",
                  subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
+    // Markdown 的 #### / ##### 用 \paragraph / \subparagraph 渲染，而这两级在
+    // LaTeX 里默认是“接排标题”：标题与后面的正文排在同一行（正文紧接着标题
+    // 出现、既不另起一行也不换段），洛谷网页则把 h4 / h5 渲染成独占一行的
+    // 块级标题。这里用 titlesec 把它们改成悬挂标题（标题独占一行，正文另起
+    // 一段），字体沿用类默认的 \normalfont\normalsize\bfseries，与改动前一致；
+    // 上下间距与原“接排标题”的间距保持同一量级（3.25ex plus 1ex minus .2ex）。
+    std::fputs("\\titleformat{\\paragraph}[hang]{\\normalfont\\normalsize\\bfseries}{}{0em}{}\n", out);
+    std::fputs("\\titlespacing*{\\paragraph}{0pt}{3.25ex plus 1ex minus .2ex}{0.75ex}\n", out);
+    std::fputs("\\titleformat{\\subparagraph}[hang]{\\normalfont\\normalsize\\bfseries}{}{0em}{}\n", out);
+    std::fputs("\\titlespacing*{\\subparagraph}{0pt}{3.25ex plus 1ex minus .2ex}{0.5ex}\n", out);
 
     // --show-contents-difficulty-tags 用的 \luogotocsection{<HTML 颜色>}{<标题>}：
     // 相当于 \section，但把写进 .toc 的目录项文字包进 \textcolor，使目录里的
@@ -5096,6 +5182,13 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("  linecolor=black,\n", out);
     std::fputs("  backgroundcolor=white,\n", out);
     std::fputs("  fontcolor=black,\n", out);
+    // 四条边线必须逐条显式写出：mdframed 的框线开关会被嵌套的盒子继承，
+    // 而区块引用（luogoquote）只画左边线，折叠框若依赖默认值就会出现
+    // “引用里的折叠框只剩标题条、四周没有框线”（见 quote_box_latex）。
+    std::fputs("  topline=true,\n", out);
+    std::fputs("  bottomline=true,\n", out);
+    std::fputs("  leftline=true,\n", out);
+    std::fputs("  rightline=true,\n", out);
     std::fputs("  leftmargin=0pt,\n", out);
     std::fputs("  rightmargin=0pt,\n", out);
     std::fputs("  innerleftmargin=6pt,\n", out);
@@ -5112,6 +5205,36 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("  frametitlerule=false,\n", out);
     std::fputs("  frametitleaboveskip=4pt,\n", out);
     std::fputs("  frametitlebelowskip=4pt,\n", out);
+    std::fputs("  skipabove=6pt,\n", out);
+    std::fputs("  skipbelow=6pt,\n", out);
+    std::fputs("  nobreak=false,\n", out);
+    std::fputs("}\n", out);
+    // 区块引用（Markdown 的 >）左侧的浅灰竖条：颜色与洛谷网页一致
+    // （rgb(238,238,238)）；只画左边一条线，其余三边不画。
+    std::fputs("\\definecolor{luogoquotebar}{RGB}{238,238,238}\n", out);
+    // 区块引用样式：左侧 4pt 浅灰竖条 + 右侧与上下都不留边线，
+    // 左内边距 8pt（正文与竖条之间留一点距离），右内边距 0（引用文字与
+    // 正文一样占满版心宽度）；顶层的引用可以自然跨页，竖条随内容延续；
+    // 嵌套的引用（引用里的引用 / 折叠框里的引用）会被切成若干矮块，
+    // 每块只留一条左边线、块间不留间距，视觉上仍是连续的一条（见
+    // quote_piece_latex）。背景不设颜色：引用处在什么底色上就保持什么底色。
+    std::fputs("\\mdfdefinestyle{luogoquote}{%\n", out);
+    std::fputs("  topline=false,\n", out);
+    std::fputs("  bottomline=false,\n", out);
+    std::fputs("  rightline=false,\n", out);
+    std::fputs("  leftline=true,\n", out);
+    std::fputs("  linewidth=4pt,\n", out);
+    std::fputs("  linecolor=luogoquotebar,\n", out);
+    std::fputs("  fontcolor=black,\n", out);
+    std::fputs("  leftmargin=0pt,\n", out);
+    std::fputs("  rightmargin=0pt,\n", out);
+    std::fputs("  innerleftmargin=8pt,\n", out);
+    std::fputs("  innerrightmargin=0pt,\n", out);
+    std::fputs("  innertopmargin=2pt,\n", out);
+    std::fputs("  innerbottommargin=2pt,\n", out);
+    // 标题必须显式清空：mdframed 的选项会被嵌套的盒子继承，折叠框里的引用
+    // 若不写这一项就会把上一级的标题条重复画在每一小块上（同 fold_piece_latex）
+    std::fputs("  frametitle={},\n", out);
     std::fputs("  skipabove=6pt,\n", out);
     std::fputs("  skipbelow=6pt,\n", out);
     std::fputs("  nobreak=false,\n", out);
