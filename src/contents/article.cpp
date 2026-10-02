@@ -36,6 +36,61 @@
 using nlohmann::json;
 using article::Article;
 
+namespace
+{
+// 官方接口的字段类型并不稳定（例如 "content": null、"upvote": "5"、
+// "author": 3）：nlohmann 的 value()/get<>() 在「键存在但类型不符」时抛
+// type_error，而本文件的解析跑在抓取线程里，异常逃出线程函数即 terminate。
+// 因此统一走下面几个容错取值：键缺失或类型不符一律取默认值，绝不抛异常。
+std::string str_value(const json &obj, const char *key, const std::string &fallback = "")
+{
+    if (!obj.is_object() || !obj.contains(key))
+        return fallback;
+    const json &value = obj[key];
+    if (!value.is_string())
+        return fallback;
+    return luogu::compat::strip_control_chars(value.get<std::string>());
+}
+
+int int_value(const json &obj, const char *key, int fallback = 0)
+{
+    if (!obj.is_object() || !obj.contains(key))
+        return fallback;
+    const json &value = obj[key];
+    if (value.is_number_integer())
+        return value.get<int>();
+    if (value.is_number_unsigned())
+        return static_cast<int>(value.get<unsigned long long>());
+    if (value.is_number_float())
+        return static_cast<int>(value.get<double>());
+    return fallback;
+}
+
+long long ll_value(const json &obj, const char *key, long long fallback = 0)
+{
+    if (!obj.is_object() || !obj.contains(key))
+        return fallback;
+    const json &value = obj[key];
+    if (value.is_number_integer())
+        return value.get<long long>();
+    if (value.is_number_unsigned())
+        return static_cast<long long>(value.get<unsigned long long>());
+    if (value.is_number_float())
+        return static_cast<long long>(value.get<double>());
+    return fallback;
+}
+
+bool bool_value(const json &obj, const char *key, bool fallback = false)
+{
+    if (!obj.is_object() || !obj.contains(key))
+        return fallback;
+    const json &value = obj[key];
+    if (!value.is_boolean())
+        return fallback;
+    return value.get<bool>();
+}
+} // namespace
+
 article::Article::Article() { return; }
 
 article::Article::Article(std::string html)
@@ -121,52 +176,42 @@ bool article::Article::from_json(const json &articleData, std::string &error)
         return false;
     }
 
-    // 基本字段（过滤控制字符，避免 NUL 截断输出/破坏 LaTeX）
-    lid = luogu::compat::strip_control_chars(articleData.value("lid", ""));
-    title = luogu::compat::strip_control_chars(articleData.value("title", ""));
-    category = articleData.value("category", 0);
-    time = articleData.value("time", 0LL);
+    // 基本字段（str_value 内部已过滤控制字符，避免 NUL 截断输出/破坏 LaTeX）
+    lid = str_value(articleData, "lid");
+    title = str_value(articleData, "title");
+    category = int_value(articleData, "category");
+    time = ll_value(articleData, "time");
 
-    // 作者信息
-    if (articleData.contains("author") && !articleData["author"].is_null())
+    // 作者信息（author 可能是 null，也可能不是对象）
+    if (articleData.contains("author") && articleData["author"].is_object())
     {
-        author_uid = articleData["author"].value("uid", 0);
-        author_name = luogu::compat::strip_control_chars(
-            articleData["author"].value("name", ""));
-        author_avatar = luogu::compat::strip_control_chars(
-            articleData["author"].value("avatar", ""));
+        author_uid = int_value(articleData["author"], "uid");
+        author_name = str_value(articleData["author"], "name");
+        author_avatar = str_value(articleData["author"], "avatar");
     }
 
     // 统计数据
-    upvote = articleData.value("upvote", 0);
-    reply_count = articleData.value("replyCount", 0);
-    favor_count = articleData.value("favorCount", 0);
-    status = articleData.value("status", 0);
+    upvote = int_value(articleData, "upvote");
+    reply_count = int_value(articleData, "replyCount");
+    favor_count = int_value(articleData, "favorCount");
+    status = int_value(articleData, "status");
 
     // 对应的题解信息
-    if (articleData.contains("solutionFor") && !articleData["solutionFor"].is_null() &&
-        articleData["solutionFor"].is_object())
+    if (articleData.contains("solutionFor") && articleData["solutionFor"].is_object())
     {
-        solution_pid = luogu::compat::strip_control_chars(
-            articleData["solutionFor"].value("pid", ""));
-        solution_type = luogu::compat::strip_control_chars(
-            articleData["solutionFor"].value("type", ""));
-        solution_name = luogu::compat::strip_control_chars(
-            articleData["solutionFor"].value("name", ""));
-        solution_difficulty = articleData["solutionFor"].value("difficulty", 0);
+        solution_pid = str_value(articleData["solutionFor"], "pid");
+        solution_type = str_value(articleData["solutionFor"], "type");
+        solution_name = str_value(articleData["solutionFor"], "name");
+        solution_difficulty = int_value(articleData["solutionFor"], "difficulty");
     }
 
-    promote_status = articleData.value("promoteStatus", 0);
+    promote_status = int_value(articleData, "promoteStatus");
 
     // 文章内容
-    content = luogu::compat::strip_control_chars(
-        articleData.value("content", ""));
-    content_full = articleData.value("contentFull", false);
+    content = str_value(articleData, "content");
+    content_full = bool_value(articleData, "contentFull");
 
-    if (articleData.contains("adminNote") && !articleData["adminNote"].is_null() &&
-        articleData["adminNote"].is_string())
-        admin_note = luogu::compat::strip_control_chars(
-            articleData["adminNote"].get<std::string>());
+    admin_note = str_value(articleData, "adminNote");
 
     return true;
 }

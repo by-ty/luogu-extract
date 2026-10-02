@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <ctime>
 #include <deque>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -36,8 +37,9 @@
 
 namespace
 {
-const char *kColorYellow = "\033[1;33m";
-const char *kColorReset = "\033[0m";
+// 重定向到文件/管道时不写 ANSI 转义序列
+const char *kColorYellow = luogu::compat::stdout_is_tty() ? "\033[1;33m" : "";
+const char *kColorReset = luogu::compat::stdout_is_tty() ? "\033[0m" : "";
 
 void print_warning(const std::string &message)
 {
@@ -642,9 +644,20 @@ void auto_worker(AutoContext &ctx, int site)
         }
 
         const AutoTask task = ctx.tasks[slot];
-        FetchOutcome outcome =
-            fetch_one_article(task.pid, task.summary, solution::site_of(ch),
-                              *ctx.opt);
+        FetchOutcome outcome;
+        try
+        {
+            outcome = fetch_one_article(task.pid, task.summary,
+                                        solution::site_of(ch), *ctx.opt);
+        }
+        catch (const std::exception &e)
+        {
+            // 兜底：线程函数里未捕获的异常会直接 std::terminate（且没有中文
+            // 提示），这里把解析/缓存层的意外异常折算成一次抓取失败
+            outcome.kind = FetchOutcome::Kind::Failed;
+            outcome.error = std::string("抓取") + task_noun(task.pid) +
+                            "时发生异常：" + e.what();
+        }
 
         std::string warning;
         {
@@ -1033,8 +1046,18 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                 is_article ? art.site : plan.items[bi].articles[ai].site;
             const Source site = (site_index == 1) ? Source::Save : Source::Official;
 
-            const FetchOutcome outcome =
-                fetch_one_article(pid, summary, site, opt);
+            FetchOutcome outcome;
+            try
+            {
+                outcome = fetch_one_article(pid, summary, site, opt);
+            }
+            catch (const std::exception &e)
+            {
+                // 兜底：与 auto 模式一致，异常一律折算成一次抓取失败
+                outcome.kind = FetchOutcome::Kind::Failed;
+                outcome.error = std::string("抓取") + task_noun(pid) +
+                                "时发生异常：" + e.what();
+            }
 
             if (outcome.kind == FetchOutcome::Kind::Stopped)
             {

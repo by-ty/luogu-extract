@@ -36,8 +36,9 @@ using nlohmann::json;
 
 namespace
 {
-const char *kColorYellow = "\033[1;33m";
-const char *kColorReset = "\033[0m";
+// 重定向到文件/管道时不写 ANSI 转义序列
+const char *kColorYellow = luogu::compat::stdout_is_tty() ? "\033[1;33m" : "";
+const char *kColorReset = luogu::compat::stdout_is_tty() ? "\033[0m" : "";
 
 void print_warning(const std::string &message)
 {
@@ -523,20 +524,30 @@ bool solution::parse_official_article(const std::string &body, article::Article 
         error = std::string("JSON 无法解析：") + e.what();
         return false;
     }
-    if (!root.contains("data") || !root["data"].is_object() ||
-        !root["data"].contains("article"))
+    try
     {
-        // 未登录等错误模板会带 status/errorType
-        if (root.contains("status") && root["status"].is_number_integer() &&
-            root["status"].get<int>() == 401)
+        if (!root.contains("data") || !root["data"].is_object() ||
+            !root["data"].contains("article"))
         {
-            error = "需要登录态（服务器返回未登录错误模板）";
+            // 未登录等错误模板会带 status/errorType
+            if (root.contains("status") && root["status"].is_number_integer() &&
+                root["status"].get<int>() == 401)
+            {
+                error = "需要登录态（服务器返回未登录错误模板）";
+                return false;
+            }
+            error = "响应中找不到 data.article 字段";
             return false;
         }
-        error = "响应中找不到 data.article 字段";
+        return out.from_json(root["data"]["article"], error);
+    }
+    catch (const std::exception &e)
+    {
+        // 兜底：字段类型不符等异常绝不能逃出抓取线程
+        // （auto 模式下本函数运行在 std::thread 里，未捕获异常会直接 terminate）
+        error = std::string("题解数据字段异常：") + e.what();
         return false;
     }
-    return out.from_json(root["data"]["article"], error);
 }
 
 bool solution::parse_save_article(const std::string &body, article::Article &out,

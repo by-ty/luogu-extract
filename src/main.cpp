@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -447,14 +448,22 @@ void printVersion()
     std::printf("项目仓库：%s\n", LUOGU_EXTRACT_REPOSITORY_URL);
 }
 
+// 错误/成功提示的颜色只在对应输出流连接到终端时启用：
+// 输出被重定向到文件或管道时不写 ANSI 转义序列（终端下的外观完全不变）
 inline void printError(const std::string &message)
 {
-    std::fprintf(stderr, "\033[1;31m错误：\033[0m%s\n", message.c_str());
+    if (luogu::compat::stderr_is_tty())
+        std::fprintf(stderr, "\033[1;31m错误：\033[0m%s\n", message.c_str());
+    else
+        std::fprintf(stderr, "错误：%s\n", message.c_str());
 }
 
 inline void printSuccess(const std::string &message)
 {
-    std::printf("\033[1;32m%s\033[0m\n", message.c_str());
+    if (luogu::compat::stdout_is_tty())
+        std::printf("\033[1;32m%s\033[0m\n", message.c_str());
+    else
+        std::printf("%s\n", message.c_str());
 }
 
 // 参数值的解析与校验统一放在 util/cli_parse（简易命令行交互程序共用同一份
@@ -602,11 +611,106 @@ inline std::string locate_bad_option(char **argv, int argc, int optind, int opto
     return token_at(optind - 1);
 }
 
+// 长选项表：以后新增参数时在这里加一项，并在 app::run 的 switch 中处理。
+// （展开多字符短选项时要知道哪些长选项带取值，因此表放在文件作用域。）
+const struct option kLongOptions[] = {
+    {"update",     no_argument,       nullptr, 'U'},
+    {"markdown",   no_argument,       nullptr, 'M'},
+    {"latex",      no_argument,       nullptr, 'L'},
+    {"tag",        required_argument, nullptr, OPT_TAG},
+    {"difficulty", required_argument, nullptr, OPT_DIFFICULTY},
+    {"output",     required_argument, nullptr, OPT_OUTPUT},
+    {"type",       required_argument, nullptr, OPT_TYPE},
+    {"lang",       required_argument, nullptr, OPT_LANG},
+    {"tags",       no_argument,       nullptr, OPT_TAGS},
+    {"no-toc-links",         no_argument,       nullptr, OPT_NO_TOC_LINKS},
+    {"toc-backlinks",        no_argument,       nullptr, OPT_TOC_BACKLINKS},
+    {"no-show-source-tags",  no_argument,       nullptr, OPT_NO_SHOW_SOURCE_TAGS},
+    {"show-algorithm-tags",  no_argument,       nullptr, OPT_SHOW_ALGORITHM_TAGS},
+    {"show-difficulty-tags", no_argument,       nullptr, OPT_SHOW_DIFFICULTY_TAGS},
+    {"show-contents-difficulty-tags", no_argument, nullptr, OPT_SHOW_CONTENTS_DIFFICULTY_TAGS},
+    {"paginate",             no_argument,       nullptr, OPT_PAGINATE},
+    {"set-font-cover-page",  required_argument, nullptr, OPT_FONT_COVER},
+    {"set-font-body-zh-CN",  required_argument, nullptr, OPT_FONT_BODY_ZH},
+    {"set-font-body-en-US",  required_argument, nullptr, OPT_FONT_BODY_EN},
+    {"set-font-body-codes",  required_argument, nullptr, OPT_FONT_BODY_CODES},
+    {"set-font-title-zh-CN", required_argument, nullptr, OPT_FONT_TITLE_ZH},
+    {"set-font-title-en-US", required_argument, nullptr, OPT_FONT_TITLE_EN},
+    {"no-bilibili-link",     no_argument,       nullptr, OPT_NO_BILIBILI_LINK},
+    {"set-cover-title",      required_argument, nullptr, OPT_COVER_TITLE},
+    {"pid",                  required_argument, nullptr, OPT_PID},
+    {"pid-range",            required_argument, nullptr, OPT_PID_RANGE},
+    {"clean-all",            no_argument,       nullptr, OPT_CLEAN_ALL},
+    {"clean-images",         no_argument,       nullptr, OPT_CLEAN_IMAGES},
+    {"clean-problems",       no_argument,       nullptr, OPT_CLEAN_PROBLEMS},
+    {"clean-fonts",          no_argument,       nullptr, OPT_CLEAN_FONTS},
+    {"new-download",         no_argument,       nullptr, OPT_NEW_DOWNLOAD},
+    {"compile",              no_argument,       nullptr, OPT_COMPILE},
+    {"cookie",               required_argument, nullptr, OPT_COOKIE},
+    {"cookie-string",        required_argument, nullptr, OPT_COOKIE_STRING},
+    {"with-solutions",       no_argument,       nullptr, OPT_WITH_SOLUTIONS},
+    {"article",              required_argument, nullptr, OPT_ARTICLE},
+    {"local",                required_argument, nullptr, OPT_LOCAL},
+    {"doc-only",             no_argument,       nullptr, OPT_DOC_ONLY},
+    {"article-source",      required_argument, nullptr, OPT_ARTICLE_SOURCE},
+    {"max-solutions",       required_argument, nullptr, OPT_MAX_SOLUTIONS},
+    {"request-delay",        required_argument, nullptr, OPT_REQUEST_DELAY},
+    {"no-delay-auto-scale",  no_argument,       nullptr, OPT_NO_DELAY_AUTO_SCALE},
+    {"solution-ttl",         required_argument, nullptr, OPT_SOLUTION_TTL},
+    {"article-ttl",          required_argument, nullptr, OPT_ARTICLE_TTL},
+    {"rate-limit-wait",      required_argument, nullptr, OPT_RATE_LIMIT_WAIT},
+    {"allow-partial",        no_argument,       nullptr, OPT_ALLOW_PARTIAL},
+    {"refresh-solutions",    no_argument,       nullptr, OPT_REFRESH_SOLUTIONS},
+    {"refresh-articles",     no_argument,       nullptr, OPT_REFRESH_ARTICLES},
+    {"clean-solutions",      no_argument,       nullptr, OPT_CLEAN_SOLUTIONS},
+    {"clean-articles",       no_argument,       nullptr, OPT_CLEAN_ARTICLES},
+    {"solutions-only",       no_argument,       nullptr, OPT_SOLUTIONS_ONLY},
+    {"articles-only-download", no_argument,    nullptr, OPT_ARTICLES_ONLY_DOWNLOAD},
+    {"solution-placement",  required_argument, nullptr, OPT_SOLUTION_PLACEMENT},
+    {"no-problem-to-solution-link", no_argument, nullptr, OPT_NO_PROBLEM_TO_SOLUTION_LINK},
+    {"no-solution-to-problem-link", no_argument, nullptr, OPT_NO_SOLUTION_TO_PROBLEM_LINK},
+    {"no-solution-toc",     no_argument,       nullptr, OPT_NO_SOLUTION_TOC},
+    {"no-article-meta",     no_argument,       nullptr, OPT_NO_ARTICLE_META},
+    {"yes",                  no_argument,       nullptr, 'y'},
+    {"help",       no_argument,       nullptr, 'h'},
+    {"version",    no_argument,       nullptr, 'V'},
+    {nullptr,      0,                 nullptr, 0},
+};
+
+// 该参数是否是「需要取值的长选项」（`--output`，或 getopt_long 允许的
+// 无歧义前缀缩写 `--out`）。取值写成 --output=xxx 时不单独占一个参数，
+// 按不需要取值处理。
+inline bool long_option_takes_value(const std::string &token)
+{
+    if (token.size() < 3 || token.compare(0, 2, "--") != 0 ||
+        token.find('=') != std::string::npos)
+        return false;
+    const std::string name = token.substr(2);
+    // 完全匹配优先（与 getopt_long 一致）
+    for (const struct option *o = kLongOptions; o->name != nullptr; ++o)
+        if (name == o->name)
+            return o->has_arg == required_argument;
+    // 前缀缩写：所有候选都要取值时才算（有歧义时 getopt_long 自己会报错）
+    bool found = false;
+    for (const struct option *o = kLongOptions; o->name != nullptr; ++o)
+    {
+        if (std::string(o->name).compare(0, name.size(), name) != 0)
+            continue;
+        found = true;
+        if (o->has_arg != required_argument)
+            return false;
+    }
+    return found;
+}
+
 // 多字符短选项（-CIMG / -CP / -RD）不是 getopt 支持的写法：getopt 只认单字符
 // 短选项，会把 "-CIMG" 当成 -C -I -M -G 这样的选项簇。因此在这些参数交给
 // getopt 之前，先把它们逐个替换成等价的长选项（--clean-images 等）；
 // "--" 之后的内容按惯例是位置参数，不做替换。
 // （-C 是单字符短选项，直接由 optstring 处理，无需在此展开。）
+// 只改写「选项位置」上的参数：带值长选项后面的那个参数是它的取值，
+// 即使取值恰好等于 -RD 也不能改写（否则 `--output -RD` 会把输出文件名
+// 变成 `--new-download`）。
 inline void expand_multichar_short_options(std::vector<std::string> &args_utf8)
 {
     static const struct
@@ -622,10 +726,13 @@ inline void expand_multichar_short_options(std::vector<std::string> &args_utf8)
         {"-RD", "--new-download"},
     };
 
-    for (auto &arg : args_utf8)
+    for (size_t i = 0; i < args_utf8.size(); ++i)
     {
+        std::string &arg = args_utf8[i];
         if (arg == "--")
             break; // "--" 之后全部是位置参数
+        if (i > 0 && long_option_takes_value(args_utf8[i - 1]))
+            continue; // 本参数是上一个选项的取值
         for (const auto &alias : kAliases)
         {
             if (arg == alias.short_form)
@@ -684,6 +791,13 @@ SolutionRun run_solutions(const Options &options,
             run.proceed = false;
             return run;
         }
+    }
+    else
+    {
+        // 本次运行两种凭据都没给：清掉上一轮 app::run 留在内存 jar 与两个
+        // libcurl 句柄 Cookie 引擎里的凭据。否则交互模式（同进程多次调用
+        // app::run）里「清空 Cookie」不会真正生效，后续请求仍带着旧凭据。
+        crawler::gate_clear_cookies();
     }
     if (!cookie_warnings.empty())
         std::fputs(cookie_warnings.c_str(), stdout);
@@ -884,49 +998,100 @@ SolutionRun run_solutions(const Options &options,
     return run;
 }
 
+// 作用域内把工作目录切到 dir，析构时恢复原目录（尽力而为）。
+// --compile 要在 .tex 所在目录里执行 latexmk，用它保证函数里所有返回路径
+// （含中途失败提前 return）都会把工作目录恢复原样，不会留下副作用。
+class ScopedCurrentPath
+{
+public:
+    explicit ScopedCurrentPath(const std::filesystem::path &dir)
+    {
+        std::error_code ec;
+        old_ = std::filesystem::current_path(ec);
+        if (ec)
+        {
+            // 读不到当前目录就没法恢复，宁可不切换（由调用方报错）
+            error_ = ec;
+            return;
+        }
+        ec.clear();
+        std::filesystem::current_path(dir, ec);
+        error_ = ec;
+        changed_ = !ec;
+    }
+    ~ScopedCurrentPath()
+    {
+        if (changed_)
+        {
+            std::error_code restore_ec;
+            std::filesystem::current_path(old_, restore_ec); // 恢复工作目录（尽力而为）
+        }
+    }
+    ScopedCurrentPath(const ScopedCurrentPath &) = delete;
+    ScopedCurrentPath &operator=(const ScopedCurrentPath &) = delete;
+
+    // 切换是否成功；失败时工作目录未被改变（可直接报错返回）
+    bool ok() const { return !error_; }
+    const std::error_code &error() const { return error_; }
+
+private:
+    std::filesystem::path old_;
+    std::error_code error_;
+    bool changed_ = false;
+};
+
 // --compile：-L 导出 LaTeX 成功后自动执行
 // `latexmk --xelatex <输出文件名>.tex`，等它编译结束再执行
 // `latexmk -c <输出文件名>.tex` 清掉中间文件（.aux/.log/.toc/…，PDF 保留）。
 // - 工作目录切到 .tex 所在目录后再执行：与手动执行这两条命令一致，生成的
 //   PDF 落在 .tex 旁边（图片与字体在 .tex 里都是绝对路径，切目录不影响编译）；
-// - 命令串按 UTF-8 交给 compat::system_utf8（Windows 下走 _wsystem，
-//   含中文的路径不会乱码）；
+//   切目录与恢复由 ScopedCurrentPath 负责，任何返回路径都会恢复原目录；
+// - 命令按「参数数组」交给 compat::run_command_utf8（POSIX 直接 execvp、
+//   Windows 用 CreateProcessW），不经过 shell：--output 给的文件名里即使含
+//   " & | ` $( ) %VAR% 等字符也只会当成普通文件名，不会被解释成命令；
 // - 返回程序退出码：0 表示编译成功（清理失败只提示，不影响退出码）。
 int compile_latex_document(const std::filesystem::path &tex_path)
 {
     const std::filesystem::path dir =
         tex_path.has_parent_path() ? tex_path.parent_path()
                                    : std::filesystem::path(".");
-    std::error_code ec;
-    const std::filesystem::path old_cwd = std::filesystem::current_path(ec);
-    const bool have_old_cwd = !ec;
-    ec.clear();
-    std::filesystem::current_path(dir, ec);
-    if (ec)
+    ScopedCurrentPath cwd(dir);
+    if (!cwd.ok())
     {
         printError("参数 --compile：无法切换到输出文件所在目录 '" +
-                   luogu::compat::path_to_utf8(dir) + "'：" + ec.message());
+                   luogu::compat::path_to_utf8(dir) + "'：" + cwd.error().message());
         return 1;
     }
 
-    const std::string file_name = luogu::compat::path_to_utf8(tex_path.filename());
+    const std::string raw_name = luogu::compat::path_to_utf8(tex_path.filename());
+    // 以 '-' 开头的文件名会被 latexmk 当成选项（选项注入）：加 "./" 前缀
+    // 让它始终被当作路径（正常文件名不受影响）
+    const std::string file_name =
+        (!raw_name.empty() && raw_name[0] == '-') ? "./" + raw_name : raw_name;
+    const std::vector<std::string> compile_argv = {"latexmk", "--xelatex", file_name};
+    // 仅用于打印（不执行）：引号只是让提示更易读、便于手动复制
     const std::string command = "latexmk --xelatex \"" + file_name + "\"";
     std::printf("正在编译 LaTeX 文档：%s\n", command.c_str());
     std::fflush(stdout);
-    const int status = luogu::compat::system_utf8(command);
+    std::string run_error;
+    const int status = luogu::compat::run_command_utf8(compile_argv, run_error);
+
+    // latexmk 本身启动不了时不必再执行清理，直接给出原因（工作目录由 guard 恢复）
+    if (status < 0)
+    {
+        printError("无法执行 latexmk（" + run_error +
+                   "）；请确认已安装 LaTeX 与 latexmk");
+        return 1;
+    }
 
     // 编译结束后（无论成功与否）再执行 latexmk -c 清理中间文件：
     // -c 只删可再生的中间文件，保留 .pdf 与 .tex
+    const std::vector<std::string> clean_argv = {"latexmk", "-c", file_name};
     const std::string clean_command = "latexmk -c \"" + file_name + "\"";
     std::printf("清理中间文件：%s\n", clean_command.c_str());
     std::fflush(stdout);
-    const int clean_status = luogu::compat::system_utf8(clean_command);
-
-    if (have_old_cwd)
-    {
-        std::error_code restore_ec;
-        std::filesystem::current_path(old_cwd, restore_ec); // 恢复工作目录（尽力而为）
-    }
+    std::string clean_run_error;
+    const int clean_status = luogu::compat::run_command_utf8(clean_argv, clean_run_error);
 
     if (status != 0)
     {
@@ -1020,9 +1185,35 @@ static void reset_getopt_state()
 #endif
 }
 
+// libcurl 的全局初始化只做一次（进程级）：app::run 会被简易交互程序在同一进程
+// 内多次调用，而 crawler/request_gate.cpp 的静态 easy handle（保存在函数内静态
+// 对象里，只创建、从不释放，承载 Cookie 引擎等全局资源）跨运行一直存在；
+// 若每次 app::run 都 curl_global_init + curl_global_cleanup，那些 handle 就会在
+// cleanup 之后被再次使用，属于 libcurl 明确禁止的未定义行为。
+// 因此这里只初始化一次，并且不在 app::run 里 cleanup：静态 handle 到进程结束前
+// 都不会释放，任何时刻 cleanup 都发生在它们释放之前；最安全的选择是让全局资源
+// 随进程一起由操作系统回收（进程退出时统一清理）。
+bool ensure_curl_global_init()
+{
+    static std::mutex init_mutex;
+    static bool initialized = false;
+    std::lock_guard<std::mutex> lock(init_mutex);
+    if (initialized)
+        return true;
+    if (curl_global_init(CURL_GLOBAL_ALL) != CURLE_OK)
+        return false; // 失败不缓存，下次调用可重试
+    initialized = true;
+    return true;
+}
+
 int app::run(const std::vector<std::string> &args_input)
 {
     reset_getopt_state();
+    // 同一进程内多次运行时要复位上一次留下的抓取状态：请求闸门的通道延时、
+    // 限流等待与「已停止」标记是进程级静态状态，不复位会把上次运行的
+    // 「已停止 / 已被限流」带进本次运行（app.h 承诺每次调用都复位运行状态）。
+    // 该函数只复位状态，不销毁 request_gate 内部的静态 easy handle。
+    crawler::gate_reset_state();
 
     // Windows 下 CRT 的 main(char**) 参数按 ANSI 代码页转换而非 UTF-8，
     // 统一转换为 UTF-8 后构造 getopt 可用的参数表（中文参数不乱码）；
@@ -1036,71 +1227,6 @@ int app::run(const std::vector<std::string> &args_input)
         args.push_back(const_cast<char *>(a.c_str()));
     const int arg_count = static_cast<int>(args.size());
     char **const arg_vector = args.data();
-
-    // 长选项表：以后新增参数时在这里加一项，并在下方 switch 中处理。
-    static const struct option kLongOptions[] = {
-        {"update",     no_argument,       nullptr, 'U'},
-        {"markdown",   no_argument,       nullptr, 'M'},
-        {"latex",      no_argument,       nullptr, 'L'},
-        {"tag",        required_argument, nullptr, OPT_TAG},
-        {"difficulty", required_argument, nullptr, OPT_DIFFICULTY},
-        {"output",     required_argument, nullptr, OPT_OUTPUT},
-        {"type",       required_argument, nullptr, OPT_TYPE},
-        {"lang",       required_argument, nullptr, OPT_LANG},
-        {"tags",       no_argument,       nullptr, OPT_TAGS},
-        {"no-toc-links",         no_argument,       nullptr, OPT_NO_TOC_LINKS},
-        {"toc-backlinks",        no_argument,       nullptr, OPT_TOC_BACKLINKS},
-        {"no-show-source-tags",  no_argument,       nullptr, OPT_NO_SHOW_SOURCE_TAGS},
-        {"show-algorithm-tags",  no_argument,       nullptr, OPT_SHOW_ALGORITHM_TAGS},
-        {"show-difficulty-tags", no_argument,       nullptr, OPT_SHOW_DIFFICULTY_TAGS},
-        {"show-contents-difficulty-tags", no_argument, nullptr, OPT_SHOW_CONTENTS_DIFFICULTY_TAGS},
-        {"paginate",             no_argument,       nullptr, OPT_PAGINATE},
-        {"set-font-cover-page",  required_argument, nullptr, OPT_FONT_COVER},
-        {"set-font-body-zh-CN",  required_argument, nullptr, OPT_FONT_BODY_ZH},
-        {"set-font-body-en-US",  required_argument, nullptr, OPT_FONT_BODY_EN},
-        {"set-font-body-codes",  required_argument, nullptr, OPT_FONT_BODY_CODES},
-        {"set-font-title-zh-CN", required_argument, nullptr, OPT_FONT_TITLE_ZH},
-        {"set-font-title-en-US", required_argument, nullptr, OPT_FONT_TITLE_EN},
-        {"no-bilibili-link",     no_argument,       nullptr, OPT_NO_BILIBILI_LINK},
-        {"set-cover-title",      required_argument, nullptr, OPT_COVER_TITLE},
-        {"pid",                  required_argument, nullptr, OPT_PID},
-        {"pid-range",            required_argument, nullptr, OPT_PID_RANGE},
-        {"clean-all",            no_argument,       nullptr, OPT_CLEAN_ALL},
-        {"clean-images",         no_argument,       nullptr, OPT_CLEAN_IMAGES},
-        {"clean-problems",       no_argument,       nullptr, OPT_CLEAN_PROBLEMS},
-        {"clean-fonts",          no_argument,       nullptr, OPT_CLEAN_FONTS},
-        {"new-download",         no_argument,       nullptr, OPT_NEW_DOWNLOAD},
-        {"compile",              no_argument,       nullptr, OPT_COMPILE},
-        {"cookie",               required_argument, nullptr, OPT_COOKIE},
-        {"cookie-string",        required_argument, nullptr, OPT_COOKIE_STRING},
-        {"with-solutions",       no_argument,       nullptr, OPT_WITH_SOLUTIONS},
-        {"article",              required_argument, nullptr, OPT_ARTICLE},
-        {"local",                required_argument, nullptr, OPT_LOCAL},
-        {"doc-only",             no_argument,       nullptr, OPT_DOC_ONLY},
-        {"article-source",      required_argument, nullptr, OPT_ARTICLE_SOURCE},
-        {"max-solutions",       required_argument, nullptr, OPT_MAX_SOLUTIONS},
-        {"request-delay",        required_argument, nullptr, OPT_REQUEST_DELAY},
-        {"no-delay-auto-scale",  no_argument,       nullptr, OPT_NO_DELAY_AUTO_SCALE},
-        {"solution-ttl",         required_argument, nullptr, OPT_SOLUTION_TTL},
-        {"article-ttl",          required_argument, nullptr, OPT_ARTICLE_TTL},
-        {"rate-limit-wait",      required_argument, nullptr, OPT_RATE_LIMIT_WAIT},
-        {"allow-partial",        no_argument,       nullptr, OPT_ALLOW_PARTIAL},
-        {"refresh-solutions",    no_argument,       nullptr, OPT_REFRESH_SOLUTIONS},
-        {"refresh-articles",     no_argument,       nullptr, OPT_REFRESH_ARTICLES},
-        {"clean-solutions",      no_argument,       nullptr, OPT_CLEAN_SOLUTIONS},
-        {"clean-articles",       no_argument,       nullptr, OPT_CLEAN_ARTICLES},
-        {"solutions-only",       no_argument,       nullptr, OPT_SOLUTIONS_ONLY},
-        {"articles-only-download", no_argument,    nullptr, OPT_ARTICLES_ONLY_DOWNLOAD},
-        {"solution-placement",  required_argument, nullptr, OPT_SOLUTION_PLACEMENT},
-        {"no-problem-to-solution-link", no_argument, nullptr, OPT_NO_PROBLEM_TO_SOLUTION_LINK},
-        {"no-solution-to-problem-link", no_argument, nullptr, OPT_NO_SOLUTION_TO_PROBLEM_LINK},
-        {"no-solution-toc",     no_argument,       nullptr, OPT_NO_SOLUTION_TOC},
-        {"no-article-meta",     no_argument,       nullptr, OPT_NO_ARTICLE_META},
-        {"yes",                  no_argument,       nullptr, 'y'},
-        {"help",       no_argument,       nullptr, 'h'},
-        {"version",    no_argument,       nullptr, 'V'},
-        {nullptr,      0,                 nullptr, 0},
-    };
 
     // 已知长选项名（参数报错时用于「是否想输入 --xxx」一类的提示）
     std::vector<std::string> long_option_names;
@@ -1958,7 +2084,8 @@ int app::run(const std::vector<std::string> &args_input)
         return 1;
     }
 
-    if (curl_global_init(CURL_GLOBAL_ALL) != CURLE_OK)
+    // 进程级的 libcurl 全局初始化（只在第一次调用时真正初始化，见上面的说明）
+    if (!ensure_curl_global_init())
     {
         printError("初始化 libcurl 失败；请检查网络相关运行库是否安装完整");
         return 1;
@@ -1982,7 +2109,6 @@ int app::run(const std::vector<std::string> &args_input)
         {
             // 缓存更新失败时不继续用旧缓存导出：可能掩盖更新失败
             printError("缓存更新失败，已停止后续操作");
-            curl_global_cleanup();
             return result;
         }
     }
@@ -2016,7 +2142,6 @@ int app::run(const std::vector<std::string> &args_input)
                                         &selection.resolved_tags, select_error))
             {
                 printError(select_error);
-                curl_global_cleanup();
                 return 1;
             }
         }
@@ -2025,10 +2150,7 @@ int app::run(const std::vector<std::string> &args_input)
                                               article_bundle, solution_stats,
                                               need_cookie);
         if (!run.proceed)
-        {
-            curl_global_cleanup();
             return run.exit_code;
-        }
 
         solution_export.enabled = solutions_enabled;
         solution_export.document_end = (options.solution_placement != "per-problem");
@@ -2043,7 +2165,6 @@ int app::run(const std::vector<std::string> &args_input)
         {
             // 只抓取并缓存，不导出文件
             printSuccess("已按 --articles-only-download 完成抓取，未导出任何文件");
-            curl_global_cleanup();
             return 0;
         }
     }
@@ -2159,7 +2280,9 @@ int app::run(const std::vector<std::string> &args_input)
         }
     }
 
-    curl_global_cleanup();
+    // 这里（以及上面各条提前返回的路径）都不调用 curl_global_cleanup：
+    // request_gate 的静态 easy handle 到进程结束才会消失，全局资源统一在
+    // 进程退出时由操作系统回收（见 ensure_curl_global_init 的说明）
     return result;
 }
 

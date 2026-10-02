@@ -26,6 +26,7 @@
 #include <charconv>
 #include <functional>
 #include <limits>
+#include <mutex>
 #include <regex>
 #include <set>
 #include <string>
@@ -39,6 +40,7 @@
 #include "luogu-extract/util/compat.h"
 #include "luogu-extract/util/image_util.h"
 #include "luogu-extract/util/problem_info.h"
+#include "luogu-extract/util/prompt.h"
 #include "luogu-extract/util/text_encoding.h"
 #include "luogu-extract/util/version.h"
 
@@ -72,6 +74,25 @@ std::string trim(const std::string &s)
         return "";
     const size_t b = s.find_last_not_of(" \t");
     return s.substr(a, b - a + 1);
+}
+
+// 是否是代码围栏的收尾行（传入已 trim 的行）：CommonMark 规定收尾围栏由
+// >= fence_len 个同类围栏字符组成，后面只能跟空白。此前只要行首有 fence_len
+// 个围栏字符就算收尾，代码块里出现 ```cpp 这样的行（结束围栏带信息串，
+// CommonMark 不允许）会提前结束代码块，块内剩余内容错位到正文。
+bool is_fence_closer(const std::string &trimmed_line, char fence, size_t fence_len)
+{
+    if (fence_len == 0 || trimmed_line.size() < fence_len)
+        return false;
+    size_t n = 0;
+    while (n < trimmed_line.size() && trimmed_line[n] == fence)
+        ++n;
+    if (n < fence_len)
+        return false;
+    for (size_t k = n; k < trimmed_line.size(); ++k)
+        if (!std::isspace(static_cast<unsigned char>(trimmed_line[k])))
+            return false;
+    return true;
 }
 
 // 表格单元格的空白清理：除 ASCII 空格外，还要去掉洛谷题面里用来「对齐
@@ -132,6 +153,92 @@ std::string to_lower_ascii(std::string s)
     return s;
 }
 
+// 跳过从 s[pos]（必须是 '{'）开始的配对花括号组，返回组后第一个字符的下标；
+// 找不到配对时返回 s.size()
+size_t skip_brace_group(const std::string &s, size_t pos)
+{
+    int d = 1;
+    size_t i = pos + 1;
+    while (i < s.size() && d > 0)
+    {
+        if (s[i] == '{')
+            ++d;
+        else if (s[i] == '}')
+            --d;
+        ++i;
+    }
+    return d == 0 ? i : s.size();
+}
+
+// 统计 array/subarray 列规格的列数：只在花括号外统计列字母（l/c/r/p/m/b，
+// 以及 *{n}{...} 展开后的列），@{...} / >{...} / <{...} 的内容不算列。
+// 此前用「spec 里所有字母个数」计数，{p{2cm}} 会被算成 3 列（p、c、m）。
+size_t count_array_columns(const std::string &spec)
+{
+    size_t columns = 0;
+    size_t i = 0;
+    while (i < spec.size())
+    {
+        const char c = spec[i];
+        if ((c == '@' || c == '>' || c == '<') && i + 1 < spec.size() &&
+            spec[i + 1] == '{')
+        {
+            i = skip_brace_group(spec, i + 1);
+            continue;
+        }
+        if (c == '{')
+        {
+            // 列字母后面的花括号参数（如 p{2cm} 的宽度）不算列：整组跳过，
+            // 否则 p{2cm} 会被数成 3 列（p、c、m）
+            i = skip_brace_group(spec, i);
+            continue;
+        }
+        if (c == '*' && i + 1 < spec.size() && spec[i + 1] == '{')
+        {
+            const size_t after_n = skip_brace_group(spec, i + 1);
+            size_t repeat = 1;
+            size_t digits = 0;
+            for (size_t k = i + 2; k + 1 < after_n && k < spec.size(); ++k)
+            {
+                if (!std::isdigit(static_cast<unsigned char>(spec[k])))
+                    break;
+                if (repeat > 1000)
+                    break; // 畸形规格：不再放大，避免计数溢出
+                repeat = repeat * 10 + static_cast<size_t>(spec[k] - '0');
+                ++digits;
+            }
+            if (digits == 0)
+                repeat = 1;
+            if (after_n < spec.size() && spec[after_n] == '{')
+            {
+                const size_t after_spec = skip_brace_group(spec, after_n);
+                columns += repeat * count_array_columns(
+                                       spec.substr(after_n + 1, after_spec - after_n - 2));
+                i = after_spec;
+                continue;
+            }
+            i = after_n;
+            continue;
+        }
+        if (std::isalpha(static_cast<unsigned char>(c)))
+            ++columns;
+        ++i;
+    }
+    return columns;
+}
+
+// 列规格是否只用了 array 环境认识的写法（l/c/r/p/m/b、竖线、@{}/>{}/<{}、
+// *{n}{}、数字与空格）。是则原样保留列规格（保住对齐），否则退回「全部 c 列」
+// ——重建为 c 列虽然丢对齐，但一定不会因为未加载的列类型/命令而编译失败。
+bool array_spec_is_safe(const std::string &spec)
+{
+    static const std::string kAllowed = "lcrpmb|@{}<>*0123456789. ";
+    for (char c : spec)
+        if (kAllowed.find(c) == std::string::npos)
+            return false;
+    return true;
+}
+
 // 洛谷题面常在公式里用 \newcommand/\renewcommand 自定义命令，
 // 标准 LaTeX 中若与已有命令同名会报 "already defined"；统一转成 \def（允许重复定义）
 // 对齐环境行归一化：洛谷题面里 \begin{array}{c} 等常有多余/缺少的 &，
@@ -181,18 +288,21 @@ std::string normalize_alignment(std::string s, int depth = 0)
 
         size_t body_start = name_end + 1;
         size_t spec_cols = 0;
+        std::string spec; // 原始列规格（安全时原样保留，见下）
         if (name == "array" || name == "subarray")
         {
             if (body_start < s.size() && s[body_start] == '{')
             {
-                const size_t spec_end = s.find('}', body_start);
-                if (spec_end != std::string::npos)
+                // 列规格里可以再嵌花括号（p{2cm}、@{...}、>{\cmd}），必须按花括号
+                // 配对找真正的收尾 }：取第一个 } 会把 {p{2cm}} 截成 "p{2cm"，
+                // 既算错列数，又让多余的 } 落进表格正文（编译报 Extra }）
+                const size_t spec_end = skip_brace_group(s, body_start);
+                if (spec_end <= s.size() && spec_end > body_start + 1 &&
+                    s[spec_end - 1] == '}')
                 {
-                    const std::string spec = s.substr(body_start + 1, spec_end - body_start - 1);
-                    for (char c : spec)
-                        if (std::isalpha(static_cast<unsigned char>(c)))
-                            ++spec_cols;
-                    body_start = spec_end + 1;
+                    spec = s.substr(body_start + 1, spec_end - body_start - 2);
+                    spec_cols = count_array_columns(spec);
+                    body_start = spec_end;
                 }
             }
         }
@@ -482,9 +592,13 @@ std::string normalize_alignment(std::string s, int depth = 0)
                                     name != "dcases" && name != "rcases");
         if (name == "array" || (matrix_family && target > 10))
         {
-            // 重建列规格：取 target 列（统一用 c，保证能编译）
-            out += "\\begin{array}{" + std::string(target, 'c') + "}" + new_body +
-                   "\\end{array}";
+            // 列规格：只用了 array 认识的写法时原样保留（保住 l/c/r 对齐与
+            // p{} 定宽列）；否则退回全部 c 列，保证一定能编译
+            const std::string new_spec =
+                array_spec_is_safe(spec) && !spec.empty()
+                    ? spec
+                    : std::string(target, 'c');
+            out += "\\begin{array}{" + new_spec + "}" + new_body + "\\end{array}";
         }
         else
         {
@@ -547,7 +661,194 @@ bool has_top_level_align(const std::string &s)
     return false;
 }
 
+// 控制词是否由 ASCII 字母组成（TeX 控制词的定义）
+bool is_tex_letter(char c)
+{
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+// 编译期能读写文件、执行命令或重建控制词的 TeX 控制词黑名单（精确整词匹配，
+// 大小写敏感）。题面、题解、文章与样例都是不可信远程文本，数学片段会原样
+// 写进 .tex，其中 \write18{...}（开启 shell-escape 时执行任意命令）、
+// \openout/\write（任意写文件）、\input/\includegraphics（读文件并写进 PDF）、
+// \catcode/\csname（重建被禁控制词）、\def 等都会在编译期生效。
+// 注意：只匹配**完整**控制词，因此 \in、\infty、\int 这类以黑名单词为前缀的
+// 正常命令不受影响；\end 只在 \end{document} 这一种写法上处理（\end{cases}
+// 等正常环境必须保留）。
+const std::set<std::string> &dangerous_tex_commands()
+{
+    static const std::set<std::string> kCommands = {
+        // 文件 / 进程 I/O 与命令执行
+        "write", "openout", "closeout", "read", "openin", "closein",
+        "newwrite", "newread", "immediate", "special", "directlua", "latelua",
+        "input", "include", "includeonly", "endinput", "scantokens",
+        "InputIfFileExists", "IfFileExists",
+        "usepackage", "RequirePackage", "documentclass", "documentstyle",
+        "LoadClass", "bibliography", "bibliographystyle",
+        "shipout", "output", "everyjob", "everypar", "everymath",
+        "everydisplay", "everyhbox", "everyvbox", "everycr",
+        // 字符类别 / 控制序列重建（\catcode 改类别、\csname 拼命令名，
+        // 两者都能重新造出上面被拆掉的控制词，必须禁用）
+        "csname", "endcsname", "catcode", "lccode", "uccode", "mathcode",
+        "delcode", "sfcode", "escapechar", "endlinechar", "newlinechar",
+        "lowercase", "uppercase", "expandafter", "noexpand", "string",
+        "meaning", "aftergroup", "afterassignment", "futurelet", "scantokens",
+        // 字体（XeTeX 会把 [] 里的任意文件当字体读取）
+        "font", "nullfont", "newfont", "letterspacefont", "fontspec",
+        "setmainfont", "setsansfont", "setmonofont", "newfontfamily",
+        // 无条件循环：配合条件判断可以写出永不结束的 \loop...\repeat，
+        // 让 latexmk/排版引擎挂死（KaTeX 不支持这两个命令）
+        "loop", "repeat",
+    };
+    return kCommands;
+}
+
+// 控制词是否属于「按前缀整类禁用」的引擎原语：XeTeX 的 \XeTeXpicfile 等
+// 会读取任意文件，pdfTeX / LuaTeX 的 \pdf... \luatex... 同理。正常 KaTeX
+// 内容里不会出现这些前缀，因此按前缀整体禁用。
+bool has_forbidden_tex_prefix(const std::string &name)
+{
+    return name.rfind("XeTeX", 0) == 0 || name.rfind("pdf", 0) == 0 ||
+           name.rfind("luatex", 0) == 0;
+}
+
+// 把不可信文本里能控制编译器的 TeX 控制词拆掉：在反斜杠后插入一个空格，
+// 原来的控制词就变成控制符号 "\ "（排版为一个空格）＋普通字母，不再执行。
+// 该写法在数学模式与文本模式里都合法，也不会引入新的花括号不平衡。
+// 说明：只拆「能读写文件 / 执行命令 / 改字符类别 / 重建控制词 / 加载字体 /
+// 无条件循环」这些原语。\def、\newcommand、\let 等宏定义命令**保留**：
+// 它们的定义体在同一个字符串里，体内出现的危险原语同样会被拆掉，因此
+// 单独一个 \def 无法绕过上面的防护；而洛谷题面确实有用宏定义的公式
+// （本文件还会把 \newcommand 转成 \def 来支持它们），一并拆掉会让这些
+// 正常公式退化成字面文本。
+std::string defuse_tex_commands(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    size_t i = 0;
+    while (i < s.size())
+    {
+        if (s[i] != '\\' || i + 1 >= s.size() || !is_tex_letter(s[i + 1]))
+        {
+            out += s[i++];
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < s.size() && is_tex_letter(s[j]))
+            ++j;
+        const std::string name = s.substr(i + 1, j - i - 1);
+        bool danger = dangerous_tex_commands().count(name) > 0 ||
+                      has_forbidden_tex_prefix(name);
+        if (!danger && name == "end")
+        {
+            // 只处理 \end{document}（会提前结束文档、丢弃剩余内容并让 LaTeX
+            // 认为文档已结束）；\end{cases} 之类的正常环境原样保留。
+            // 允许 \end 与 {document} 之间出现空格/制表符（TeX 允许）。
+            size_t k = j;
+            while (k < s.size() && (s[k] == ' ' || s[k] == '\t'))
+                ++k;
+            static const std::string kDoc = "document";
+            if (k < s.size() && s[k] == '{' &&
+                s.compare(k + 1, kDoc.size(), kDoc) == 0)
+            {
+                size_t m = k + 1 + kDoc.size();
+                while (m < s.size() && (s[m] == ' ' || s[m] == '\t'))
+                    ++m;
+                if (m < s.size() && s[m] == '}')
+                    danger = true;
+            }
+        }
+        if (danger)
+        {
+            out += "\\ "; // 反斜杠 + 空格：控制符号，原控制词失效
+            out.append(s, i + 1, j - i - 1);
+        }
+        else
+        {
+            out.append(s, i, j - i);
+        }
+        i = j;
+    }
+    return out;
+}
+
+
+// 送进 std::regex 管道的单个文本块上限。libstdc++ 的 std::regex 用回溯式 DFS
+// 匹配，重复片段（如 [^$]+）每迭代一层递归：超长、无空白的输入会把栈耗尽，
+// 进程直接 SIGSEGV（实测 3 万字符的公式、一行 5 万个 *a* 都能触发）。
+// 8192 远低于实测崩溃点，且正常题面/题解的单块文本远小于它。
+const size_t kMaxRegexChunk = 8192;
+
+// 把超长文本切成若干 <= limit 的块供正则管道处理：优先在最近的换行处切，
+// 其次在最近的空白处切（TeX 里换行与空格等价，按空白切不改变排版结果），
+// 都没有就硬切（此时宁可让这一块按纯文本处理，也不能让正则崩掉进程）。
+std::vector<std::string> split_for_regex(const std::string &s, size_t limit)
+{
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start < s.size())
+    {
+        const size_t remain = s.size() - start;
+        if (remain <= limit)
+        {
+            out.push_back(s.substr(start));
+            break;
+        }
+        const size_t cut = start + limit;
+        // 从 start 扫到 cut，记录「配对完整」的切点：$公式$ 与 `行内代码` 内部
+        // 的空白不能切（切开后两半都不再匹配公式/代码语法，会变成字面文本），
+        // 优先换行（跨行结构更少），其次是任意不在这些结构内部的空白
+        size_t split = cut;
+        {
+            bool in_math = false;   // $...$ 内
+            bool in_code = false;   // `...` 内
+            bool backslash = false; // 上一个字符是未转义的反斜杠
+            size_t last_nl = std::string::npos;
+            size_t last_safe = std::string::npos;
+            for (size_t k = start; k <= cut && k < s.size(); ++k)
+            {
+                const char c = s[k];
+                if (c == '$' && !backslash && !in_code)
+                    in_math = !in_math;
+                else if (c == '`' && !backslash && !in_math)
+                    in_code = !in_code;
+                backslash = (c == '\\' && !backslash);
+                if (std::isspace(static_cast<unsigned char>(c)) && !in_math && !in_code)
+                {
+                    last_safe = k;
+                    if (c == '\n')
+                        last_nl = k;
+                }
+            }
+            if (last_nl != std::string::npos)
+                split = last_nl;
+            else if (last_safe != std::string::npos)
+                split = last_safe;
+        }
+        out.push_back(s.substr(start, split - start + 1));
+        start = split + 1;
+    }
+    return out;
+}
+
+std::string sanitize_math_chunk(std::string s);
+
+// 数学片段入口：超长片段先按 kMaxRegexChunk 切块再走修复管线（见
+// kMaxRegexChunk 的说明：不做这道切分，3 万字符的公式就会让 std::regex
+// 递归耗尽栈、进程直接崩溃）。切块只影响畸形超长公式的修复效果，
+// 正常长度的公式逐字节等价。
 std::string sanitize_math(std::string s)
+{
+    if (s.size() <= kMaxRegexChunk)
+        return sanitize_math_chunk(std::move(s));
+    std::string out;
+    std::vector<std::string> pieces = split_for_regex(s, kMaxRegexChunk);
+    for (auto &piece : pieces)
+        out += sanitize_math_chunk(std::move(piece));
+    return out;
+}
+
+std::string sanitize_math_chunk(std::string s)
 {
     // \verb 内容是字面文本：先整体保护起来（占位符），
     // 等所有转换结束后再按文本模式转义还原，
@@ -604,10 +905,11 @@ std::string sanitize_math(std::string s)
     }
 
     // 公式末尾悬空的 ^ / _（如“……则省略 ^”）：没有指数/下标参数，
-    // 直接当成符号输出，避免 Missing { inserted（已转义的 \_ 不受影响）
-    static const std::regex kTrailingCaret(R"((^|[^\\])[\^_](?=\s*\$?\s*$))");
+    // 直接当成符号输出，避免 Missing { inserted（已转义的 \_ 不受影响）。
+    // ^ 用 \wedge（∧）；_ 是下划线，用 \wedge 语义不对，用字面下划线 \_
+    static const std::regex kTrailingCaret(R"((^|[^\\])([\^_])(?=\s*\$?\s*$))");
     s = regex_transform(s, kTrailingCaret, [&](const std::smatch &m) {
-        return m[1].str() + "\\wedge";
+        return m[1].str() + (m[2].str() == "^" ? "\\wedge" : "\\text{\\_}");
     });
 
     // KaTeX 兼容：\colorbox{#hex} / \textcolor{#hex} / \color{#hex}
@@ -940,8 +1242,13 @@ std::string sanitize_math(std::string s)
                                 }
                                 if (kMathSymbols.count(name))
                                 {
-                                    // 数学符号连同参数包上 $...$（如 \sqrt{2}）
-                                    esc += "$" + word + "$";
+                                    // 数学符号连同参数包起来（如 \sqrt{2}）。
+                                    // 用 \ensuremath 而不是 $...$：\texttt 在数学
+                                    // 模式里并不切换到文本模式，此时再写 $...$
+                                    // 会结束外层数学模式（\sqrt 落在文本模式里
+                                    // 直接报 Missing $ inserted）；\ensuremath
+                                    // 在文本模式与数学模式下都能正常排版
+                                    esc += "\\ensuremath{" + word + "}";
                                     k = j - 1;
                                     continue;
                                 }
@@ -979,6 +1286,11 @@ std::string sanitize_math(std::string s)
                     p = q + 1;
                     continue;
                 }
+                // 找不到闭合花括号（畸形/未闭合的 \texttt{）：剩余内容原样输出，
+                // 避免对每个同类前缀重新扫描到末尾（O(n²) 的 CPU 停顿）
+                t += s.substr(p);
+                p = s.size();
+                continue;
             }
             t += s[p];
             ++p;
@@ -1015,6 +1327,14 @@ std::string sanitize_math(std::string s)
                         p = q;
                         continue;
                     }
+                }
+                else
+                {
+                    // 找不到闭合花括号（畸形/未闭合的 \operatorname{）：剩余内容
+                    // 原样输出，避免对每个同类前缀重新扫描到末尾（O(n²) 停顿）
+                    t += s.substr(p);
+                    p = s.size();
+                    continue;
                 }
             }
             t += s[p];
@@ -1110,6 +1430,14 @@ std::string sanitize_math(std::string s)
                     p = q;
                     continue;
                 }
+                else
+                {
+                    // 找不到闭合花括号（畸形/未闭合的 \text{）：剩余内容原样输出，
+                    // 避免对每个同类前缀重新扫描到末尾（O(n²) 的 CPU 停顿）
+                    t += s.substr(p);
+                    p = s.size();
+                    continue;
+                }
             }
             t += s[p];
             ++p;
@@ -1124,10 +1452,10 @@ std::string sanitize_math(std::string s)
         size_t p = 0;
         while (p < s.size())
         {
-            if (s.compare(p, 7, "\\sout{") == 0)
+            if (s.compare(p, 6, "\\sout{") == 0)
             {
                 t += "\\sout{";
-                p += 7;
+                p += 6;
                 continue;
             }
             if (s.compare(p, 5, "\\sout") == 0)
@@ -1199,6 +1527,14 @@ std::string sanitize_math(std::string s)
                         p = q;
                         continue;
                     }
+                }
+                else
+                {
+                    // 找不到闭合花括号（畸形/未闭合的 \bm{）：剩余内容原样输出，
+                    // 不再对每个同类前缀重新扫描到字符串末尾（O(n²) 的 CPU 停顿）
+                    t += s.substr(p);
+                    p = s.size();
+                    continue;
                 }
             }
             t += s[p];
@@ -1273,6 +1609,14 @@ std::string sanitize_math(std::string s)
                     while (e < s.size() &&
                            std::isdigit(static_cast<unsigned char>(s[e])))
                         ++e;
+                    if (e >= s.size())
+                    {
+                        // 畸形/未闭合的 \def\foo[...：剩余内容原样输出，不再对
+                        // 每个 \def\ 前缀重新扫描到字符串末尾（O(n²) 的 CPU 停顿）
+                        t += s.substr(p);
+                        p = s.size();
+                        continue;
+                    }
                     if (e < s.size() && s[e] == ']' && e > w + 1)
                     {
                         // 参数个数：安全解析并限制上限（TeX 宏参数最多 9 个）。
@@ -1481,6 +1825,11 @@ std::string sanitize_math(std::string s)
             "lgroup", "rgroup", "Vert", "vert", "aleph", "hbar", "ell",
             "imath", "jmath", "Re", "Im", "partial", "nabla", "forall",
             "exists", "nexists", "infty", "emptyset", "varnothing",
+            // \in / \notin 开头、且是完整命令名的命令：不补进这里就会被
+            // 「最长已知前缀」拆开（\injlim → \in{}jlim，已实测）
+            "injlim", "projlim", "varinjlim", "varprojlim",
+            "notindot", "notinva", "notinvb", "notinvc",
+            "notniva", "notnivb", "notnivc", "notni",
             "triangle", "square", "Box", "Diamond", "clubsuit", "diamondsuit",
             "heartsuit", "spadesuit", "checkmark", "dagger", "ddagger",
             "star", "bullet", "degree", "copyright",
@@ -1683,9 +2032,9 @@ std::string sanitize_math(std::string s)
             return pre.substr(0, pre.size() - 1) + "{}" + pre.back();
         });
 
-        static const std::regex kTrailingCaret(R"((^|[^\\])[\^_](?=\s*\$?\s*$))");
+        static const std::regex kTrailingCaret(R"((^|[^\\])([\^_])(?=\s*\$?\s*$))");
         s = regex_transform(s, kTrailingCaret, [&](const std::smatch &m) {
-            return m[1].str() + "\\wedge";
+            return m[1].str() + (m[2].str() == "^" ? "\\wedge" : "\\text{\\_}");
         });
     }
 
@@ -1718,7 +2067,10 @@ std::string sanitize_math(std::string s)
             pos += esc.size();
         }
     }
-    return s;
+    // 最后一步：拆掉不可信内容里能读写文件/执行命令的 TeX 控制词
+    // （\write18、\openout、\input、\catcode、\csname、\end{document} 等）。
+    // 放在所有公式修复之后，避免修复逻辑把被拆开的控制词又重新拼回命令。
+    return defuse_tex_commands(s);
 }
 
 std::string join_strings(const std::vector<std::string> &v, const std::string &sep)
@@ -1807,40 +2159,102 @@ std::string strip_math_for_bookmark(std::string s)
     return out;
 }
 
-// \includegraphics 的路径：转义空格，并把 '\' 归一化为 '/'（TeX 不认识
-// Windows 反斜杠路径；源路径已用 path_to_utf8 转成 UTF-8）
+// \includegraphics / \IfFileExists 的路径归一化：
+// - '\' 归一化为 '/'（TeX 不认识 Windows 反斜杠路径；源路径已用 path_to_utf8
+//   转成 UTF-8）；
+// - 路径里的空格**必须原样保留**：这两个命令的文件名扫描不会展开控制序列，
+//   写成 "\ "（控制符号）会被当成文件名的一部分，导致图片永远找不到
+//   （已实测：`paths/space\ 1.png` 找不到，`paths/space 1.png` 正常）。
+//   LaTeX 的带引号文件名机制本来就支持空格，Windows 用户目录（如
+//   C:\Users\John Doe\...）因此能正常工作；
+// - 换行/制表符换成空格：它们写进 .tex 会截断路径。
 std::string escape_path(std::string s)
 {
     std::string out;
     out.reserve(s.size());
     for (char c : s)
     {
-        if (c == ' ')
-            out += "\\ ";
-        else if (c == '\\')
+        if (c == '\\')
             out += '/';
+        else if (c == '\n' || c == '\r' || c == '\t')
+            out += ' ';
         else
             out += c;
     }
     return out;
 }
 
-// \url{} / \href{} 中的原始 URL 做最小转义：% 与 # 在 TeX 中是特殊字符，
-// 未转义会破坏编译或吞掉 URL 剩余部分
+// 路径能否安全写进 .tex：% 会在 TeX 里注释掉本行剩余内容（连 } 一起吞掉）、
+// # 是宏参数符、{ } 会破坏分组，这四种字符在文件名里无法原地转义
+// （\% \# 会展开成排版字符而不是文件名字符）。命中时调用方跳过该图片并提示，
+// 不写出必然编译失败的 LaTeX。
+bool path_is_tex_safe(const std::string &s)
+{
+    return s.find_first_of("%#{}") == std::string::npos;
+}
+
+// 图片路径含无法写进 .tex 的字符时提示一次（同一个原因不重复刷屏）
+void warn_unsafe_image_path(const std::string &path)
+{
+    static std::once_flag warned;
+    std::call_once(warned, [&path]() {
+        std::fprintf(stderr,
+                     "警告：图片路径 '%s' 含有 LaTeX 无法表示字符（%% # { }），"
+                     "这些图片将被跳过；可把缓存目录改到不含这些字符的位置"
+                     "（XDG_CACHE_HOME 或 HOME/临时目录）后重新导出。\n",
+                     path.c_str());
+    });
+}
+
+// \url{} 的参数转义：% 与 # 在 TeX 中是特殊字符，未转义会破坏编译或吞掉
+// URL 剩余部分；\ { } 还会**提前闭合 \url 的参数**，让 URL 里的
+// \write18{...} / \input{...} 之类命令变成可执行的正文（题面、题解、文章里的
+// 链接目标都是不可信远程文本）。hyperref 的 \url 会把 \\ 当字面反斜杠排版，
+// 但 \{ \} 会把转义用的反斜杠一起排出来，因此花括号按 URL 规范写成百分号
+// 编码（{ } 本来就不允许直接出现在 URL 里），既安全又与原文等价（均已实测）。
 std::string escape_url(std::string s)
 {
     std::string out;
     out.reserve(s.size());
     for (char c : s)
     {
-        if (c == '%')
-            out += "\\%";
-        else if (c == '#')
-            out += "\\#";
-        else
-            out += c;
+        switch (c)
+        {
+        case '%': out += "\\%"; break;
+        case '#': out += "\\#"; break;
+        case '\\': out += "\\\\"; break;
+        case '{': out += "\\%7B"; break;
+        case '}': out += "\\%7D"; break;
+        default: out += c; break;
+        }
     }
     return out;
+}
+
+
+// listings 环境的结束标记是**字面字符串** \end{lstlisting}：它只要出现在代码
+// 行的任何位置（行首、行中、带前导空格均可，已实测）就会提前结束环境，其后的
+// 内容会被当成 LaTeX 正文编译。代码块与样例都来自不可信远程文本，因此把这些
+// 结束标记换成绝不会被 listings 识别的等价写法 \lx@end{lstlisting}，再配合下方
+// \lstset 里的 literate 选项把它排版回原文（已实测：输出与原文逐字一致，
+// 环境不再提前结束）。
+const char *const kLstEndMarker = "\\lx@end{lstlisting}";
+// \lstset 用的 literate 选项：把等价写法排版回原文 \end{lstlisting}
+const char *const kLstLiterateOption =
+    "    literate={\\\\lx@end\\{lstlisting\\}}{{\\textbackslash end\\{lstlisting\\}}}1,\n";
+
+// 把要写进 lstlisting 的文本安全化：替换掉所有结束标记（只替换这一个字面量，
+// 其它内容逐字节保留，代码显示不受影响）
+std::string lst_safe(std::string s)
+{
+    static const std::string kEnd = "\\end{lstlisting}";
+    size_t p = 0;
+    while ((p = s.find(kEnd, p)) != std::string::npos)
+    {
+        s.replace(p, kEnd.size(), kLstEndMarker);
+        p += std::strlen(kLstEndMarker);
+    }
+    return s;
 }
 
 // 视频链接判断：洛谷用“图片语法”插入 Bilibili 视频，或常见视频文件后缀
@@ -1915,7 +2329,7 @@ ImageKind detect_image_kind(const std::filesystem::path &path)
     FILE *in = luogu::compat::fopen(path, "rb");
     if (!in)
         return ImageKind::kUnknown;
-    unsigned char head[16] = {0};
+    unsigned char head[1024] = {0};
     const size_t n = std::fread(head, 1, sizeof(head), in);
     std::fclose(in);
 
@@ -1930,9 +2344,23 @@ ImageKind detect_image_kind(const std::filesystem::path &path)
         return ImageKind::kWebp;
     if (n >= 2 && head[0] == 'B' && head[1] == 'M')
         return ImageKind::kBmp;
-    if (n >= 4 && (std::memcmp(head, "<svg", 4) == 0 ||
-                   std::memcmp(head, "<?xm", 4) == 0))
-        return ImageKind::kSvg;
+    // SVG：先跳过 UTF-8 BOM 与前导空白，再认 <svg / XML 声明 / DOCTYPE / 注释。
+    // 此前要求文件开头正好是 "<svg" 或 "<?xm"，带 BOM、前面有空行或先写
+    // DOCTYPE/注释的 SVG 会被判成未知格式而静默丢弃。
+    {
+        size_t k = 0;
+        if (n >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF)
+            k = 3;
+        while (k < n && std::isspace(head[k]))
+            ++k;
+        const std::string text(reinterpret_cast<const char *>(head) + k,
+                               n > k ? n - k : 0);
+        if (text.rfind("<svg", 0) == 0 || text.rfind("<?xml", 0) == 0)
+            return ImageKind::kSvg;
+        if ((text.rfind("<!DOCTYPE", 0) == 0 || text.rfind("<!--", 0) == 0) &&
+            text.find("<svg") != std::string::npos)
+            return ImageKind::kSvg;
+    }
     if (n >= 4 && head[0] == 0x00 && head[1] == 0x00 &&
         head[2] == 0x01 && head[3] == 0x00)
         return ImageKind::kIco;
@@ -1950,36 +2378,96 @@ ImageKind detect_image_kind(const std::filesystem::path &path)
 // 返回 true 表示无需修正或已修正；若需要修正但缓存不可写则返回 false。
 bool fix_jpeg_density(const std::filesystem::path &path)
 {
-    FILE *in = luogu::compat::fopen(path, "r+b");
-    if (!in)
-        return false;
-
     unsigned char head[24] = {0};
-    const size_t n = std::fread(head, 1, sizeof(head), in);
-    const bool is_jfif = n >= 18 && head[0] == 0xFF && head[1] == 0xD8 &&
+    {
+        FILE *in = luogu::compat::fopen(path, "rb");
+        if (!in)
+            return false;
+        const size_t n = std::fread(head, 1, sizeof(head), in);
+        std::fclose(in);
+        if (n < 18)
+            return true;
+    }
+    const bool is_jfif = head[0] == 0xFF && head[1] == 0xD8 &&
                          head[2] == 0xFF && head[3] == 0xE0 &&
                          std::memcmp(head + 6, "JFIF", 4) == 0 && head[10] == 0;
-    if (is_jfif)
+    if (!is_jfif)
+        return true;
+    const unsigned units = head[13];
+    const unsigned xd = (head[14] << 8) | head[15];
+    const unsigned yd = (head[16] << 8) | head[17];
+    if (units != 1 || (xd >= 72 && yd >= 72))
+        return true; // 不需要修正
+
+    // 需要把密度改成 72dpi：不再原地改写缓存文件（写到一半被打断会让缓存
+    // JPEG 永久损坏），改为整份复制到同目录临时文件、只改副本的这 5 字节，
+    // 校验通过后原子替换（与下载图片的写入方式一致）
+    const std::filesystem::path tmp = luogu::compat::temp_sibling_path(path);
     {
-        const unsigned units = head[13];
-        const unsigned xd = (head[14] << 8) | head[15];
-        const unsigned yd = (head[16] << 8) | head[17];
-        if (units == 1 && (xd < 72 || yd < 72))
+        FILE *src = luogu::compat::fopen(path, "rb");
+        if (!src)
+            return false;
+        FILE *dst = luogu::compat::fopen(tmp, "wb");
+        if (!dst)
         {
-            const unsigned char k72[] = {1, 0, 72, 0, 72};
-            // 检查 fseek 返回值：失败时不能继续写，否则会写在当前文件
-            // 位置（读取 24 字节后），可能直接损坏 JPEG
-            if (std::fseek(in, 13, SEEK_SET) != 0)
+            std::fclose(src);
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
+        }
+        std::vector<unsigned char> buf(65536);
+        bool copied = true;
+        for (;;)
+        {
+            const size_t got = std::fread(buf.data(), 1, buf.size(), src);
+            if (got > 0 && std::fwrite(buf.data(), 1, got, dst) != got)
             {
-                std::fclose(in);
-                return false;
+                copied = false;
+                break;
             }
-            const bool wrote = std::fwrite(k72, 1, sizeof(k72), in) == sizeof(k72);
-            const int close_status = std::fclose(in);
-            return wrote && close_status == 0;
+            if (got < buf.size())
+                break;
+        }
+        if (std::ferror(src))
+            copied = false;
+        const bool closed = (std::fclose(dst) == 0);
+        std::fclose(src);
+        if (!copied || !closed)
+        {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
         }
     }
-    std::fclose(in);
+    // 在临时副本上写入 72dpi（JFIF 密度字段：单位 + X 密度 + Y 密度）
+    {
+        FILE *out = luogu::compat::fopen(tmp, "r+b");
+        if (!out)
+        {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
+        }
+        const unsigned char k72[] = {1, 0, 72, 0, 72};
+        bool ok = std::fseek(out, 13, SEEK_SET) == 0 &&
+                  std::fwrite(k72, 1, sizeof(k72), out) == sizeof(k72);
+        ok = (luogu::compat::flush_and_sync(out) && ok);
+        if (std::fclose(out) != 0)
+            ok = false;
+        if (!ok)
+        {
+            std::error_code ec;
+            std::filesystem::remove(tmp, ec);
+            return false;
+        }
+    }
+    std::string replace_error;
+    if (!luogu::compat::atomic_replace(tmp, path, replace_error))
+    {
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        return false;
+    }
     return true;
 }
 
@@ -2136,10 +2624,11 @@ std::string restore_placeholders(const std::string &s, const std::vector<std::st
 }
 
 // 合并相邻的数学占位符：洛谷题面里 \$$ 等畸形写法会把一个公式拆成多段
-// （段间可能夹着多余的 $ 和空白），这里把它们拼成一个，避免输出残缺公式
+// （段间可能夹着多余的 $ 和空白），这里把它们拼成一个，避免输出残缺公式。
+// is_math 与 raws 必须保持下标一一对应（合并产生的新条目同样追加 is_math）
 void merge_adjacent_math(std::string &s,
                          std::vector<std::string> &raws,
-                         const std::vector<bool> &is_math)
+                         std::vector<bool> &is_math)
 {
     auto parse_placeholder = [&s](size_t p, size_t &idx, size_t &end) -> bool {
         if (p + 2 >= s.size() || s[p] != '\x01' || s[p + 1] != 'R')
@@ -2209,6 +2698,8 @@ void merge_adjacent_math(std::string &s,
             run_end = nend;
         }
         raws.push_back(std::move(merged));
+        // 合并后的片段仍是数学片段：同步追加 is_math，保持两向量下标对应
+        is_math.push_back(true);
         out += "\x01R" + std::to_string(raws.size() - 1) + "\x02";
         i = run_end;
     }
@@ -2318,6 +2809,16 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
     if (depth > kMaxInlineDepth)
         return escape_latex(text);
 
+    // 超长文本先切块再过正则管道（见 kMaxRegexChunk）：不切会让 libstdc++ 的
+    // std::regex 递归耗尽栈而崩溃；切块本身不改变 TeX 输出（换行=空格）
+    if (text.size() > kMaxRegexChunk)
+    {
+        std::string out;
+        for (const auto &piece : split_for_regex(text, kMaxRegexChunk))
+            out += inline_to_latex_impl(piece, raws, is_math, depth + 1);
+        return out;
+    }
+
     auto protect = [&](std::string latex) {
         raws.push_back(std::move(latex));
         is_math.push_back(false);
@@ -2367,6 +2868,15 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             return protect(inline_code_latex(m[1].str()));
         });
     }
+    // 3.5 HTML 图片 <img src="..."> → Markdown 图片语法，交给下面的图片处理
+    //     （洛谷题面/题解里两种写法都有；此前 LaTeX 侧完全不认 <img>，图片
+    //     已经被收集下载却永远不会排版出来，只能看到转义后的 <img ...> 文本）
+    {
+        static const std::regex re(R"(<img[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>)");
+        s = regex_transform(s, re, [&](const std::smatch &m) {
+            return "![](" + m[1].str() + ")";
+        });
+    }
     // 4. 图片包在链接里：[![](img)](url) → \href{url}{图片}；
     //     必须先于普通链接处理，否则内层 ] 会破坏链接解析
     {
@@ -2384,7 +2894,11 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时
                 // 视频 URL 输出为普通文本而非超链接
                 const std::string target = video_link_target(link_url);
-                if (g_options && !g_options->bilibili_links)
+                // --no-bilibili-link、以及识别不了的 bilibili: 伪链接（编号
+                // 非法时 video_link_target 原样返回）：只输出普通文本，
+                // 不生成 \url{bilibili:...} 这种打不开的死链
+                if ((g_options && !g_options->bilibili_links) ||
+                    target.rfind("bilibili:", 0) == 0)
                     return protect(escape_latex(target));
                 return protect("\\url{" + escape_url(target) + "}");
             }
@@ -2394,7 +2908,14 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 prepare_cached_image(crawler::image_cache_path(img_url));
             if (usable.empty())
                 return std::string(); // xelatex 无法加载的格式，直接跳过
-            const std::string path = escape_path(luogu::compat::path_to_utf8(usable));
+            const std::string raw_path = luogu::compat::path_to_utf8(usable);
+            if (!path_is_tex_safe(raw_path))
+            {
+                // 路径含 % # { }：写进 .tex 必然破坏编译，跳过并提示一次
+                warn_unsafe_image_path(raw_path);
+                return std::string();
+            }
+            const std::string path = escape_path(raw_path);
             // \noindent：图片单独成段时去掉段首缩进（约 2 个中文字宽），
             // 否则宽度恰为 \linewidth 的图片会连同缩进一起超出右边界
             return protect("\\noindent\\href{" + escape_latex(link_url) + "}{"
@@ -2426,7 +2947,9 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时
                 // 视频 URL 输出为普通文本而非超链接
                 const std::string target = video_link_target(url);
-                if (g_options && !g_options->bilibili_links)
+                // 同 4：识别不了的 bilibili: 伪链接不生成死链
+                if ((g_options && !g_options->bilibili_links) ||
+                    target.rfind("bilibili:", 0) == 0)
                     return protect(escape_latex(target));
                 return protect("\\url{" + escape_url(target) + "}");
             }
@@ -2437,7 +2960,14 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 prepare_cached_image(crawler::image_cache_path(url));
             if (usable.empty())
                 return std::string();
-            const std::string path = escape_path(luogu::compat::path_to_utf8(usable));
+            const std::string raw_path = luogu::compat::path_to_utf8(usable);
+            if (!path_is_tex_safe(raw_path))
+            {
+                // 同上：无法表示的路径只跳过，不写出编译不过的 LaTeX
+                warn_unsafe_image_path(raw_path);
+                return std::string();
+            }
+            const std::string path = escape_path(raw_path);
             // \noindent：图片单独成段时去掉段首缩进（约 2 个中文字宽），
             // 否则宽度恰为 \linewidth 的图片会连同缩进一起超出右边界
             return protect("\\noindent\\IfFileExists{" + path + "}"
@@ -2474,8 +3004,9 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
         s = regex_transform(s, re, [&](const std::smatch &m) {
             // B 站视频伪链接补全为完整网页 URL
             const std::string target = video_link_target(m[1].str());
-            // --no-bilibili-link：视频 URL 输出为普通文本而非超链接
-            if (g_options && !g_options->bilibili_links && is_video_url(target))
+            // --no-bilibili-link、以及识别不了的 bilibili: 伪链接：输出普通文本
+            if (((g_options && !g_options->bilibili_links) || target.rfind("bilibili:", 0) == 0) &&
+                is_video_url(target))
                 return protect(escape_latex(target));
             return protect("\\url{" + escape_url(target) + "}");
         });
@@ -2627,7 +3158,9 @@ bool is_block_start(const std::string &t)
     if (t.rfind("$$", 0) == 0 || t.rfind("::", 0) == 0)
         return true;
     static const std::regex kHr(R"(^([-*_])(\s*\1){2,}\s*$)");
-    static const std::regex kItem(R"(^[-+*]\s+|\d+\.\s+)");
+    // 两个分支都必须锚定在行首：t 已经 trim 过，行中出现“版本 2. 0”这类文字
+    // 不是列表项（此前第二分支漏了 ^ 且用 regex_search，会把段落拆断）
+    static const std::regex kItem(R"(^[-+*]\s+|^\d+\.\s+)");
     return std::regex_match(t, kHr) || std::regex_search(t, kItem);
 }
 
@@ -2838,9 +3371,7 @@ size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
         const std::string t = trim(lines[k]);
         if (fence)
         {
-            if (t.size() >= fence_len &&
-                std::string(t.begin(), t.begin() + fence_len) ==
-                    std::string(fence_len, fence))
+            if (is_fence_closer(t, fence, fence_len))
                 fence = 0;
             continue;
         }
@@ -2883,6 +3414,19 @@ size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
 // 代码、表格行按 1 行，公式行按 2 行，普通行按 44 个半角字符宽折算。
 constexpr int kFoldBoxMaxRows = 8;
 
+// 与 prepare_cached_image 相同的「xelatex 能否加载」判断，但不产生任何副作用
+// （不改写 JPEG 密度、不复制带正确扩展名的副本）。折叠框分页的行高估算只需要
+// 「这里有没有一张真实可用的图片」，估算过程不应改动缓存文件。
+bool cached_image_loadable(const std::filesystem::path &cache_path)
+{
+    std::error_code ec;
+    if (!std::filesystem::exists(cache_path, ec) || ec)
+        return false;
+    const ImageKind kind = detect_image_kind(cache_path);
+    return kind == ImageKind::kPng || kind == ImageKind::kJpeg ||
+           kind == ImageKind::kPdf || kind == ImageKind::kEps;
+}
+
 // 一行里的图片在缓存中是否可用（可用的图片才有实际高度；xelatex 无法加载
 // 的格式与未下载的图片都会渲染成空盒）
 bool line_has_usable_image(const std::string &line)
@@ -2894,7 +3438,7 @@ bool line_has_usable_image(const std::string &line)
         const std::string url = (*it)[1].str();
         if (!looks_like_url(url) || is_video_url(url) || is_data_uri(url))
             continue;
-        if (!prepare_cached_image(crawler::image_cache_path(url)).empty())
+        if (cached_image_loadable(crawler::image_cache_path(url)))
             return true;
     }
     return false;
@@ -3041,10 +3585,7 @@ std::vector<MarkdownBlock> scan_markdown_blocks(
             {
                 const std::string l = trim(lines[i]);
                 ++rows;
-                const bool closes =
-                    l.size() >= fence_len &&
-                    std::string(l.begin(), l.begin() + fence_len) ==
-                        std::string(fence_len, fence);
+                const bool closes = is_fence_closer(l, fence, fence_len);
                 ++i;
                 if (closes)
                     break;
@@ -3745,7 +4286,7 @@ std::string fence_to_listings_lang(std::string tag)
     if (tag == "css")
         return "CSS";
     if (tag == "bash" || tag == "sh" || tag == "shell" || tag == "zsh" ||
-        tag == "bashrc" || tag == "console")
+        tag == "bashrc")
         return "bash";
     if (tag == "sql")
         return "SQL";
@@ -3777,8 +4318,9 @@ std::string fence_to_listings_lang(std::string tag)
         return "C";
     if (tag == "erlang" || tag == "erl")
         return "Erlang";
-    if (tag == "delphi" || tag == "pascal")
-        return "Delphi";
+    // 注：此前这里还有一条 tag == "delphi" / "pascal" → "Delphi"，永远不会
+    // 命中（pascal 在前面已映射到 listings 自带的 Pascal，且导言区没有定义
+    // Delphi 语言，真映射过去会报 Couldn't load requested language）
     if (tag == "prolog")
         return "Prolog";
     if (tag == "verilog" || tag == "v")
@@ -3842,7 +4384,7 @@ std::string code_block_latex(const std::string &fence_lang,
         out += "[breaklines=true]";
     out += "\n";
     for (const auto &cl : code_lines)
-        out += split_long_line(cl) + "\n";
+        out += split_long_line(lst_safe(cl)) + "\n";
     out += "\\end{lstlisting}\n\n";
     return out;
 }
@@ -3880,6 +4422,13 @@ std::string split_long_lines(const std::string &content)
     return out;
 }
 
+// 块级递归的深度上限：折叠框（:::info 等）与区块引用（>）会按嵌套层递归调用
+// render_markdown，而嵌套层数完全由不可信输入决定——一行 `>>>>>>…`（十万个 >）
+// 就能让递归深度等于输入长度，栈耗尽即 SIGSEGV（Windows 默认 1MB 栈更早崩溃）。
+// 行内递归有 kMaxInlineDepth、对齐环境有 kMaxEnvDepth，这里给块级补上同等的
+// 上限：超限时不再递归，整段按普通文本转义输出（转义后不可能执行任何命令）。
+const int kMaxBlockDepth = 32;
+
 // 把一段 markdown / HTML 文本转换为 LaTeX（块级处理）。
 // 折叠框 / 区块引用需要把框内内容整体放进盒子里，因此按嵌套层递归调用自身：
 // @param fold_depth 当前所在的折叠框嵌套层数（0 = 不在任何折叠框内）
@@ -3892,6 +4441,9 @@ std::string split_long_lines(const std::string &content)
 std::string render_markdown(const std::string &markdown, int fold_depth,
                             int quote_depth = 0, bool box_para_indent = true)
 {
+    if (fold_depth + quote_depth > kMaxBlockDepth)
+        return escape_latex(markdown) + "\n\n";
+
     std::vector<std::string> lines;
     lines = split_lines(markdown);
     lines.emplace_back(); // 末尾哨兵，简化处理
@@ -3916,8 +4468,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
         // ---- 代码块内部 ----
         if (fence)
         {
-            if (line.size() >= fence_len &&
-                std::string(line.begin(), line.begin() + fence_len) == std::string(fence_len, fence))
+            if (is_fence_closer(line, fence, fence_len))
             {
                 out += code_block_latex(fence_lang, code_lines);
                 fence = 0;
@@ -3970,7 +4521,17 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             const size_t close = math.find("$$");
             if (close != std::string::npos)
             {
+                // 闭合 $$ 之后同一行还有文字时，把剩余部分放回待处理行，
+                // 交给下面的普通行逻辑（此前会把这段文字整段丢掉）。
+                // 剩余部分本身以 $$ 开头（畸形写法，如 $$a$$$$b）时不回填：
+                // 否则会新开一个块级公式，把后面的段落全吞进 \[...\]。
+                const std::string rest = math.substr(close + 2);
                 math = math.substr(0, close);
+                if (!trim(rest).empty() && trim(rest).rfind("$$", 0) != 0)
+                {
+                    lines[i - 1] = rest;
+                    --i;
+                }
             }
             else
             {
@@ -3988,7 +4549,12 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                     if (lc != std::string::npos)
                     {
                         math += "\n" + l.substr(0, lc);
-                        ++i; // 消费闭合行
+                        // 闭合 $$ 之后同一行还有文字时同样放回队列（此前直接丢弃）
+                        const std::string rest = l.substr(lc + 2);
+                        if (!trim(rest).empty() && trim(rest).rfind("$$", 0) != 0)
+                            lines[i] = rest; // 不前进：下一轮按普通行处理
+                        else
+                            ++i; // 消费闭合行
                         break;
                     }
                     math += "\n" + lines[i];
@@ -4200,7 +4766,8 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                 ++n;
             if (n == line.size() || line[n] == ' ')
             {
-                const std::string title = inline_to_latex(trim(line.substr(n)));
+                const std::string raw_title = trim(line.substr(n));
+                const std::string title = inline_to_latex(raw_title);
                 const bool in_quote_like =
                     (!env_stack.empty() &&
                      (env_stack.back().quote_like ||
@@ -4236,9 +4803,25 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                     // 只是大标题，不进目录、不改页眉）
                     const bool h1_section =
                         (n == 1) && g_options && g_options->h1_as_section;
-                    out += "\\" +
-                           std::string(h1_section ? "section" : kCmds[n - 1]) + "{" +
-                           title + "}\n\n";
+                    if (h1_section)
+                    {
+                        // \section 会写目录并生成 PDF 书签：标题含公式时书签
+                        // 无法直接使用数学符号（会报 Token not allowed in a PDF
+                        // string 且书签乱码），需要 \texorpdfstring 提供去掉
+                        // 数学后的纯文本备用串。不含公式的标题保持原样输出，
+                        // 不改变既有产物格式。
+                        const std::string bookmark_text =
+                            strip_math_for_bookmark(raw_title);
+                        if (bookmark_text != raw_title)
+                            out += "\\section{\\texorpdfstring{" + title + "}{" +
+                                   escape_latex(bookmark_text) + "}}\n\n";
+                        else
+                            out += "\\section{" + title + "}\n\n";
+                    }
+                    else
+                    {
+                        out += "\\" + std::string(kCmds[n - 1]) + "{" + title + "}\n\n";
+                    }
                 }
                 ++i;
                 continue;
@@ -4576,7 +5159,8 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
                                             escape_latex(strip_math_for_bookmark(section_title)) +
                                             "}";
     // 题解导出的锚点与「查看题解」按钮（设计 §10.2）：
-    // - 锚点 sol-problem-<PID> 由已校验的题号拼成，供「返回题目」跳转；
+    // - 锚点 sol-problem-<PID> 由 common.cpp 的 problem_anchor 白名单化生成，
+    //   供「返回题目」跳转；
     // - 按钮绝不能放进 \section 的参数里，否则目录条目与 PDF 书签会被按钮
     //   污染；正确写法是「锚点 + \section[短标题]{标题 + \hfill + 按钮}」，
     //   方括号里的短标题只用于目录与书签（与原本 \texorpdfstring 的
@@ -4684,11 +5268,11 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
         out += "\\subsection*{输入输出样例 \\#" + std::to_string(sample_no) + "}\n\n";
         out += "\\subsubsection*{输入 \\#" + std::to_string(sample_no) + "}\n\n";
         out += "\\begin{lstlisting}\n" +
-               split_long_lines(s.first) +
+               lst_safe(split_long_lines(s.first)) +
                "\n\\end{lstlisting}\n\n";
         out += "\\subsubsection*{输出 \\#" + std::to_string(sample_no) + "}\n\n";
         out += "\\begin{lstlisting}\n" +
-               split_long_lines(s.second) +
+               lst_safe(split_long_lines(s.second)) +
                "\n\\end{lstlisting}\n\n";
         ++sample_no;
     }
@@ -4777,12 +5361,16 @@ std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
                               const luogu::SolutionView &view,
                               const luogu::SolutionExportOptions &sol_opt)
 {
-    const std::string title = luogu::truncate_utf8(
-        view.title.empty() ? std::string("（无标题）")
-                           : luogu::strip_solution_title_prefix(view.title),
-        60);
-    const std::string heading_plain = "题解：" + title;
-    const std::string heading_latex = "题解：" + inline_to_latex(title);
+    // 标题统一格式「题解：<题解标题>」（自带前缀去掉、换行换成空格、60 字符
+    // 截断）。复用 Markdown 导出同一个 luogu::solution_heading：此前这里自己
+    // 拼标题，标题里的 \n\r\t 会漏进 \addcontentsline / \markright / PDF 书签。
+    const std::string heading_plain = luogu::solution_heading(view.title);
+    const std::string kSolutionPrefix = "题解：";
+    const std::string heading_latex =
+        kSolutionPrefix +
+        inline_to_latex(heading_plain.rfind(kSolutionPrefix, 0) == 0
+                            ? heading_plain.substr(kSolutionPrefix.size())
+                            : heading_plain);
 
     // 目录与书签文字：注明所属题目（PID + 题目名），保持黑色（不随难度着色）
     std::string toc_text = escape_latex(heading_plain) + "（" +
@@ -4807,12 +5395,15 @@ std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
 std::string standalone_article_to_latex(const luogu::SolutionView &view,
                                         const luogu::SolutionExportOptions &sol_opt)
 {
-    const std::string title = luogu::truncate_utf8(
-        view.title.empty() ? std::string("（无标题）")
-                           : luogu::strip_article_title_prefix(view.title),
-        60);
-    const std::string heading_plain = "文章：" + title;
-    const std::string heading_latex = "文章：" + inline_to_latex(title);
+    // 同 solution_to_latex：复用 Markdown 导出的 luogu::article_heading，
+    // 保证标题清洗（去前缀、换行换空格、截断）两处完全一致
+    const std::string heading_plain = luogu::article_heading(view.title);
+    const std::string kArticlePrefix = "文章：";
+    const std::string heading_latex =
+        kArticlePrefix +
+        inline_to_latex(heading_plain.rfind(kArticlePrefix, 0) == 0
+                            ? heading_plain.substr(kArticlePrefix.size())
+                            : heading_plain);
 
     std::string toc_text = escape_latex(heading_plain);
     if (!sol_opt.article_toc)
@@ -5077,6 +5668,9 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("    numberstyle=\\footnotesize\\ttfamily\\color{gray},\n", out);
     std::fputs("    basicstyle=\\small\\ttfamily,\n", out);
     std::fputs("    rulecolor=\\color{blue},\n", out);
+    // 代码块/样例里的 \end{lstlisting} 已由 lst_safe 换成等价写法，
+    // 这里用 literate 把它排版回原文（见 kLstEndMarker 处的说明）
+    std::fputs(kLstLiterateOption, out);
     std::fputs("}\n", out);
 
         // 当前 TeX Live 的 listings 没有这些语言，手动补上，否则
@@ -5089,19 +5683,6 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("  morecomment=[s]{/*}{*/},\n", out);
     std::fputs("  morestring=[b]\",\n", out);
     std::fputs("  morestring=[b]',\n", out);
-    std::fputs("}\n", out);
-    std::fputs("\\lstdefinelanguage{JavaScript}{\n", out);
-    std::fputs("  morekeywords={abstract,arguments,await,boolean,break,byte,case,catch,char,", out);
-    std::fputs("class,const,continue,debugger,default,delete,do,double,else,enum,eval,export,", out);
-    std::fputs("extends,false,final,finally,float,for,function,goto,if,implements,import,in,", out);
-    std::fputs("instanceof,int,interface,let,long,native,new,null,package,private,protected,", out);
-    std::fputs("public,return,short,static,super,switch,synchronized,this,throw,throws,", out);
-    std::fputs("transient,true,try,typeof,var,void,volatile,while,with,yield},\n", out);
-    std::fputs("  morecomment=[l]{//},\n", out);
-    std::fputs("  morecomment=[s]{/*}{*/},\n", out);
-    std::fputs("  morestring=[b]\",\n", out);
-    std::fputs("  morestring=[b]',\n", out);
-    std::fputs("  morestring=[b]`,\n", out);
     std::fputs("}\n", out);
     std::fputs("\\lstdefinelanguage{TypeScript}{\n", out);
     std::fputs("  morekeywords={abstract,any,as,asserts,async,await,boolean,break,case,catch,", out);
@@ -5301,8 +5882,11 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("\\providecommand{\\magenta}[1]{\\textcolor{magenta}{#1}}\n", out);
     std::fputs("\\providecommand{\\yellow}[1]{\\textcolor{yellow}{#1}}\n", out);
     std::fputs("\\providecommand{\\violet}[1]{\\textcolor{violet}{#1}}\n", out);
+    // JavaScript：只在这里定义一次。此前在语言补丁区还定义过一次，而
+    // keywords= 会覆盖先前累积的 morekeywords，等于前者白写（无衬线下的
+    // JS 保留字与模板字符串反引号高亮都因此丢失），这里合并为一份
     std::fputs("\\lstdefinelanguage{JavaScript}{\n", out);
-    std::fputs("keywords={break, case, catch, class, const, continue, debugger, default, delete, do, else, export, extends, finally, for, function, if, import, in, instanceof, let, new, return, super, switch, this, throw, try, typeof, var, void, while, with, yield, await, async, of, from, as},", out);
+    std::fputs("keywords={abstract, arguments, as, async, await, boolean, break, byte, case, catch, char, class, const, continue, debugger, default, delete, do, double, else, enum, eval, export, extends, false, final, finally, float, for, from, function, goto, if, implements, import, in, instanceof, int, interface, let, long, native, new, null, of, package, private, protected, public, return, short, static, super, switch, synchronized, this, throw, throws, transient, true, try, typeof, var, void, volatile, while, with, yield},", out);
     std::fputs("keywordstyle=\\color{blue}\\bfseries,\n", out);
     std::fputs("ndkeywords={boolean, number, string, null, undefined, true, false},\n", out);
     std::fputs("ndkeywordstyle=\\color{red}\\bfseries,\n", out);
@@ -5313,7 +5897,8 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("commentstyle=\\color{green}\\ttfamily,\n", out);
     std::fputs("stringstyle=\\color{purple}\\ttfamily,\n", out);
     std::fputs("morestring=[b]',\n", out);
-    std::fputs("morestring=[b]\"\n", out);
+    std::fputs("morestring=[b]\",\n", out);
+    std::fputs("morestring=[b]`\n", out);
     std::fputs("}\n", out);
     // 封面标题：--set-cover-title 指定文字，--set-font-cover-page 指定字体
     // （未设置字体时保持原代码行为：不额外指定字体族）；
@@ -5406,19 +5991,30 @@ void offer_missing_images(const std::vector<std::string> &candidate_urls,
     if (missing.empty())
         return;
 
+    // 确认走 prompt::confirm（唯一的输入注入点，且读不到输入时失败闭合）。
+    // 此前直接 fgets(stdin) 会绕过注入点、也不判断 TTY：管道输入（yes |）
+    // 会被当成用户同意而自动下载，测试也无法控制这一处确认。
+    std::string prompt_text;
     if (new_download)
-        std::printf("%s共引用了 %zu 张图片；-RD, --new-download 将全部重新下载"
-                    "（下载失败时保留原有缓存）。\n现在下载吗？[y/N] ",
-                    subject.c_str(), missing.size());
+        prompt_text = subject + "共引用了 " + std::to_string(missing.size()) +
+                      " 张图片；-RD, --new-download 将全部重新下载"
+                      "（下载失败时保留原有缓存）。\n现在下载吗？[y/N] ";
     else
-        std::printf("%s共引用了 %zu 张尚未下载的图片。\n现在下载吗？[y/N] ",
-                    subject.c_str(), missing.size());
-    fflush(stdout);
-    char answer_buf[16];
-    if (!fgets(answer_buf, sizeof(answer_buf), stdin))
-        answer_buf[0] = '\0';
-    const std::string answer(answer_buf);
-    if (!answer.empty() && (answer[0] == 'y' || answer[0] == 'Y'))
+        prompt_text = subject + "共引用了 " + std::to_string(missing.size()) +
+                      " 张尚未下载的图片。\n现在下载吗？[y/N] ";
+    bool agreed = false;
+    if (prompt::interactive())
+    {
+        agreed = prompt::confirm(prompt_text);
+    }
+    else
+    {
+        // 非交互式终端（管道/重定向）：与其它确认一致，失败闭合、不下载
+        std::fputs(prompt_text.c_str(), stdout);
+        std::printf("\n当前输入不是交互式终端，无法确认下载。\n");
+        fflush(stdout);
+    }
+    if (agreed)
     {
         const crawler::derror download_result =
             crawler::download_images(missing, new_download);
@@ -5628,7 +6224,8 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
             // \section* 不会自动生成书签：补一个顶层（第 0 层）书签，
             // 各篇题解的书签仍以第 2 层级挂在它下面
             if (!write_body("\\pdfbookmark[0]{" + escape_latex(group_title) +
-                            "}{solgroup-" + item.pid + "}\n"))
+                            "}{solgroup-" +
+                                luogu::anchor_segment(item.pid) + "}\n"))
                 return false;
             // 页眉不在这里设置：每篇题解自己用 \markright 写页眉
             // （见 solution_to_latex），组标题只是分组用的 \section*，
@@ -5686,20 +6283,27 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         return false;
     }
     // 落盘并 fsync 后原子替换目标文件；失败时清理临时文件
-    if (!luogu::compat::flush_and_sync(out) || std::fclose(out) != 0)
+    // 先 fsync 再关闭：flush 失败时也必须走 fclose，否则流一直占着临时文件
+    // （Windows 上随后删不掉 *.tex.tmp.*，磁盘上会留下垃圾）
+    const bool flushed = luogu::compat::flush_and_sync(out);
+    const bool closed = (std::fclose(out) == 0);
+    if (!flushed || !closed)
     {
         std::error_code ec;
         std::filesystem::remove(tmp_path, ec);
         error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
         return false;
     }
-    std::error_code ec;
-    std::filesystem::rename(tmp_path, output_path, ec);
-    if (ec)
+    // 原子替换目标文件：MinGW-w64 的 std::filesystem::rename 在目标已存在时
+    // 会失败（第二次导出同名文件必失败），必须用 compat::atomic_replace
+    // （Windows 走 MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)）
+    std::string replace_error;
+    if (!luogu::compat::atomic_replace(tmp_path, output_path, replace_error))
     {
+        std::error_code ec;
         std::filesystem::remove(tmp_path, ec);
         error = "无法把输出文件写入 '" + luogu::compat::path_to_utf8(output_path) +
-                "': " + ec.message();
+                "': " + replace_error;
         return false;
     }
     return true;
@@ -5748,8 +6352,7 @@ std::vector<std::string> split_by_h1(const std::string &markdown)
         // 代码围栏的开合（与渲染器一致：整行 trim 后以 ``` / ~~~ 开头）
         if (fence != 0)
         {
-            if (trimmed.size() >= fence_len &&
-                trimmed.compare(0, fence_len, std::string(fence_len, fence)) == 0)
+            if (is_fence_closer(trimmed, fence, fence_len))
             {
                 fence = 0;
                 fence_len = 0;
@@ -5875,20 +6478,27 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
         error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
         return false;
     }
-    if (!luogu::compat::flush_and_sync(out) || std::fclose(out) != 0)
+    // 先 fsync 再关闭：flush 失败时也必须走 fclose，否则流一直占着临时文件
+    // （Windows 上随后删不掉 *.tex.tmp.*，磁盘上会留下垃圾）
+    const bool flushed = luogu::compat::flush_and_sync(out);
+    const bool closed = (std::fclose(out) == 0);
+    if (!flushed || !closed)
     {
         std::error_code ec;
         std::filesystem::remove(tmp_path, ec);
         error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
         return false;
     }
-    std::error_code ec;
-    std::filesystem::rename(tmp_path, output_path, ec);
-    if (ec)
+    // 原子替换目标文件：MinGW-w64 的 std::filesystem::rename 在目标已存在时
+    // 会失败（第二次导出同名文件必失败），必须用 compat::atomic_replace
+    // （Windows 走 MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)）
+    std::string replace_error;
+    if (!luogu::compat::atomic_replace(tmp_path, output_path, replace_error))
     {
+        std::error_code ec;
         std::filesystem::remove(tmp_path, ec);
         error = "无法把输出文件写入 '" + luogu::compat::path_to_utf8(output_path) +
-                "': " + ec.message();
+                "': " + replace_error;
         return false;
     }
     return true;

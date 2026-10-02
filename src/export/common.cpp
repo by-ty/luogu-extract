@@ -128,26 +128,37 @@ bool resolve_tag(const std::string &raw, bool has_tag_map,
     return true;
 }
 
-// 题号数字部分（用于按题号从小到大排序）
-long pid_number(const std::string &pid)
+// 题号排序用的数字部分：取题号里「第一段连续数字」，口径与 parse_pid_parts
+// 的 num 字段一致（P1001 → 1001、CF1234A → 1234）。不能把所有数字段拼接：
+// 洛谷的 AtCoder 题号形如 AT_abc123_4，拼接会得到 1234，使它在
+// AT_abc124（124）之后；这里放宽 parse_pid_parts「字母前缀后必须紧接数字」
+// 的限制，前缀里允许下划线等字符，只取第一段数字。
+// 题号不含数字时返回 0（旧实现返回 -1，同样排在最前）。
+// 数字溢出时封顶到 ULLONG_MAX：畸形缓存里的超长数字不回绕，且所有溢出题号
+// 归到同一档，排序仍是全序。
+unsigned long long pid_number(const std::string &pid)
 {
-    long n = 0;
-    bool any = false;
-    const long kMax = std::numeric_limits<long>::max();
-    for (char c : pid)
+    const unsigned long long kMax =
+        std::numeric_limits<unsigned long long>::max();
+    unsigned long long n = 0;
+    bool overflow = false;
+    size_t i = 0;
+    while (i < pid.size() && !std::isdigit(static_cast<unsigned char>(pid[i])))
+        ++i; // 跳过前缀
+    for (; i < pid.size() && std::isdigit(static_cast<unsigned char>(pid[i])); ++i)
     {
-        if (c >= '0' && c <= '9')
+        if (overflow)
+            continue; // 已封顶：其余数字只是后缀的一部分
+        const unsigned long long d =
+            static_cast<unsigned long long>(pid[i] - '0');
+        if (n > (kMax - d) / 10)
         {
-            const long d = c - '0';
-            // 溢出即封顶返回 LONG_MAX：畸形缓存里的超长数字不再触发
-            // 有符号溢出 UB，且排序仍稳定（全部归到最大档）
-            if (n > (kMax - d) / 10)
-                return kMax;
-            n = n * 10 + d;
-            any = true;
+            overflow = true;
+            continue;
         }
+        n = n * 10 + d;
     }
-    return any ? n : -1;
+    return overflow ? kMax : n;
 }
 
 // ---- 原始文本快速预筛 -------------------------------------------------
@@ -1200,10 +1211,15 @@ bool luogu::select_problems(const ExportFilter &filter,
         return false;
     }
 
-    // 6. 排序：按题号从小到大（先按数字部分升序，前缀字母作为次级排序）
+    // 6. 排序：按题号从小到大（数字部分升序，前缀字母与后缀作为次级排序）。
+    // 数字部分取题号的第一段连续数字（与 parse_pid_parts 的 num 一致，
+    // AT_abc123_4 → 123 而不是 1234），数字相同时比较题号原文。
+    // 严格弱序：数字是题号的纯函数，比较等价于按 (数字, 题号原文) 做字典序
+    // 比较（题号原文本身就是全序），因此任意两个题号都有确定次序，
+    // std::sort 不会因比较不满足严格弱序而 UB。
     std::sort(problems.begin(), problems.end(), [](const problem::Problem &a, const problem::Problem &b) {
-        const long na = pid_number(a.pid);
-        const long nb = pid_number(b.pid);
+        const unsigned long long na = pid_number(a.pid);
+        const unsigned long long nb = pid_number(b.pid);
         if (na != nb)
             return na < nb;
         return a.pid < b.pid;
@@ -1350,17 +1366,68 @@ std::string luogu::article_heading(const std::string &title)
     return "文章：" + truncate_utf8(name, 60);
 }
 
+namespace
+{
+
+// 锚点片段的字符白名单化。锚点会被写进 LaTeX 的
+// \hypertarget{...} / \pdfbookmark{...}{...} 与 Markdown 的 <a id="...">，
+// 而题号来自题目列表缓存（problem.cpp 只过滤控制字符，不校验形状），
+// 含 # % \ { } " 换行等字符时会破坏结构甚至注入命令。这里只保留字母、
+// 数字与 - _ . 三种安全符号，其余字节替换成 '_'；发生替换时再追加原文的
+// 哈希后缀，避免两个不同题号（如 P1#2 与 P1_2）得到同一个锚点。
+// 正常题号（只含字母数字下划线）原样返回，锚点与旧版本完全一致。
+std::string anchor_safe_segment(const std::string &raw)
+{
+    static const char kHex[] = "0123456789abcdef";
+    std::string out;
+    out.reserve(raw.size() + 9);
+    bool replaced = false;
+    for (unsigned char c : raw)
+    {
+        if (std::isalnum(c) || c == '-' || c == '_' || c == '.')
+            out += static_cast<char>(c);
+        else
+        {
+            out += '_';
+            replaced = true;
+        }
+    }
+    if (!replaced)
+        return out;
+
+    // FNV-1a 32 位（与 crawler 的缓存文件名哈希同族）：只用于在被替换过的
+    // 片段之间保持区分度，同一原文每次得到同一个后缀
+    uint32_t hash = 2166136261u;
+    for (unsigned char c : raw)
+    {
+        hash ^= c;
+        hash *= 16777619u;
+    }
+    out += '-';
+    for (int shift = 28; shift >= 0; shift -= 4)
+        out += kHex[(hash >> shift) & 0x0Fu];
+    return out;
+}
+
+} // namespace
+
+// 供其它模块（如 latex.cpp 的 \pdfbookmark 标签）复用同一套白名单化
+std::string luogu::anchor_segment(const std::string &raw)
+{
+    return anchor_safe_segment(raw);
+}
+
 std::string luogu::problem_anchor(const std::string &pid)
 {
-    return "sol-problem-" + pid;
+    return "sol-problem-" + anchor_safe_segment(pid);
 }
 
 std::string luogu::solution_anchor(const std::string &pid, const std::string &lid)
 {
-    return "sol-" + pid + "-" + lid;
+    return "sol-" + anchor_safe_segment(pid) + "-" + anchor_safe_segment(lid);
 }
 
 std::string luogu::article_anchor(const std::string &lid)
 {
-    return "sol-art-" + lid;
+    return "sol-art-" + anchor_safe_segment(lid);
 }

@@ -38,8 +38,9 @@
 
 namespace
 {
-const char *kColorReset = "\033[0m";
-const char *kColorRed = "\033[1;31m";
+// 重定向到文件/管道时不写 ANSI 转义序列（这些提示走 stderr）
+const char *kColorReset = luogu::compat::stderr_is_tty() ? "\033[0m" : "";
+const char *kColorRed = luogu::compat::stderr_is_tty() ? "\033[1;31m" : "";
 
 std::string to_lower(std::string s)
 {
@@ -62,6 +63,11 @@ const long kScaleCapMs = 60000;
 
 // 连续超时/连接失败达到该次数时按疑似限流处理
 const int kConsecutiveFailuresAsRateLimit = 5;
+
+// Retry-After 的硬上限（秒）：该值来自服务器，恶意或异常的响应可以给得很大，
+// 不限幅就会把本次运行的等待时间拉到数天（用户显式配置的 --rate-limit-wait
+// 不受此上限约束，只有响应头里的 Retry-After 受限）
+const long kMaxRetryAfterSec = 3600;
 
 // ---- 运行时状态 ----
 // 原站与保存站各一条通道，各自维护延时系数、限流等待与放弃状态；
@@ -88,6 +94,7 @@ struct GateState
 
     luogu::cookie::Jar jar;
     std::string cookie_file_hint;
+    unsigned long long jar_version = 0;  // jar 每变化一次 +1（句柄据此决定是否重装）
 
     bool user_stopped = false;
     bool rate_limited_out = false;
@@ -118,7 +125,9 @@ ChannelState &channel_state(crawler::Channel ch)
     return state().channels[index < 0 || index >= crawler::kChannelCount ? 0 : index];
 }
 
-// 统一加锁访问（返回副本，避免调用方在锁外继续持有引用）
+// 统一加锁访问（返回副本，避免调用方在锁外继续持有引用）。
+// 因此取共享状态的接口（如 gate_channel_limit_reason）必须返回值而不是引用，
+// 否则出锁后另一条线程改写该字段就会与调用方的读竞争
 template <typename Fn>
 auto with_channel(crawler::Channel ch, Fn &&fn) -> decltype(fn(std::declval<ChannelState &>()))
 {
@@ -285,7 +294,10 @@ size_t header_cb(char *buffer, size_t size, size_t nitems, void *userp)
     return total;
 }
 
-// Retry-After 支持秒数与 HTTP-date 两种形式；解析失败返回 0
+// Retry-After 支持秒数与 HTTP-date 两种形式；解析失败返回 0。
+// 秒数上限 kMaxRetryAfterSec：这个值完全由服务器控制，不限幅（"Retry-After:
+// 999999999" 或超出 long 范围的数字）会让本次运行等待数天，甚至因收窄转换
+// 溢出变成负数而被当成 --rate-limit-wait 0。负数与非数字仍然返回 0。
 long parse_retry_after(const std::string &value)
 {
     const std::string v = trim(value);
@@ -294,7 +306,7 @@ long parse_retry_after(const std::string &value)
     char *end = nullptr;
     const long seconds = std::strtol(v.c_str(), &end, 10);
     if (end && *end == '\0' && seconds > 0)
-        return seconds;
+        return std::min(seconds, kMaxRetryAfterSec);
     return 0;
 }
 } // namespace
@@ -540,11 +552,10 @@ long long crawler::gate_channel_block_remaining_ms(Channel ch)
     });
 }
 
-const std::string &crawler::gate_channel_limit_reason(Channel ch)
+std::string crawler::gate_channel_limit_reason(Channel ch)
 {
-    return with_channel(ch, [](ChannelState &st) -> const std::string & {
-        return st.limit_reason;
-    });
+    // 必须返回值：with_channel 出锁后，另一条线程可能正在改写 st.limit_reason
+    return with_channel(ch, [](ChannelState &st) { return st.limit_reason; });
 }
 
 void crawler::gate_reset_channel(Channel ch)
@@ -600,6 +611,13 @@ void crawler::gate_print_delay_notice(long long planned_requests)
 
 // ---- 凭据通道 ----
 
+namespace
+{
+// 清空两个请求句柄的 Cookie 引擎（定义见下方「长连接句柄」一节，
+// gate_clear_cookies 在它之前，故先声明）
+void clear_cookie_engines();
+} // namespace
+
 bool crawler::gate_load_cookies(const std::filesystem::path &file, std::string &error,
                                 std::string *warnings)
 {
@@ -607,8 +625,11 @@ bool crawler::gate_load_cookies(const std::filesystem::path &file, std::string &
     luogu::cookie::Jar jar;
     if (!luogu::cookie::load_netscape_file(file, jar, error, warnings))
         return false;
+    const std::string hint = luogu::compat::path_to_utf8(file);
+    std::lock_guard<std::mutex> lock(s.mutex);
     s.jar = std::move(jar);
-    s.cookie_file_hint = luogu::compat::path_to_utf8(file);
+    s.cookie_file_hint = hint;
+    ++s.jar_version;  // 新 jar 需要重新装进句柄引擎
     return true;
 }
 
@@ -618,19 +639,50 @@ bool crawler::gate_set_cookie_string(const std::string &text, std::string &error
     luogu::cookie::Jar jar;
     if (!luogu::cookie::load_cookie_string(text, jar, error))
         return false;
+    std::lock_guard<std::mutex> lock(s.mutex);
     s.jar = std::move(jar);
     s.cookie_file_hint = "--cookie-string";
+    ++s.jar_version;  // 新 jar 需要重新装进句柄引擎
     return true;
 }
 
-size_t crawler::gate_cookie_count() { return state().jar.size(); }
-bool crawler::gate_has_cookies() { return !state().jar.empty(); }
+size_t crawler::gate_cookie_count()
+{
+    GateState &s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return s.jar.size();
+}
+
+bool crawler::gate_has_cookies()
+{
+    GateState &s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return !s.jar.empty();
+}
+
 void crawler::gate_clear_cookies()
 {
-    state().jar.cookies.clear();
-    state().cookie_file_hint.clear();
+    GateState &s = state();
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        s.jar.cookies.clear();
+        s.cookie_file_hint.clear();
+        ++s.jar_version;  // jar 已变化：句柄下次请求按新版本重新安装
+    }
+    // jar 只是「待安装的凭据」：已经装进 libcurl 引擎的 Cookie 必须显式清掉，
+    // 否则后续请求仍会带着旧凭据（auto 模式下两条通道会并发读写 jar，
+    // 因此先出 s.mutex 再取句柄锁，两把锁不交叉持有）
+    clear_cookie_engines();
 }
-const std::string &crawler::gate_cookie_file_hint() { return state().cookie_file_hint; }
+
+std::string crawler::gate_cookie_file_hint()
+{
+    // 返回值拷贝：cookie_file_hint 会被 gate_load_cookies 在锁内改写，
+    // 返回引用会让调用方在锁外读到正在被改写的 std::string（与 limit_reason 同理）
+    GateState &s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return s.cookie_file_hint;
+}
 
 // ---- 请求执行 ----
 
@@ -732,45 +784,115 @@ bool cookie_allowed_for(const std::string &url)
 // 因此在多次请求之间复用，避免每次都要多花一次 302 往返。
 //
 // 两个句柄分别用于「带凭据」与「不带凭据」：
-// - 带凭据句柄只在域名白名单命中时装入 Cookie；
-// - 不带凭据句柄完全不启用 Cookie 引擎，保证保存站（第三方镜像）
-//   请求在任何情况下都不携带任何 Cookie（即使端点被指向同一主机）。
-CURL *handle_for(bool with_cookies)
+// - 带凭据句柄按域名白名单装入用户 jar 里的凭据；
+// - 不带凭据句柄从不装入任何用户凭据，保证保存站（第三方镜像）
+//   请求在任何情况下都不携带洛谷凭据（即使端点被指向同一主机）。
+//   注意两个句柄都启用了 Cookie 引擎（CURLOPT_COOKIEFILE ""），差别只在
+//   是否装入用户 jar：镜像自己下发的 Cookie 仍会在该句柄内正常往返。
+//
+// 句柄按「本次请求是否允许携带凭据」选择，而不是按调用方通道选择：
+// 白名单判定是逐请求做的（见 cookie_allowed_for），若把句柄与通道硬绑定，
+// 「保存站端点被指向洛谷主机」时就会把凭据发给第三方镜像。
+//
+// 每个句柄各带一把互斥量：惰性初始化、重置、设置选项、perform、getinfo
+// 整体串行。句柄上的 WRITEDATA / HEADERDATA 指向本次请求栈上的缓冲，
+// 同一句柄被两条线程并发使用会让响应写进另一条线程的缓冲（错乱 / 串味）。
+// 当前 auto 模式下原站线程走「带凭据」句柄、保存站线程走「不带凭据」句柄，
+// 本不会撞在一起；互斥量把这条不变量变成结构性保证，限流等待放在锁外。
+struct HandleSlot
 {
-    static CURL *with_cookie_handle = nullptr;
-    static CURL *without_cookie_handle = nullptr;
-    CURL *&slot = with_cookies ? with_cookie_handle : without_cookie_handle;
-    if (!slot)
-    {
-        slot = curl_easy_init();
-        if (slot)
-        {
-            // 空文件名 = 只启用内存中的 Cookie 引擎，不读写磁盘
-            curl_easy_setopt(slot, CURLOPT_COOKIEFILE, "");
-            curl_easy_setopt(slot, CURLOPT_COOKIESESSION, 0L);
-        }
-    }
-    else
-    {
-        // 保留 Cookie（curl_easy_reset 不清空 Cookie 缓存），只重置其它选项
-        curl_easy_reset(slot);
-    }
-    return slot;
+    CURL *handle = nullptr;
+    bool jar_installed = false;          // 用户 jar 是否已装进本句柄的引擎
+    unsigned long long jar_version = 0;  // 已装入的 jar 版本（jar_installed 为真时有效）
+    std::mutex mutex;
+};
+
+HandleSlot &handle_slot(bool with_cookies)
+{
+    // 函数内静态对象只初始化一次（C++11 起无初始化竞争），这里只承载句柄本身，
+    // 句柄的创建与使用全部在 slot.mutex 保护下
+    static HandleSlot with_cookie_slot;
+    static HandleSlot without_cookie_slot;
+    return with_cookies ? with_cookie_slot : without_cookie_slot;
 }
 
-void install_cookies(CURL *curl)
+// 用户 jar 的一次快照：版本号 + 域名白名单过滤后的待安装 Netscape 行。
+// 在 s.mutex 保护下取好副本，安装时就不再访问共享状态（两把锁不交叉持有）。
+struct CookieSnapshot
+{
+    unsigned long long version = 0;
+    std::vector<std::string> lines;
+};
+
+CookieSnapshot cookie_snapshot()
 {
     GateState &s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    CookieSnapshot snapshot;
+    snapshot.version = s.jar_version;
     if (s.jar.empty())
-        return;
+        return snapshot;
     const std::string extra_host =
         luogu::cookie::host_of_url(crawler::endpoints().official_base);
     for (const auto &c : s.jar.cookies)
     {
         if (!luogu::cookie::host_allowed(c.domain, extra_host))
             continue; // 域名白名单硬校验：非洛谷域名一律不装
-        const std::string line = luogu::cookie::netscape_line(c);
-        curl_easy_setopt(curl, CURLOPT_COOKIELIST, line.c_str());
+        snapshot.lines.push_back(luogu::cookie::netscape_line(c));
+    }
+    return snapshot;
+}
+
+// 取用句柄并保证 Cookie 引擎状态正确（调用方必须已持有 slot.mutex）。
+// 只在 jar 版本变化时安装一次用户 jar：每次请求都重装会把服务器刚下发的
+// 同名 Cookie（挑战 Cookie / 轮换过的会话 Cookie）覆盖回文件里的旧值。
+// 调用方必须持有 slot.mutex。
+// 已知限制（潜在竞态，当前调用图不可达）：jar 快照在进入句柄锁之前取得，
+// 若另一条线程恰好在这中间调用 gate_clear_cookies()（清 jar + 清引擎并让
+// 版本号 +1），本函数随后仍会把旧 jar 装回并记录旧版本号，而那批 Cookie
+// 不会被后续的「空 jar」安装移除。因此 gate_clear_cookies() 只允许在没有
+// 并发请求时调用（当前唯一调用点是 app::run 入口、抓取线程启动之前）。
+CURL *acquire_handle(HandleSlot &slot, const CookieSnapshot *jar)
+{
+    if (!slot.handle)
+    {
+        slot.handle = curl_easy_init();
+        if (!slot.handle)
+            return nullptr;
+        // 空文件名 = 只启用内存中的 Cookie 引擎，不读写磁盘
+        curl_easy_setopt(slot.handle, CURLOPT_COOKIEFILE, "");
+        curl_easy_setopt(slot.handle, CURLOPT_COOKIESESSION, 0L);
+    }
+    else
+    {
+        // 保留 Cookie（curl_easy_reset 只重置选项，不清空 Cookie 缓存，
+        // 引擎也保持启用），因此挑战 Cookie 不会因为复用句柄而丢
+        curl_easy_reset(slot.handle);
+    }
+    if (jar && (!slot.jar_installed || slot.jar_version != jar->version))
+    {
+        for (const std::string &line : jar->lines)
+            curl_easy_setopt(slot.handle, CURLOPT_COOKIELIST, line.c_str());
+        slot.jar_installed = true;
+        slot.jar_version = jar->version;
+    }
+    return slot.handle;
+}
+
+// 清空两个句柄 Cookie 引擎里的全部 Cookie（"ALL" 只清 Cookie，引擎保持启用，
+// 之后仍能接收与保存服务器下发的 Cookie）。
+// 调用方不得持有 s.mutex：本函数要取句柄锁，请求路径的加锁顺序是
+// 「先取 jar 快照（s.mutex）→ 再取句柄锁」，两把锁不交叉持有。
+void clear_cookie_engines()
+{
+    for (int i = 0; i < 2; ++i)
+    {
+        HandleSlot &slot = handle_slot(i == 0);
+        std::lock_guard<std::mutex> lock(slot.mutex);
+        if (!slot.handle)
+            continue; // 句柄还没创建过，引擎本来就是空的
+        curl_easy_setopt(slot.handle, CURLOPT_COOKIELIST, "ALL");
+        slot.jar_installed = false; // 引擎已清空，下次请求按当前版本重新安装
     }
 }
 } // namespace
@@ -811,15 +933,17 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             return result;
         }
 
-        CURL *curl = handle_for(opt.send_cookie && cookie_allowed_for(opt.url));
-        if (!curl)
-        {
-            result.status = RequestStatus::NetworkError;
-            result.error = "初始化 libcurl 失败";
-            return result;
-        }
-        if (opt.send_cookie && cookie_allowed_for(opt.url))
-            install_cookies(curl);
+        // 是否携带凭据逐请求判定：既要调用方要求（只有洛谷原站请求会要求），
+        // 又要目标域名在白名单内（见 cookie_allowed_for）；句柄按这个结果选择
+        const bool use_cookies = opt.send_cookie && cookie_allowed_for(opt.url);
+        HandleSlot &slot = handle_slot(use_cookies);
+        // 先取 jar 快照与超时值（都要拿 s.mutex），再进句柄锁：两把锁不交叉持有
+        const CookieSnapshot jar = use_cookies ? cookie_snapshot() : CookieSnapshot{};
+        const long timeout_sec =
+            opt.timeout_sec > 0
+                ? opt.timeout_sec
+                : with_channel(ch,
+                               [](ChannelState &st) { return st.config.timeout_sec; });
 
         ResponseBuffer buffer;
         buffer.max_bytes = opt.max_bytes;
@@ -832,38 +956,50 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             header_list = curl_slist_append(
                 header_list, ("If-None-Match: " + opt.if_none_match).c_str());
 
-        curl_easy_setopt(curl, CURLOPT_URL, opt.url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
-        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headers);
-        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-        curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
-        curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT,
-                         opt.timeout_sec > 0
-                             ? opt.timeout_sec
-                             : with_channel(ch, [](ChannelState &st) {
-                                   return st.config.timeout_sec;
-                               }));
-        // 始终校验 TLS 证书，不提供关闭开关
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-        curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
-        curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
-#if LIBCURL_VERSION_NUM >= 0x075500
-        // 只允许 http/https 跳转（新接口），避免被重定向到 file:// 等协议
-        curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
-#else
-        curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS,
-                         CURLPROTO_HTTP | CURLPROTO_HTTPS);
-#endif
-        if (header_list)
-            curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
-
-        const CURLcode code = curl_easy_perform(curl);
+        CURLcode code = CURLE_FAILED_INIT;
         long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        {
+            // 句柄互斥量覆盖「重置 + 安装 jar + 设置选项 + perform + getinfo」：
+            // WRITEDATA / HEADERDATA 指向本线程栈上的缓冲，同一句柄绝不能被
+            // 另一条线程并发改写；限流等待在锁外进行，不占着句柄睡觉
+            std::lock_guard<std::mutex> handle_lock(slot.mutex);
+            CURL *curl = acquire_handle(slot, use_cookies ? &jar : nullptr);
+            if (!curl)
+            {
+                if (header_list)
+                    curl_slist_free_all(header_list);
+                result.status = RequestStatus::NetworkError;
+                result.error = "初始化 libcurl 失败";
+                return result;
+            }
+
+            curl_easy_setopt(curl, CURLOPT_URL, opt.url.c_str());
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_cb);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &buffer);
+            curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
+            curl_easy_setopt(curl, CURLOPT_HEADERDATA, &headers);
+            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+            curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
+            curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
+            curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
+            // 始终校验 TLS 证书，不提供关闭开关
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+            curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
+            curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+#if LIBCURL_VERSION_NUM >= 0x075500
+            // 只允许 http/https 跳转（新接口），避免被重定向到 file:// 等协议
+            curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+#else
+            curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS,
+                             CURLPROTO_HTTP | CURLPROTO_HTTPS);
+#endif
+            if (header_list)
+                curl_easy_setopt(curl, CURLOPT_HTTPHEADER, header_list);
+
+            code = curl_easy_perform(curl);
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+        }
         if (header_list)
             curl_slist_free_all(header_list);
         // 注意：句柄不清理，Cookie 引擎的状态要跨请求保留
@@ -980,7 +1116,9 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
 
             // 等待时长取 max(Retry-After, 配置值)；
             // 但 --rate-limit-wait 0 表示「检测到限流直接停止」，
-            // 是用户的显式选择，Retry-After 不能把它变成等待
+            // 是用户的显式选择，Retry-After 不能把它变成等待。
+            // parse_retry_after 已把秒数限幅到 kMaxRetryAfterSec（3600）以内，
+            // 因此这里的收窄转换不会溢出，也不会把等待拉长到数天
             const long retry_after = parse_retry_after(result.retry_after);
             with_channel(ch, [&](ChannelState &st) {
                 if (st.config.rate_limit_wait_sec > 0 &&
@@ -1066,12 +1204,14 @@ bool crawler::gate_rate_limited_out()
     return s.rate_limited_out;
 }
 
-const std::string &crawler::gate_rate_limit_reason()
+std::string crawler::gate_rate_limit_reason()
 {
-    return with_channel(Channel::Official,
-                        [](ChannelState &st) -> const std::string & {
-                            return st.limit_reason;
-                        });
+    // 限流原因写进 GateState::rate_limit_reason（gate_note_rate_limit），
+    // 不是某个通道的 limit_reason：此前读的是 Official 通道的字段，永远为空。
+    // 与 gate_channel_limit_reason 一样返回拷贝，避免调用方持有锁内引用。
+    GateState &s = state();
+    std::lock_guard<std::mutex> lock(s.mutex);
+    return s.rate_limit_reason;
 }
 
 void crawler::gate_reset_state()
@@ -1084,5 +1224,17 @@ void crawler::gate_reset_state()
         s.rate_limit_reason.clear();
     }
     for (int i = 0; i < kChannelCount; ++i)
-        gate_reset_channel(static_cast<Channel>(i));
+    {
+        const Channel ch = static_cast<Channel>(i);
+        // 与 gate_reset_channel 一致：连续限流计数、放弃标志、等待截止时间、原因
+        gate_reset_channel(ch);
+        // 限流相关的运行期计数与放大一并清零：同一进程内多次 app::run
+        // （交互模式）时从头计数、恢复基础延时
+        with_channel(ch, [](ChannelState &st) {
+            st.rate_limit_rounds = 0;
+            st.consecutive_failures = 0;
+            st.boosted = false;
+            return 0;
+        });
+    }
 }

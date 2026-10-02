@@ -207,15 +207,17 @@ problem::Problem::Problem(const json &data,
     }
 
     // 多语言题面：只保留 en（zh-CN 与顶层字段重复）；
-    // 英文题面同样删除 ::anti-ai 指令块（-M / -L 的 --lang en
-    // 直接读取该对象的字符串字段）
+    // 英文题面与中文题面（get_string）保持一致：删除 ::anti-ai 指令块，
+    // 并过滤控制字符（\u0000 等会截断输出、破坏 LaTeX 编译）；
+    //（-M / -L 的 --lang en 直接读取该对象的字符串字段）
     if (data.contains("translations") && data["translations"].is_object() &&
         data["translations"].contains("en") && data["translations"]["en"].is_object())
     {
         translations = data["translations"]["en"];
         for (auto it = translations.begin(); it != translations.end(); ++it)
             if (it.value().is_string())
-                it.value() = strip_anti_ai(it.value().get<std::string>());
+                it.value() = luogu::compat::strip_control_chars(
+                    strip_anti_ai(it.value().get<std::string>()));
     }
 }
 

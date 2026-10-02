@@ -86,6 +86,19 @@ std::vector<std::string> visible_tags(const std::vector<std::string> &tags,
 }
 
 
+// 把远端文本压成单行：题号、标题、原文链接等来自缓存的数据可能夹带换行
+// （problem.cpp 的控制字符过滤保留了 \t \n \r），直接写进「# <题号> <标题>」
+// 这类由我们生成的单行结构会把标题断成两行，甚至凭空多出一个标题行。
+// 只替换换行与制表符，不转义 Markdown 特殊字符：正文仍按原文输出，
+// 避免破坏正常排版。
+std::string single_line(std::string text)
+{
+    for (char &c : text)
+        if (c == '\n' || c == '\r' || c == '\t')
+            c = ' ';
+    return text;
+}
+
 // 输出一篇题解或文章（Markdown 侧，设计 §10.4）：
 // - 显式 HTML 锚点：中文标题的自动锚点在不同渲染器下不一致，必须显式指定；
 // - 题解 → 题目 的「返回题目」与 题目 → 题解 的「查看题解」两个开关独立；
@@ -108,7 +121,7 @@ bool write_markdown_article(FILE *out,
     if (opt.article_meta)
     {
         std::fprintf(out, "> 来源：%s\n", view.source_name.c_str());
-        std::fprintf(out, "> 原文：%s\n\n", view.source_url.c_str());
+        std::fprintf(out, "> 原文：%s\n\n", single_line(view.source_url).c_str());
     }
     if (!view.content_full)
         std::fputs("> 注意：本篇正文不完整（因 --allow-partial 导出）。\n\n", out);
@@ -272,7 +285,8 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         hint = luogu::markdown_bilibili_links(hint);
 
         std::fputs("---\n\n", out);
-        std::fprintf(out, "# %s %s\n\n", p.pid.c_str(), title.c_str());
+        std::fprintf(out, "# %s %s\n\n", single_line(p.pid).c_str(),
+                     single_line(title).c_str());
 
         // 题面处的「查看题解」链接：目标为文末该题第一篇题解的显式锚点
         // （中文标题的自动锚点在不同 Markdown 渲染器下不一致，必须显式指定）
@@ -293,7 +307,8 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         const std::vector<std::string> shown_tags =
             visible_tags(p.tags, display.algorithm_tags, display.source_tags);
         if (!shown_tags.empty())
-            std::fprintf(out, "标签：%s\n\n", join_strings(shown_tags, "、").c_str());
+            std::fprintf(out, "标签：%s\n\n",
+                         single_line(join_strings(shown_tags, "、")).c_str());
 
         // 时空限制：多组限制输出最小-最大范围；Markdown 用纯文本 "~"
         // （format_limits 的 LaTeX 数学写法 $\sim$ 不适用于 Markdown）。
@@ -408,8 +423,8 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         {
             if (item.solutions.empty())
                 continue; // 该题无可用题解：不生成小节（也就不产生死链）
-            std::fprintf(out, "## %s %s\n\n", item.pid.c_str(),
-                         item.problem_title.c_str());
+            std::fprintf(out, "## %s %s\n\n", single_line(item.pid).c_str(),
+                         single_line(item.problem_title).c_str());
             for (const auto &view : item.solutions)
             {
                 if (!write_markdown_article(
@@ -456,14 +471,17 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         return false;
     }
 
-    // 原子替换目标文件
-    std::error_code ec;
-    std::filesystem::rename(tmp_path, output_path, ec);
-    if (ec)
+    // 原子替换目标文件（覆盖已存在的旧输出）。
+    // Windows 下必须用 compat::atomic_replace：MinGW-w64 的
+    // std::filesystem::rename 走 _wrename，目标已存在时会直接失败，
+    // 第二次导出同名文件就会报错（见 util/compat.h 的 atomic_replace）
+    std::string replace_error;
+    if (!luogu::compat::atomic_replace(tmp_path, output_path, replace_error))
     {
+        std::error_code ec;
         std::filesystem::remove(tmp_path, ec);
         error = "无法把输出文件写入 '" + luogu::compat::path_to_utf8(output_path) +
-                "': " + ec.message();
+                "': " + replace_error;
         return false;
     }
     return true;

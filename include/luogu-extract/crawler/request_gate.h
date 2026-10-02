@@ -139,8 +139,8 @@ namespace crawler
     /// 该通道还要等多久才能再次使用（毫秒；0 表示现在可用）
     long long gate_channel_block_remaining_ms(Channel ch);
 
-    /// 最近一次限流原因
-    const std::string &gate_channel_limit_reason(Channel ch);
+    /// 最近一次限流原因（返回拷贝：内部锁已释放，不能把内部引用交出去）
+    std::string gate_channel_limit_reason(Channel ch);
 
     /// 复位某个通道的限流状态（不影响 Cookie 与延时配置）
     void gate_reset_channel(Channel ch);
@@ -165,10 +165,12 @@ namespace crawler
     bool gate_set_cookie_string(const std::string &text, std::string &error);
     size_t gate_cookie_count();
     bool gate_has_cookies();
+    /// 清空凭据：内存 jar、提示用的文件名，以及两个请求句柄里 libcurl
+    /// Cookie 引擎已装入的全部 Cookie（引擎保持启用，可继续收下发 Cookie）
     void gate_clear_cookies();
 
     /// Cookie 文件路径（仅用于错误提示，绝不打印内容）
-    const std::string &gate_cookie_file_hint();
+    std::string gate_cookie_file_hint();
 
     // ---- 请求执行 ----
 
@@ -220,10 +222,12 @@ namespace crawler
     void gate_request_stop(const std::string &reason = "");
     /// 是否因限流而中止（退出码非 0）
     bool gate_rate_limited_out();
-    /// 最近一次限流的原因描述（用于汇总）
-    const std::string &gate_rate_limit_reason();
+    /// 最近一次限流的原因描述（用于汇总；与 gate_channel_limit_reason 一样返回拷贝）
+    std::string gate_rate_limit_reason();
 
-    /// 清空本次运行的停止/限流状态（不影响 Cookie 与延时配置）
+    /// 清空本次运行的停止/限流状态与各通道的限流计数、放弃标志、限流放大
+    /// （不影响 Cookie 与延时配置）。
+    /// 同一进程内多次执行 app::run（交互模式）时应在其入口调用
     void gate_reset_state();
 } // namespace crawler
 

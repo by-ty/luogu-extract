@@ -26,6 +26,7 @@
 #include <cstdio>
 #include <ctime>
 #include <string>
+#include <unordered_map>
 #include <nlohmann/json.hpp>
 #include "luogu-extract/util/compat.h"
 
@@ -33,13 +34,21 @@ using nlohmann::json;
 
 namespace
 {
-const char *kColorRed = "\033[1;31m";
-const char *kColorReset = "\033[0m";
+// 重定向到文件/管道时不写 ANSI 转义序列
+const char *kColorRed = luogu::compat::stderr_is_tty() ? "\033[1;31m" : "";
+const char *kColorYellow = luogu::compat::stderr_is_tty() ? "\033[1;33m" : "";
+const char *kColorReset = luogu::compat::stderr_is_tty() ? "\033[0m" : "";
 
 void print_error(const std::string &message)
 {
     std::fflush(stdout);
     std::fprintf(stderr, "%s错误：%s %s\n", kColorRed, kColorReset, message.c_str());
+}
+
+void print_warning(const std::string &message)
+{
+    std::fflush(stdout);
+    std::fprintf(stderr, "%s警告：%s %s\n", kColorYellow, kColorReset, message.c_str());
 }
 
 // PID 二次校验：只允许字母、数字与下划线（题目编号形状），
@@ -54,6 +63,17 @@ bool safe_pid(const std::string &pid)
             return false;
     }
     return true;
+}
+
+// 缓存里的题目编号白名单校验：缓存文件本地可写，不合规的编号按「缺字段」
+// 处理（置空）并告警，不让被篡改的编号进入后续流程
+void drop_bad_cached_pid(std::string &pid, const std::filesystem::path &path)
+{
+    if (pid.empty() || safe_pid(pid))
+        return;
+    print_warning("文章缓存 '" + luogu::compat::path_to_utf8(path) +
+                  "' 中的题目编号不合法，已忽略");
+    pid.clear();
 }
 
 // 读文件全部内容（二进制）；失败返回 false
@@ -171,10 +191,9 @@ std::filesystem::path solcache::article_path(const std::string &lid,
     return articles_dir() / (lid + "." + solution::source_key(src) + ".json");
 }
 
-// 把一行 JSON 解析成列表缓存条目；该行不是本题目的记录时返回 false，
-// 结构非法时置 bad = true（调用方据此按「未命中」处理）
-bool parse_list_line(const std::string &line, const std::string &pid,
-                     solcache::ListEntry &out, bool &bad)
+// 把一行 JSON 解析成列表缓存条目；结构非法时置 bad = true（调用方据此按
+// 「这一行不可用」处理），pid 不是合法题号时返回 false
+bool parse_list_entry(const std::string &line, solcache::ListEntry &out, bool &bad)
 {
     bad = false;
     json root;
@@ -194,7 +213,7 @@ bool parse_list_line(const std::string &line, const std::string &pid,
         return false;
     }
     const std::string line_pid = str_value(root, "pid");
-    if (!safe_pid(line_pid) || line_pid != pid)
+    if (!safe_pid(line_pid))
         return false;
 
     out.version = 1;
@@ -234,6 +253,16 @@ bool parse_list_line(const std::string &line, const std::string &pid,
     if (out.total_available <= 0)
         out.total_available = static_cast<int>(out.items.size());
     return true;
+}
+
+// 该行是否为指定题目的记录；该行不是本题目的记录时返回 false，
+// 结构非法时置 bad = true（调用方据此跳过该行）
+bool parse_list_line(const std::string &line, const std::string &pid,
+                     solcache::ListEntry &out, bool &bad)
+{
+    if (!parse_list_entry(line, out, bad))
+        return false;
+    return out.pid == pid;
 }
 
 // 把列表缓存条目序列化成 solutions.ndjson 的一行
@@ -293,29 +322,145 @@ std::vector<std::string> split_index_lines(const std::string &text)
     return lines;
 }
 
+namespace
+{
+// ---- 题解列表索引的内存缓存 ----
+// solutions.ndjson 一行一个题目。make_plan 会对每道题调用一次 load_list
+// （每轮计划一次，一次运行至少两轮），若每次都整读整解析整个文件，P 道题
+// 就是 O(P²) 的 I/O 与 JSON 解析；这里首次使用时整读一遍并按 pid 建表，
+// 之后按 pid 直接查表。
+// 表只由本文件改写：store_list 写盘成功后同步更新；同时记录文件的
+// (存在性, mtime, size)，被外部删除或改写（-C 清空缓存、另一个进程写入、
+// 手工编辑）时下次访问自动重新载入，进程内多次 app.run 也不会读到旧内容。
+struct IndexStamp
+{
+    bool exists = false;
+    std::filesystem::file_time_type mtime{};
+    std::uintmax_t size = 0;
+};
+
+struct ListIndex
+{
+    bool loaded = false;
+    IndexStamp stamp;
+    std::vector<std::string> lines;                 // 有效行的原文（坏行不入表）
+    std::unordered_map<std::string, size_t> by_pid; // pid → lines 下标
+};
+
+// 进程内单例。注意：当前只在 solution_task 的主线程（工作线程启动之前）
+// 调用 load_list/store_list，因此这里不加锁；若将来从工作线程调用，
+// 需要给内存表加互斥量。另外指纹只取 (存在性, mtime, size)：mtime 粒度粗
+// 的文件系统（如 FAT 2 秒）上，外部进程在同一粒度内写入「同尺寸不同内容」
+// 可能漏检一次（本进程自己的写入由 store_list 主动刷新指纹，不受影响）。
+ListIndex &list_index()
+{
+    static ListIndex index;
+    return index;
+}
+
+IndexStamp stamp_of(const std::filesystem::path &path)
+{
+    IndexStamp stamp;
+    std::error_code ec;
+    stamp.mtime = std::filesystem::last_write_time(path, ec);
+    if (ec)
+        return stamp; // 不存在或读不到属性：按「文件不存在」处理
+    stamp.exists = true;
+    stamp.size = std::filesystem::file_size(path, ec);
+    if (ec)
+        stamp = IndexStamp();
+    return stamp;
+}
+
+bool same_stamp(const IndexStamp &a, const IndexStamp &b)
+{
+    if (a.exists != b.exists)
+        return false;
+    return !a.exists || (a.mtime == b.mtime && a.size == b.size);
+}
+
+// 整读文件重建内存表：结构非法的行只丢弃这一行（原来是遇到第一行非法就
+// 整体未命中，会让所有题目一起重抓），并统计告警
+void load_list_index(const std::filesystem::path &path, const IndexStamp &stamp)
+{
+    ListIndex &index = list_index();
+    index.loaded = true;
+    index.stamp = stamp;
+    index.lines.clear();
+    index.by_pid.clear();
+
+    std::string text;
+    if (!stamp.exists)
+        return; // 缓存文件不存在：按空表处理
+    if (!read_file(path, text))
+    {
+        // 读取失败（如权限不足）：不缓存空表，下次访问重试
+        index.loaded = false;
+        return;
+    }
+    if (text.empty())
+        return;
+
+    int bad_lines = 0;
+    for (const std::string &line : split_index_lines(text))
+    {
+        solcache::ListEntry entry;
+        bool bad = false;
+        if (!parse_list_entry(line, entry, bad))
+        {
+            if (bad)
+                ++bad_lines;
+            continue;
+        }
+        if (index.by_pid.count(entry.pid))
+            continue; // 同一题目有多行时沿用「首次出现优先」
+        index.by_pid.emplace(entry.pid, index.lines.size());
+        index.lines.push_back(line);
+    }
+    if (bad_lines > 0)
+        print_warning("题解列表缓存中有 " + std::to_string(bad_lines) +
+                      " 行结构非法，已忽略（不影响其它题目的缓存）");
+}
+
+// 保证内存表与磁盘一致；文件未变时只多一次 stat
+void ensure_list_index(const std::filesystem::path &path)
+{
+    const IndexStamp stamp = stamp_of(path);
+    ListIndex &index = list_index();
+    if (index.loaded && same_stamp(index.stamp, stamp))
+        return;
+    load_list_index(path, stamp);
+}
+
+// 缓存文件被清空/删除后调用：下次访问重新从磁盘载入
+void invalidate_list_index()
+{
+    ListIndex &index = list_index();
+    index.loaded = false;
+    index.stamp = IndexStamp();
+    index.lines.clear();
+    index.by_pid.clear();
+}
+} // namespace
+
 bool solcache::load_list(const std::string &pid, ListEntry &out)
 {
     out = ListEntry();
     if (!safe_pid(pid))
         return false;
 
-    std::string text;
-    if (!read_file(solutions_index_path(), text) || text.empty())
+    ensure_list_index(solutions_index_path());
+    const ListIndex &index = list_index();
+    const auto it = index.by_pid.find(pid);
+    if (it == index.by_pid.end())
         return false;
 
-    for (const std::string &line : split_index_lines(text))
-    {
-        ListEntry entry;
-        bool bad = false;
-        if (parse_list_line(line, pid, entry, bad))
-        {
-            out = std::move(entry);
-            return true;
-        }
-        if (bad)
-            return false; // 该行结构非法：按未命中处理并重抓
-    }
-    return false;
+    ListEntry entry;
+    bool bad = false;
+    if (!parse_list_line(index.lines[it->second], pid, entry, bad))
+        return false; // 载入时已过滤坏行，这里理论上不会发生
+    out = std::move(entry);
+    return true;
 }
 
 bool solcache::store_list(const ListEntry &entry, std::string &error)
@@ -327,29 +472,45 @@ bool solcache::store_list(const ListEntry &entry, std::string &error)
         return false;
     }
 
-    // 读入现有各行（结构非法的行在重写时丢弃，自愈残留的半截记录），
-    // 替换本题目那一行后整体原子替换：一个题目一行，不会重复
-    std::vector<std::string> lines;
-    std::string text;
+    // 一题一行：本题目已有记录时替换该行，否则追加到最后；其余行原样保留
+    // （结构非法的行在载入内存表时就已丢弃，重写时一并自愈残留的半截记录），
+    // 最后整体原子替换：一个题目一行，不会重复
     const std::filesystem::path path = solutions_index_path();
-    if (read_file(path, text) && !text.empty())
-    {
-        for (const std::string &line : split_index_lines(text))
-        {
-            bool bad = false;
-            ListEntry existing;
-            parse_list_line(line, entry.pid, existing, bad);
-            if (bad || existing.pid == entry.pid)
-                continue; // 丢弃坏行与本题目旧记录
-            lines.push_back(line);
-        }
-    }
-    lines.push_back(list_entry_json(entry).dump());
+    ensure_list_index(path);
+    ListIndex &index = list_index();
+
+    const std::string new_line = list_entry_json(entry).dump();
+    const auto it = index.by_pid.find(entry.pid);
+    const bool exists = it != index.by_pid.end();
+    const size_t pos = exists ? it->second : 0;
 
     std::string data;
-    for (const std::string &line : lines)
-        data += line + "\n";
-    return write_file_atomic(path, data, error);
+    if (exists)
+    {
+        for (size_t i = 0; i < index.lines.size(); ++i)
+            data += (i == pos ? new_line : index.lines[i]) + "\n";
+    }
+    else
+    {
+        for (const std::string &line : index.lines)
+            data += line + "\n";
+        data += new_line + "\n";
+    }
+
+    // 写盘失败时内存表保持原样，与磁盘上的缓存仍然一致
+    if (!write_file_atomic(path, data, error))
+        return false;
+
+    if (exists)
+        index.lines[pos] = new_line;
+    else
+    {
+        index.by_pid.emplace(entry.pid, index.lines.size());
+        index.lines.push_back(new_line);
+    }
+    index.stamp = stamp_of(path);
+    index.loaded = true;
+    return true;
 }
 
 bool solcache::load_doc(const std::string &pid, const std::string &lid,
@@ -361,8 +522,9 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
     if ((!pid.empty() && !safe_pid(pid)) || !solution::valid_lid(lid))
         return false;
 
+    const std::filesystem::path path = article_path(lid, src);
     std::string text;
-    if (!read_file(article_path(lid, src), text) || text.empty())
+    if (!read_file(path, text) || text.empty())
         return false;
 
     json root;
@@ -388,7 +550,8 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
         return false;
     // 正文缓存按文章编号存放（不再按题目分目录），题目编号必须与请求一致；
     // 请求方不关心所属题目时（--article 按文章下载，pid 为空）跳过该校验
-    const std::string stored_pid = str_value(root, "pid");
+    std::string stored_pid = str_value(root, "pid");
+    drop_bad_cached_pid(stored_pid, path);
     if (!pid.empty() && !stored_pid.empty() && stored_pid != pid)
         return false;
 
@@ -409,6 +572,7 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
     out.difficulty = int_value(root, "difficulty");
     out.time = ll_value(root, "time");
     out.solution_pid = str_value(root, "solution_pid");
+    drop_bad_cached_pid(out.solution_pid, path);
     out.solution_type = str_value(root, "solution_type");
     out.solution_name = str_value(root, "solution_name");
     out.content_full = bool_value(root, "content_full");
@@ -554,16 +718,48 @@ std::uintmax_t solcache::cache_size()
 
 crawler::derror solcache::clean_solutions()
 {
-    // -CS, --clean-solutions：只清除题解列表缓存（solutions.ndjson）
-    std::error_code ec;
-    std::filesystem::remove(solutions_index_path(), ec);
-    if (ec)
+    // -CS, --clean-solutions：只清除题解列表缓存（solutions.ndjson）。
+    // store_list 的原子写中断时可能残留 solutions.ndjson.tmp.*（命名规则见
+    // compat::temp_sibling_path），与 clean_problems 一样按文件名前缀一并清除
+    const std::filesystem::path index = solutions_index_path();
+    std::vector<std::filesystem::path> targets = {index};
+
+    const std::filesystem::path dir = index.parent_path();
+    std::error_code dir_ec;
+    if (std::filesystem::is_directory(dir, dir_ec) && !dir_ec)
     {
-        print_error("无法删除题解列表缓存 '" +
-                    luogu::compat::path_to_utf8(solutions_index_path()) +
-                    "'：" + ec.message());
-        return crawler::CANT_REMOVE_FILE;
+        const std::string prefix =
+            luogu::compat::path_to_utf8(index.filename()) + ".tmp.";
+        std::error_code iter_ec;
+        for (std::filesystem::directory_iterator it(dir, iter_ec), end;
+             !iter_ec && it != end; it.increment(iter_ec))
+        {
+            const std::string name =
+                luogu::compat::path_to_utf8(it->path().filename());
+            if (name.rfind(prefix, 0) == 0)
+                targets.push_back(it->path());
+        }
+        if (iter_ec)
+        {
+            print_error("读取缓存目录 '" + luogu::compat::path_to_utf8(dir) +
+                        "' 失败：" + iter_ec.message());
+            return crawler::CANT_REMOVE_FILE;
+        }
     }
+
+    for (const std::filesystem::path &target : targets)
+    {
+        std::error_code ec;
+        std::filesystem::remove(target, ec);
+        if (ec)
+        {
+            print_error("无法删除题解列表缓存 '" +
+                        luogu::compat::path_to_utf8(target) + "'：" + ec.message());
+            return crawler::CANT_REMOVE_FILE;
+        }
+    }
+    // 缓存已清空：内存表下次访问重新从磁盘载入
+    invalidate_list_index();
     return crawler::SUCCESS;
 }
 

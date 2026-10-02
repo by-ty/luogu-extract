@@ -38,6 +38,7 @@
 #include <io.h>
 #include <shellapi.h>
 #else
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/wait.h>
 #include <termios.h>
@@ -107,6 +108,45 @@ namespace
                             out.data(), need, nullptr, nullptr);
         return out;
     }
+
+    // Windows: 按 CreateProcessW / CommandLineToArgvW（CRT 的 argv 解析）规则给
+    // 单个参数加引号，保证子进程拿到的参数与传入的字符串完全一致：
+    // - 参数内部的反斜杠只在「紧邻引号」或「位于参数末尾」时需要翻倍，
+    //   否则会把后面的引号转义掉；
+    // - 参数内部的引号写成 \" （前面的反斜杠按上面的规则翻倍）。
+    std::wstring quote_windows_argument(const std::wstring &arg)
+    {
+        std::wstring out = L"\"";
+        size_t i = 0;
+        while (i < arg.size())
+        {
+            size_t backslashes = 0;
+            while (i < arg.size() && arg[i] == L'\\')
+            {
+                ++backslashes;
+                ++i;
+            }
+            if (i == arg.size())
+            {
+                // 参数末尾的反斜杠：翻倍，避免转义掉收尾的引号
+                out.append(backslashes * 2, L'\\');
+                break;
+            }
+            const wchar_t c = arg[i++];
+            if (c == L'"')
+            {
+                out.append(backslashes * 2 + 1, L'\\');
+                out += L'"';
+            }
+            else
+            {
+                out.append(backslashes, L'\\');
+                out += c;
+            }
+        }
+        out += L'"';
+        return out;
+    }
 } // namespace
 #endif
 
@@ -131,7 +171,9 @@ std::vector<std::string> get_argv_utf8(int argc, char **argv)
             {
                 std::wstring wide(static_cast<size_t>(need), L'\0');
                 MultiByteToWideChar(CP_ACP, 0, argv[i], -1, wide.data(), need);
-                utf8 = wide_to_utf8(wide.c_str(), wide.size());
+                // need 含结尾的 L'\0'：只转换到它之前，否则 UTF-8 结果末尾会
+                // 多出一个内嵌的 '\0'（std::string 里多一个不可见字节）
+                utf8 = wide_to_utf8(wide.c_str(), std::wcslen(wide.c_str()));
             }
             out.push_back(utf8);
         }
@@ -206,6 +248,142 @@ int system_utf8(const std::string &command)
 #endif
 }
 
+int run_command_utf8(const std::vector<std::string> &argv, std::string &error)
+{
+    error.clear();
+    if (argv.empty() || argv[0].empty())
+    {
+        error = "命令为空";
+        return -1;
+    }
+#ifdef _WIN32
+    // 自行拼命令行后调用 CreateProcessW（不经 cmd.exe）：每个参数都按
+    // CommandLineToArgvW 的规则加引号，%VAR% / & / | / ` 等不会被解释。
+    // 注意：CreateProcessW 不像 cmd.exe 那样按 PATHEXT 解析 .bat/.cmd/.pl，
+    // 目标必须是一个可执行文件（TeX Live / MiKTeX 提供的 latexmk 是 .exe）。
+    std::wstring command_line;
+    for (const auto &arg : argv)
+    {
+        if (!command_line.empty())
+            command_line += L' ';
+        command_line += quote_windows_argument(utf8_to_wide(arg));
+    }
+    std::vector<wchar_t> buffer(command_line.begin(), command_line.end());
+    buffer.push_back(L'\0');
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION process{};
+    // 第五个参数 bInheritHandles = TRUE：让子进程继承标准输入/输出，
+    // 编译过程的输出与以前走 _wsystem 时一样直接显示在控制台上
+    if (!CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, TRUE, 0, nullptr,
+                        nullptr, &startup, &process))
+    {
+        error = "系统错误码 " +
+                std::to_string(static_cast<unsigned long>(GetLastError()));
+        return -1;
+    }
+    WaitForSingleObject(process.hProcess, INFINITE);
+    DWORD code = 1;
+    const bool got_code = GetExitCodeProcess(process.hProcess, &code) != 0;
+    CloseHandle(process.hThread);
+    CloseHandle(process.hProcess);
+    if (!got_code)
+    {
+        error = "无法获取子进程退出码";
+        return -1;
+    }
+    return static_cast<int>(code);
+#else
+    std::vector<char *> cargv;
+    cargv.reserve(argv.size() + 1);
+    for (const auto &arg : argv)
+        cargv.push_back(const_cast<char *>(arg.c_str()));
+    cargv.push_back(nullptr);
+
+    // 子进程 exec 失败时把 errno 写回管道（写端设为 CLOEXEC，exec 成功后自动
+    // 关闭），父进程据此返回 -1 并给出具体原因；exec 成功则按退出码/信号返回。
+    int pipefd[2];
+    if (::pipe(pipefd) != 0)
+    {
+        error = std::strerror(errno);
+        return -1;
+    }
+    // 设置失败时直接失败返回：否则 exec 成功后写端仍然打开，父进程会一直阻塞
+    if (::fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) != 0)
+    {
+        error = std::strerror(errno);
+        ::close(pipefd[0]);
+        ::close(pipefd[1]);
+        return -1;
+    }
+
+    const pid_t pid = ::fork();
+    if (pid < 0)
+    {
+        error = std::strerror(errno);
+        ::close(pipefd[0]);
+        ::close(pipefd[1]);
+        return -1;
+    }
+    if (pid == 0)
+    {
+        // 子进程：不经过 shell，直接 execvp（因此参数不会被 shell 解释）
+        ::close(pipefd[0]);
+        ::execvp(cargv[0], cargv.data());
+        const int exec_errno = errno;
+        // 只做异步信号安全的调用：write + _exit（_exit 不刷新父进程的 stdio 缓冲）。
+        // write 可能被信号打断而只写出一部分，这里重试到写完，否则父进程会把
+        // 「只收到 2 字节」当成没有 exec 错误，只报 127 而说不出原因
+        const char *p = reinterpret_cast<const char *>(&exec_errno);
+        size_t left = sizeof(exec_errno);
+        while (left > 0)
+        {
+            const ssize_t n = ::write(pipefd[1], p, left);
+            if (n > 0)
+            {
+                p += n;
+                left -= static_cast<size_t>(n);
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            break;
+        }
+        ::_exit(127);
+    }
+    ::close(pipefd[1]);
+
+    int exec_errno = 0;
+    ssize_t got = 0;
+    do
+    {
+        got = ::read(pipefd[0], &exec_errno, sizeof(exec_errno));
+    } while (got < 0 && errno == EINTR);
+    ::close(pipefd[0]);
+
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0)
+    {
+        if (errno == EINTR)
+            continue;
+        error = std::strerror(errno);
+        return -1;
+    }
+    if (got == static_cast<ssize_t>(sizeof(exec_errno)))
+    {
+        // exec 失败：子进程已经退出并被回收，返回 -1 与 exec 失败的原因
+        error = std::strerror(exec_errno);
+        return -1;
+    }
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    if (WIFSIGNALED(status))
+        return 128 + WTERMSIG(status);
+    return status;
+#endif
+}
+
 long long read_line(FILE *in, std::string &out)
 {
     out.clear();
@@ -230,7 +408,10 @@ std::string strip_control_chars(std::string s)
     for (size_t r = 0; r < s.size(); ++r)
     {
         const unsigned char c = static_cast<unsigned char>(s[r]);
-        if (c >= 0x20 || c == '\t' || c == '\n' || c == '\r')
+        // 0x7F（DEL）同属控制字符：它不是 UTF-8 多字节序列的任何一部分
+        // （续字节是 0x80~0xBF），删除不会破坏字符编码，但留在文本里会让
+        // LaTeX 报「invalid character」、也可能干扰终端显示
+        if ((c >= 0x20 && c != 0x7F) || c == '\t' || c == '\n' || c == '\r')
             s[w++] = s[r];
     }
     s.resize(w);
@@ -294,6 +475,15 @@ bool stdout_is_tty()
     return _isatty(_fileno(stdout)) != 0;
 #else
     return isatty(fileno(stdout)) != 0;
+#endif
+}
+
+bool stderr_is_tty()
+{
+#ifdef _WIN32
+    return _isatty(_fileno(stderr)) != 0;
+#else
+    return isatty(fileno(stderr)) != 0;
 #endif
 }
 

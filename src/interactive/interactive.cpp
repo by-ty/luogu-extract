@@ -630,27 +630,36 @@ std::string strip_error_prefix(std::string text)
 
 // 解析并写入一项设置的新值；返回空串表示成功。
 // 空输入一律表示「使用默认值」：即不传该参数，与命令行留空的默认值完全一致。
+// 所有校验都通过后才提交（先解析到临时变量，最后一次性赋值）：输错一个标签或
+// 路径时不会把之前设置好的内容清空（调用方会重新询问）。
 std::string apply_value(State &st, const Setting &s, const std::string &line)
 {
-    if (s.values)
-        s.values->clear();
-    if (s.value)
-        s.value->clear();
+    // 本次解析的结果；校验失败时直接返回错误，目标设置保持原值
+    std::vector<std::string> new_values;
+    std::string new_value;
+
     if (line.empty())
+    {
+        // 空输入 = 使用默认值：清空该设置（与非交互模式下不传该参数一致）
+        if (s.values)
+            s.values->clear();
+        if (s.value)
+            s.value->clear();
         return "";
+    }
 
     switch (s.kind)
     {
     case ValueKind::Text:
     case ValueKind::OutputFile:
-        *s.value = line;
-        return "";
+        new_value = line;
+        break;
 
     case ValueKind::CoverTitle:
         if (line[0] == '-')
             return "标题不能以 '-' 开头（会被当成命令行参数）；请换一个标题";
-        *s.value = line;
-        return "";
+        new_value = line;
+        break;
 
     case ValueKind::Tags:
     {
@@ -665,8 +674,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
                     return "标签 '" + tok + "' 不在标签缓存中；请检查拼写，"
                            "或先在「导出类型」中选择「打印标签 ID 对照表」查看全部标签";
         }
-        s.values->assign(tokens.begin(), tokens.end());
-        return "";
+        new_values = tokens;
+        break;
     }
 
     case ValueKind::Difficulties:
@@ -681,8 +690,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
                 return "难度 '" + tok + "' 不合法；应为 0~8 的数字或闭区间（如 1-4）";
         }
         for (const auto &tok : tokens)
-            add_unique(*s.values, tok);
-        return "";
+            add_unique(new_values, tok);
+        break;
     }
 
     case ValueKind::Types:
@@ -695,9 +704,9 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
             const std::string type = cliparse::to_upper_ascii(tok);
             if (type != "B" && type != "P")
                 return "题目类型 '" + tok + "' 不合法；应为 B（基础题）或 P（普通题）";
-            add_unique(*s.values, type);
+            add_unique(new_values, type);
         }
-        return "";
+        break;
     }
 
     case ValueKind::Pids:
@@ -711,9 +720,9 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
             unsigned long long num = 0;
             if (!luogu::parse_pid_parts(tok, prefix, num, suffix))
                 return "题号 '" + tok + "' 不合法；应为字母 + 数字（如 P1001）";
-            add_unique(*s.values, cliparse::to_upper_ascii(tok));
+            add_unique(new_values, cliparse::to_upper_ascii(tok));
         }
-        return "";
+        break;
     }
 
     case ValueKind::PidRanges:
@@ -727,9 +736,9 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
             std::string err;
             if (!cliparse::parse_pid_range_arg(tok, range, err))
                 return strip_error_prefix(err);
-            add_unique(*s.values, range.first + "-" + range.second);
+            add_unique(new_values, range.first + "-" + range.second);
         }
-        return "";
+        break;
     }
 
     case ValueKind::Lang:
@@ -737,13 +746,13 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         const std::string value = cliparse::to_lower_ascii(line);
         if (value == "zh-cn" || value == "zh" || value == "zh_cn")
         {
-            *s.value = "zh-CN";
-            return "";
+            new_value = "zh-CN";
+            break;
         }
         if (value == "en")
         {
-            *s.value = "en";
-            return "";
+            new_value = "en";
+            break;
         }
         return "题面语言 '" + line + "' 不合法；应为 zh-CN 或 en";
     }
@@ -760,8 +769,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
                 return "字体文件 '" + line + "' 不存在；请检查路径，"
                        "或直接填写系统已安装的字体名称（如 SimSun）";
         }
-        *s.value = line;
-        return "";
+        new_value = line;
+        break;
     }
 
     case ValueKind::LocalFile:
@@ -774,8 +783,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
             return "文件 '" + line + "' 不存在；请检查路径";
         if (std::filesystem::is_directory(path, ec) && !ec)
             return "'" + line + "' 是目录；请指定一个 Markdown 文本文件";
-        *s.value = line;
-        return "";
+        new_value = line;
+        break;
     }
 
     case ValueKind::ArticleIds:
@@ -789,9 +798,9 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
             if (!solution::valid_lid(lid))
                 return "文章编号 '" + tok + "' 不合法；应为 6~32 位小写字母或数字"
                        "（如 p7fsb45w，可在文章页地址 /article/<编号> 中找到）";
-            add_unique(*s.values, lid);
+            add_unique(new_values, lid);
         }
-        return "";
+        break;
     }
 
     case ValueKind::CookieFile:
@@ -803,18 +812,18 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
                    "Netscape 格式的 cookies.txt";
         if (std::filesystem::is_directory(path, ec) && !ec)
             return "'" + line + "' 是目录；请指定 cookies.txt 文件";
-        *s.value = line;
+        new_value = line;
         st.cookie_string.clear(); // 与 Cookie 串二选一
-        return "";
+        break;
     }
 
     case ValueKind::CookieString:
     {
         if (line.find('=') == std::string::npos)
             return "Cookie 串应形如 \"k=v; k2=v2\"；请检查是否漏掉了 '='";
-        *s.value = line;
+        new_value = line;
         st.cookie_file.clear(); // 与 Cookie 文件二选一
-        return "";
+        break;
     }
 
     case ValueKind::ArticleSource:
@@ -823,8 +832,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         if (value != "auto" && value != "official" && value != "save")
             return "正文来源 '" + line + "' 不合法；应为 auto（缓存优先 + 两站轮流抓取）、"
                    "official（只用洛谷原站）或 save（只用洛谷保存站）";
-        *s.value = value;
-        return "";
+        new_value = value;
+        break;
     }
 
     case ValueKind::MaxSolutions:
@@ -832,14 +841,14 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         const std::string value = cliparse::to_lower_ascii(line);
         if (value == "all")
         {
-            *s.value = value;
-            return "";
+            new_value = value;
+            break;
         }
         long parsed = 0;
         if (!cliparse::parse_positive_int(value, 1, 100000, parsed))
             return "篇数 '" + line + "' 不合法；应为正整数或 all（该题全部题解）";
-        *s.value = std::to_string(parsed);
-        return "";
+        new_value = std::to_string(parsed);
+        break;
     }
 
     case ValueKind::RequestDelay:
@@ -848,8 +857,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         std::string err;
         if (!crawler::parse_delay_spec(line, spec, err))
             return err.empty() ? ("请求间隔 '" + line + "' 不合法") : err;
-        *s.value = line;
-        return "";
+        new_value = line;
+        break;
     }
 
     case ValueKind::TtlDays:
@@ -858,8 +867,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         if (!cliparse::parse_positive_int(line, 0, 36500, parsed))
             return "天数 '" + line + "' 不合法；应为不小于 0 的整数"
                    "（0 表示每次都发 ETag 条件请求）";
-        *s.value = std::to_string(parsed);
-        return "";
+        new_value = std::to_string(parsed);
+        break;
     }
 
     case ValueKind::RateLimitWait:
@@ -868,8 +877,8 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         if (!cliparse::parse_positive_int(line, 0, 86400, parsed))
             return "秒数 '" + line + "' 不合法；应为不小于 0 的整数"
                    "（0 表示检测到限流直接停止）";
-        *s.value = std::to_string(parsed);
-        return "";
+        new_value = std::to_string(parsed);
+        break;
     }
 
     case ValueKind::SolutionPlacement:
@@ -878,11 +887,17 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         if (value != "document-end" && value != "per-problem")
             return "题解位置 '" + line + "' 不合法；应为 document-end（统一置于文档最后）"
                    "或 per-problem（紧跟对应题目之后）";
-        *s.value = value;
-        return "";
+        new_value = value;
+        break;
     }
     }
-    return ""; // 到达不了（枚举已全部覆盖）
+
+    // 全部校验通过：一次性提交（与之前「先清空再写入」的成功路径等价）
+    if (s.values)
+        *s.values = new_values;
+    if (s.value)
+        *s.value = new_value;
+    return "";
 }
 
 // 用户表示「本轮修改完毕」时检查设置是否齐全；返回空串表示可以继续

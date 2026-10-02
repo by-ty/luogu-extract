@@ -66,6 +66,44 @@ long long now_seconds()
     return static_cast<long long>(std::time(nullptr));
 }
 
+// 是否含控制字符（含制表符、换行、回车）：Netscape 行以 '\t' 分列、以换行
+// 分行，字段里带上控制字符会破坏列结构甚至注入新行
+bool has_control_char(const std::string &s)
+{
+    for (const unsigned char c : s)
+    {
+        if (c < 0x20 || c == 0x7f)
+            return true;
+    }
+    return false;
+}
+
+// 剔除控制字符（留给 netscape_line 的最后一道防线；正常解析流程里不合规的
+// 条目已在载入时被拒绝，不会走到这里）
+std::string remove_control_chars(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    for (const unsigned char c : s)
+    {
+        if (c >= 0x20 && c != 0x7f)
+            out += static_cast<char>(c);
+    }
+    return out;
+}
+
+// Cookie 名必须是 HTTP token：不含控制字符与空白（';' 与 '=' 在解析时已被
+// 拆开，不会出现在名字里）
+bool valid_cookie_name(const std::string &name)
+{
+    for (const unsigned char c : name)
+    {
+        if (c <= 0x20 || c == 0x7f)
+            return false;
+    }
+    return true;
+}
+
 // 按 '\t' 拆分（Netscape 格式固定 7 列，字段内不含制表符）
 std::vector<std::string> split_tabs(const std::string &line)
 {
@@ -123,6 +161,7 @@ bool luogu::cookie::load_netscape_file(const std::filesystem::path &path, Jar &o
 
     const long long now = now_seconds();
     int expired = 0;
+    int invalid = 0;
     std::string line;
     while (luogu::compat::read_line(file, line) >= 0)
     {
@@ -149,8 +188,9 @@ bool luogu::cookie::load_netscape_file(const std::filesystem::path &path, Jar &o
         const std::string raw_domain = trim(f[0]);
         c.domain = normalize_domain(raw_domain);
         c.path = f[2].empty() ? "/" : trim(f[2]);
-        c.secure = to_lower(trim(f[3])) == "true" ||
-                   to_lower(trim(f[1])) == "true";
+        // 第 4 列才是 secure 标志（第 2 列是 includeSubdomains，它只体现在
+        // 域字段的前导 '.' 上，与 secure 无关）
+        c.secure = to_lower(trim(f[3])) == "true";
         c.http_only = http_only;
         c.include_subdomains = !raw_domain.empty() && raw_domain[0] == '.';
         c.name = trim(f[5]);
@@ -166,6 +206,13 @@ bool luogu::cookie::load_netscape_file(const std::filesystem::path &path, Jar &o
 
         if (c.domain.empty() || c.name.empty())
             continue;
+        // 名字与值里的控制字符（制表符/换行等）会破坏 Netscape 行结构：
+        // 整条拒绝并计数，由调用方提示用户
+        if (!valid_cookie_name(c.name) || has_control_char(c.value))
+        {
+            ++invalid;
+            continue;
+        }
         if (c.expires > 0 && c.expires < now)
         {
             ++expired;
@@ -184,6 +231,9 @@ bool luogu::cookie::load_netscape_file(const std::filesystem::path &path, Jar &o
     if (expired > 0 && warnings)
         *warnings += "提示：Cookie 文件中有 " + std::to_string(expired) +
                      " 条已过期的 Cookie 被忽略。\n";
+    if (invalid > 0 && warnings)
+        *warnings += "提示：Cookie 文件中有 " + std::to_string(invalid) +
+                     " 条 Cookie 名或值含空白/控制字符（会破坏 Netscape 格式），已忽略。\n";
     return true;
 }
 
@@ -225,6 +275,21 @@ bool luogu::cookie::load_cookie_string(const std::string &text, Jar &out,
         {
             error = "参数 '--cookie-string' 中存在空的 Cookie 名；正确用法："
                     "--cookie-string \"k=v; k2=v2\"";
+            return false;
+        }
+        // 名字必须是不含空白/控制字符的 token，值里也不能有控制字符（制表符、
+        // 换行）：否则交给 curl 的 Netscape 行会被拆错列甚至注入新行。
+        // 报错不打印 Cookie 名与值（值属于凭据，不写日志）
+        if (!valid_cookie_name(c.name))
+        {
+            error = "参数 '--cookie-string' 中存在含空白或控制字符的 Cookie 名；"
+                    "Cookie 名不能包含空格、制表符、换行等字符";
+            return false;
+        }
+        if (has_control_char(c.value))
+        {
+            error = "参数 '--cookie-string' 中存在含控制字符（如制表符、换行）的 "
+                    "Cookie 值；请用分号分隔多个 Cookie，值里不要带换行";
             return false;
         }
         out.cookies.push_back(std::move(c));
@@ -286,11 +351,13 @@ std::string luogu::cookie::netscape_line(const Cookie &c)
     // 交给 libcurl 的 Netscape 行格式：
     // domain \t includeSubdomains \t path \t secure \t expires \t name \t value
     // 会话 Cookie 的 expires 用 0 表示。
+    // 名字与值里的控制字符会破坏列结构（制表符）或注入新行（换行），这里
+    // 再剔除一次作为最后防线（载入时不合规的条目已被拒绝）
     std::string line = c.domain;
     line += c.include_subdomains ? "\tTRUE\t" : "\tFALSE\t";
     line += c.path.empty() ? "/" : c.path;
     line += c.secure ? "\tTRUE\t" : "\tFALSE\t";
     line += std::to_string(c.expires);
-    line += "\t" + c.name + "\t" + c.value;
+    line += "\t" + remove_control_chars(c.name) + "\t" + remove_control_chars(c.value);
     return line;
 }

@@ -47,6 +47,8 @@ namespace crawler
     /// @param url 目标网址
     /// @param error 可选输出参数，成功时为 SUCCESS，失败时为对应错误码
     /// @return 成功返回网页内容，失败返回空字符串
+    /// @note 目标主机为环回/私网/链路本地地址时拒绝抓取（SSRF 防护），
+    ///       返回空字符串并置 error 为 DOWNLOAD_FAIL
     std::string get_html(const std::string& url, derror* error = nullptr);
 
     /// 下载进度回调：参数为 (url, 已下载字节数, 总字节数)；total 为 0 表示未知
@@ -58,18 +60,13 @@ namespace crawler
     /// @param fpath    保存路径（Windows 下按 UTF-8/宽字符处理，中文路径可用）
     /// @param progress 可选进度回调；不传时使用默认的百分比进度显示
     /// @return SUCCESS 或对应错误码
+    /// @note 只允许 http/https；每一跳（含 302 之后的连接）都会校验实际连接
+    ///       的 IP，属于环回/私网/链路本地/云元数据等内部地址时拒绝下载
+    ///       （SSRF 防护），不创建文件并返回 DOWNLOAD_FAIL。
+    ///       设置 LUOGU_EXTRACT_ALLOW_PRIVATE_IMAGE_HOST=1 可关闭地址检查
+    ///       （协议白名单仍然生效）
     derror downloadFile(const std::string &url, const std::filesystem::path &fpath,
                         const download_progress_callback &progress = nullptr);
-
-    /// @param p 题目编号
-    /// @param error 可选输出参数，成功时为 SUCCESS，失败时为对应错误码
-    /// @return 成功返回 html 的题面，失败返回空字符串
-    std::string get_html_prob(std::string p, derror* error = nullptr);
-
-    /// @param id 文章编号
-    /// @param error 可选输出参数，成功时为 SUCCESS，失败时为对应错误码
-    /// @return 成功返回 html 的文章内容，失败返回空字符串
-    std::string get_html_article(std::string id, derror* error = nullptr);
 
     /// @return the base cache directory used by this program
     std::filesystem::path get_cache_dir();

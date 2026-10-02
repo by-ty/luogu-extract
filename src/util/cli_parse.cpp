@@ -66,7 +66,16 @@ std::vector<std::string> cliparse::split_whitespace(const std::string &s)
 bool cliparse::parse_positive_int(const std::string &value, long min_value,
                                   long max_value, long &out)
 {
-    const std::string text = value;
+    // 允许首尾空白（与头文件里的说明一致）：strtol 只跳过前导空白，这里先
+    // 显式去掉两端的空白，保证 "5 "、" 5 " 与 "5" 等价；交互模式直接读入
+    // 用户输入的整行，尾随空格很常见
+    size_t first = 0;
+    size_t last = value.size();
+    while (first < last && std::isspace(static_cast<unsigned char>(value[first])))
+        ++first;
+    while (last > first && std::isspace(static_cast<unsigned char>(value[last - 1])))
+        --last;
+    const std::string text = value.substr(first, last - first);
     if (text.empty())
         return false;
     char *end = nullptr;

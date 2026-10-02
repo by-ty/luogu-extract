@@ -239,11 +239,20 @@ namespace luogu
     std::string truncate_utf8(const std::string &text, size_t max_chars);
 
     // 锚点名：题目 sol-problem-<PID>，题解 sol-<PID>-<lid>，
-    // 按文章下载的文章 sol-art-<lid>。三者均由已校验的 PID 与 lid 拼成
-    // （PID 为字母数字，lid 为 [a-z0-9]{6,32}），因此不存在注入风险。
+    // 按文章下载的文章 sol-art-<lid>。
+    // PID 与 lid 在这里做字符白名单化，不依赖调用方先校验：只保留字母、
+    // 数字与 - _ .，其余字节替换成 '_' 并在末尾追加原文的哈希后缀。
+    // 正常题号（P1001、AT_abc123_4、CF1234A 等）与合法 lid（[a-z0-9]{6,32}）
+    // 的锚点与旧版本完全一致；即使缓存里的题号含 # % \ { } " 或换行，也不会
+    // 被带进 LaTeX 的 \hypertarget/\pdfbookmark 或 Markdown 的 <a id="...">。
     std::string problem_anchor(const std::string &pid);
     std::string solution_anchor(const std::string &pid, const std::string &lid);
     std::string article_anchor(const std::string &lid);
+
+    // 锚点/书签标签里的单个片段做同样的白名单化（供 latex.cpp 的
+    // \pdfbookmark 标签 "solgroup-<pid>" 之类的拼接使用，
+    // 避免调用方直接拼未校验的题号）
+    std::string anchor_segment(const std::string &raw);
 }
 
 #endif // LUOGU_EXTRACT_EXPORT_COMMON_H

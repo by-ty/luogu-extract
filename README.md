@@ -44,7 +44,7 @@
   - Windows 下输出/缓存路径按 UTF-8（宽字符）处理，支持中文文件名（如 `--output 题册.tex`）与含中文用户名的缓存目录；
   - Windows 传统控制台自动启用 ANSI 转义解析，彩色与进度输出不乱码；
   - Windows（MSVC / MinGW-w64）构建自动使用内置的 `getopt` 兼容实现（语义与 GNU getopt 一致，含长选项缩写与参数重排），macOS / Linux 使用系统 `getopt`。
-- **图片下载**：并行下载题面中的图片到本地缓存；导出 LaTeX 时图片引用会替换为缓存文件路径。加 `-RD, --new-download` 后不使用之前缓存的图片，而是重新下载图片。
+- **图片下载**：并行下载题面中的图片到本地缓存；导出 LaTeX 时图片引用会替换为缓存文件路径。加 `-RD, --new-download` 后不使用之前缓存的图片，而是重新下载图片。下载前会先询问（非交互式终端下与其它确认一样失败闭合、不下载）；为防 SSRF，只允许 `http`/`https`（含跳转），并拒绝环回、私网、链路本地等内部地址——确需访问内网镜像或本机图床时可设置环境变量 `LUOGU_EXTRACT_ALLOW_PRIVATE_IMAGE_HOST=1` 关闭该地址检查（协议白名单仍然生效）。
 - **下载题解**（需提供 Cookies，存在风险）：按题目抓取题解的**列表**与**正文**。
 - **下载文章**：按文章编号下载任意文章。
 - **转写本地 Markdown**：把本地 Markdown 文本文件转写成 LaTeX。
@@ -301,7 +301,10 @@ make
 1. 环境变量 `XDG_CACHE_HOME` 存在时 → `$XDG_CACHE_HOME/luogu-extract`；
 2. 否则使用 `$HOME/.cache/luogu-extract`；
 3. Windows 下若前两项均未设置，使用 `%LOCALAPPDATA%\luogu-extract`；
-4. 否则使用系统临时目录下的 `luogu-extract`。
+4. 否则依次尝试 `TMPDIR` / `TEMP` / `TMP`（只接受绝对路径）与系统临时目录下的
+   `luogu-extract`；Windows 上再退到 `%USERPROFILE%\.cache\luogu-extract`；
+5. 全部不可用时使用当前工作目录下的绝对路径 `.cache/luogu-extract` 并打印一次警告
+   （不会使用依赖当前目录的相对路径）。
 
 缓存目录中的文件：
 

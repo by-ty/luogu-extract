@@ -88,7 +88,22 @@ namespace compat
     // 命令行，含中文的路径会乱码）；其他平台与 std::system 等价。
     // 返回命令的退出码（已被信号终止时返回 128 + 信号编号；
     // 无法执行命令时返回 -1）。
+    // 注意：命令串会交给 shell 解释，参数中来自用户的字符可能被当成命令，
+    // 用户可控的参数请改用下面的 run_command_utf8。
     int system_utf8(const std::string &command);
+
+    // 按「参数数组」执行外部命令，不经过 shell：
+    // - POSIX：fork + execvp（子进程 exec 失败时通过管道把 errno 带回，
+    //   由父进程返回 -1 并给出原因）；
+    // - Windows：按 CommandLineToArgvW / CRT 的规则给每个参数加引号后调用
+    //   CreateProcessW（不经 cmd.exe）。
+    // 因此参数里的 " & | ` $( ) %VAR% 等 shell 元字符不会被解释成命令，
+    // 适合把用户可控的文件名安全地交给外部程序（如 --compile 的 latexmk）。
+    // argv 为空（或 argv[0] 为空）时也返回 -1。
+    // 返回值语义与 system_utf8 一致：0 或正数 = 被调用程序的退出码，
+    // 因信号终止时为 128 + 信号编号，无法启动命令时为 -1；
+    // 失败原因（UTF-8）写入 error，成功时把 error 清空。
+    int run_command_utf8(const std::vector<std::string> &argv, std::string &error);
 
     // 从 FILE* 读取一行（结果不含末尾换行符），替代 POSIX getline。
     // 返回读取到的字符数；文件结束且未读到任何内容时返回 -1。
@@ -141,6 +156,10 @@ namespace compat
 
     // 判断标准输出是否连接到终端（彩色/转义序列是否值得输出）
     bool stdout_is_tty();
+
+    // 判断标准错误是否连接到终端（错误信息走 stderr，需与 stdout 分开判断：
+    // stdout 重定向到文件、stderr 仍是终端时，错误信息仍应带颜色）
+    bool stderr_is_tty();
 
     // 睡眠指定毫秒（可被 std::this_thread::sleep_for 之外的信号打断，
     // 返回后剩余时间不再补足）。仅用于极短的分片睡眠。

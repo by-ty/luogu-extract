@@ -28,9 +28,10 @@
 
 namespace
 {
-const char *kColorReset = "\033[0m";
-const char *kColorYellow = "\033[1;33m";
-const char *kColorAlert = "\033[1;41;37m";
+// 重定向到文件/管道时不写 ANSI 转义序列（只影响日志观感）
+const char *kColorReset = luogu::compat::stdout_is_tty() ? "\033[0m" : "";
+const char *kColorYellow = luogu::compat::stdout_is_tty() ? "\033[1;33m" : "";
+const char *kColorAlert = luogu::compat::stdout_is_tty() ? "\033[1;41;37m" : "";
 
 // 第 5 档最后一次确认要求原样输入的短语（唯一的强化授权手段）
 const char *kStrongPhrase = "I know what I am doing";
@@ -325,8 +326,10 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
         // 第 5 档的最后一次确认要求原样输入指定短语
         if (info.level >= 5 && i == total_confirm)
         {
+            // 次数由 total_confirm 决定（--yes 时第 5 档只有 2 次确认），
+            // 不能写死「第三次」
             const std::string prompt_text =
-                "第三次确认（" + std::to_string(i) + "/" +
+                "最后一次确认（" + std::to_string(i) + "/" +
                 std::to_string(total_confirm) + "）：请输入「" + kStrongPhrase +
                 "」以继续（原样输入，回车取消）：";
             if (!confirm_phrase(prompt_text, kStrongPhrase))
