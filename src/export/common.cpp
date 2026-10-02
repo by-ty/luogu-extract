@@ -628,13 +628,9 @@ bool raw_pid_value(std::string_view line, std::string &out)
     return false;
 }
 
-// 题号（已大写）是否命中 --pid 集合或任一 --pid-range 区间
-bool pid_matches(const std::string &pid,
-                 const std::set<std::string> &pids,
-                 const std::vector<PidRange> &ranges)
+// 题号（已大写）是否落在任一 --pid-range 闭区间内
+bool pid_in_ranges(const std::string &pid, const std::vector<PidRange> &ranges)
 {
-    if (pids.count(pid) != 0)
-        return true;
     std::string prefix, suffix;
     unsigned long long num = 0;
     if (!luogu::parse_pid_parts(pid, prefix, num, suffix))
@@ -650,7 +646,13 @@ bool pid_matches(const std::string &pid,
     return false;
 }
 
-// 综合预筛：难度、类型、标签、题号任一条件在原始文本上就确定不满足时返回 false。
+// 综合预筛：确定不可能被导出的行返回 false。
+// 筛选语义（与 select_problems 一致）：
+// - --pid 是「额外追加」：命中的题目无条件保留，不要求满足其它筛选条件；
+// - 其余条件（难度/类型/标签/题号范围）之间取「且」，任一在原始文本上确定
+//   不满足即排除；
+// - 只给出 --pid 时，未命中的行排除；没有 --pid 也没有其它条件时全部保留。
+// 题号在原始文本上无法可靠提取时一律保守放行（可能命中 --pid，交给完整解析）。
 bool raw_may_match(std::string_view line,
                    const std::vector<int> &difficulties,
                    const std::vector<std::string> &filter_tags,
@@ -659,40 +661,60 @@ bool raw_may_match(std::string_view line,
                    const std::set<std::string> &pids,
                    const std::vector<PidRange> &pid_ranges)
 {
-    if (!difficulties.empty())
+    std::string raw_pid;
+    const bool have_pid = raw_pid_value(line, raw_pid);
+    const std::string pid_upper = have_pid ? to_upper_ascii(raw_pid) : std::string();
+
+    // --pid 命中：无论其它条件是否满足都保留
+    if (have_pid && pids.count(pid_upper) != 0)
+        return true;
+
+    const bool has_other_filters = !difficulties.empty() || !types.empty() ||
+                                   !filter_tags.empty() || !pid_ranges.empty();
+    if (has_other_filters)
     {
-        bool allowed[9] = {false};
-        for (int d : difficulties)
-            if (d >= 0 && d <= 8)
-                allowed[static_cast<size_t>(d)] = true;
-        if (!raw_int_value_match(line, "\"difficulty\"", allowed, 8))
-            return false;
+        // 其它条件是否可能命中（任一步确定不满足即不可能）
+        bool other_possible = true;
+        if (!difficulties.empty())
+        {
+            bool allowed[9] = {false};
+            for (int d : difficulties)
+                if (d >= 0 && d <= 8)
+                    allowed[static_cast<size_t>(d)] = true;
+            if (!raw_int_value_match(line, "\"difficulty\"", allowed, 8))
+                other_possible = false;
+        }
+
+        if (other_possible && !types.empty())
+        {
+            const char *allowed_types[2] = {nullptr, nullptr};
+            size_t n = 0;
+            for (const auto &t : types)
+                if (n < 2)
+                    allowed_types[n++] = t.c_str();
+            if (!raw_string_value_match(line, "\"type\"", allowed_types, n))
+                other_possible = false;
+        }
+
+        if (other_possible && !filter_tags.empty() &&
+            !raw_tags_match(line, filter_tags, filter_tag_ids))
+            other_possible = false;
+
+        if (other_possible && !pid_ranges.empty() && have_pid &&
+            !pid_in_ranges(pid_upper, pid_ranges))
+            other_possible = false;
+
+        if (other_possible)
+            return true;
+    }
+    else if (pids.empty())
+    {
+        return true; // 没有任何筛选条件：全部保留
     }
 
-    if (!types.empty())
-    {
-        const char *allowed_types[2] = {nullptr, nullptr};
-        size_t n = 0;
-        for (const auto &t : types)
-            if (n < 2)
-                allowed_types[n++] = t.c_str();
-        if (!raw_string_value_match(line, "\"type\"", allowed_types, n))
-            return false;
-    }
-
-    if (!filter_tags.empty() && !raw_tags_match(line, filter_tags, filter_tag_ids))
-        return false;
-
-    if (!pids.empty() || !pid_ranges.empty())
-    {
-        std::string raw_pid;
-        if (!raw_pid_value(line, raw_pid))
-            return true; // 无法可靠提取：保守交给完整解析
-        if (!pid_matches(to_upper_ascii(raw_pid), pids, pid_ranges))
-            return false;
-    }
-
-    return true;
+    // 到这里：其它条件确定不满足，或只给出了 --pid。题号无法可靠提取时保守
+    // 放行（这一行可能是 --pid 的命中项）；能确定题号时说明它不在 --pid 中。
+    return !have_pid;
 }
 
 } // namespace
@@ -1029,55 +1051,70 @@ bool luogu::select_problems(const ExportFilter &filter,
 
         try
         {
-            // 难度：多个值取“或”
-            if (!filter.difficulties.empty())
-            {
-                if (!data.contains("difficulty") || !data["difficulty"].is_number_integer())
-                    continue;
-                const int difficulty = data["difficulty"].get<int>();
-                if (std::find(filter.difficulties.begin(), filter.difficulties.end(), difficulty) ==
-                    filter.difficulties.end())
-                    continue;
-            }
+            // 其它筛选条件（--pid 以外）是否命中：
+            // 难度（多个取“或”）、类型（多个取“或”，B / P 不区分大小写）、
+            // 题号范围（落在任一闭区间）、标签（多个取“且”）
+            auto matches_other_filters = [&](const json &item,
+                                             const problem::Problem &p) -> bool {
+                if (!filter.difficulties.empty())
+                {
+                    if (!item.contains("difficulty") || !item["difficulty"].is_number_integer())
+                        return false;
+                    const int difficulty = item["difficulty"].get<int>();
+                    if (std::find(filter.difficulties.begin(), filter.difficulties.end(),
+                                  difficulty) == filter.difficulties.end())
+                        return false;
+                }
 
-            // 类型：多个值取“或”（B / P，不区分大小写）
-            if (!filter.types.empty())
-            {
-                std::string ptype = data.value("type", "");
-                for (auto &c : ptype)
-                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                if (std::find(filter.types.begin(), filter.types.end(), ptype) == filter.types.end())
-                    continue;
-            }
+                if (!filter.types.empty())
+                {
+                    std::string ptype = item.value("type", "");
+                    for (auto &c : ptype)
+                        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                    if (std::find(filter.types.begin(), filter.types.end(), ptype) ==
+                        filter.types.end())
+                        return false;
+                }
+
+                if (!pid_ranges.empty() &&
+                    !pid_in_ranges(to_upper_ascii(p.pid), pid_ranges))
+                    return false;
+
+                if (!filter_tags.empty())
+                {
+                    for (const auto &wanted : filter_tags)
+                    {
+                        const std::string key = to_lower_ascii(wanted);
+                        if (std::find_if(p.tags.begin(), p.tags.end(),
+                                         [&key](const std::string &t) {
+                                             return to_lower_ascii(t) == key;
+                                         }) == p.tags.end())
+                            return false;
+                    }
+                }
+
+                return true;
+            };
 
             // 构造 Problem（标签名称、题面、样例、时空限制、多语言都在这里解析）
             problem::Problem p(data, &tag_cache.id_to_name);
+            const std::string pid_upper = to_upper_ascii(p.pid);
 
-            // --pid：题号精确匹配（不区分大小写）；--pid-range：题号落在任一闭区间
-            if (!pids_set.empty() || !pid_ranges.empty())
-            {
-                if (!pid_matches(to_upper_ascii(p.pid), pids_set, pid_ranges))
-                    continue;
-            }
+            // --pid 是「额外追加」：命中的题目无论是否满足其它条件都要导出
+            const bool pid_hit = !pids_set.empty() && pids_set.count(pid_upper) != 0;
+            const bool has_pid_filter = !pids_set.empty();
+            const bool has_other_filter = !filter.difficulties.empty() ||
+                                          !filter.types.empty() ||
+                                          !filter_tags.empty() ||
+                                          !pid_ranges.empty();
 
-            // 标签：多个值取“且”
-            if (!filter_tags.empty())
-            {
-                bool all = true;
-                for (const auto &wanted : filter_tags)
-                {
-                    const std::string key = to_lower_ascii(wanted);
-                    if (std::find_if(p.tags.begin(), p.tags.end(),
-                                     [&key](const std::string &t) { return to_lower_ascii(t) == key; }) ==
-                        p.tags.end())
-                    {
-                        all = false;
-                        break;
-                    }
-                }
-                if (!all)
-                    continue;
-            }
+            bool selected = pid_hit;
+            if (!selected && has_other_filter)
+                selected = matches_other_filters(data, p);
+            if (!selected && !has_pid_filter && !has_other_filter)
+                selected = true; // 没有任何筛选条件：导出全部题目
+            if (!selected)
+                continue;
 
             problems.push_back(std::move(p));
         }
@@ -1181,8 +1218,16 @@ std::string luogu::describe_filter(const ExportFilter &filter,
     const bool use_en = (filter.lang == "en");
 
     std::vector<std::string> conds;
+    // --pid 是「额外追加」：与其它筛选条件同时给出时，命中的题目会追加到
+    // 其它条件筛选出的题目之外；只有一个条件时按普通筛选描述
+    const bool pid_appends = !filter.pids.empty() &&
+                             (!filter.pid_ranges.empty() ||
+                              !resolved_tags.empty() ||
+                              !filter.difficulties.empty() ||
+                              !filter.types.empty());
     if (!filter.pids.empty())
-        conds.push_back("题号为 " + join_strings(filter.pids, "、"));
+        conds.push_back(pid_appends ? "另追加题号为 " + join_strings(filter.pids, "、") + " 的题目"
+                                    : "题号为 " + join_strings(filter.pids, "、"));
     if (!filter.pid_ranges.empty())
     {
         std::vector<std::string> rs;

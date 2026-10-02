@@ -98,12 +98,12 @@ struct Options
 
     // ---- 题解抓取与导出（--with-solutions 等，设计 §十二）----
     bool with_solutions = false;          // --with-solutions
-    bool articles_only = false;          // --articles-only
+    bool solutions_only = false;          // --solutions-only
     bool articles_only_download = false; // --articles-only-download
     std::string cookie_file;              // --cookie
     std::string cookie_string;            // --cookie-string
     std::string article_source;          // --article-source（空 = auto）
-    int max_articles = 1;                // --max-articles（-1 表示 all）
+    int max_solutions = 1;               // --max-solutions（-1 表示 all）
     std::string request_delay;           // --request-delay（原始文本）
     bool no_delay_auto_scale = false;     // --no-delay-auto-scale
     // --solution-ttl：题解**列表**有效期（天）；-1 表示无限（默认）
@@ -116,10 +116,10 @@ struct Options
     bool refresh_articles = false;        // --refresh-articles
     bool clean_solutions = false;         // -CS, --clean-solutions（题解列表缓存）
     bool clean_articles = false;          // -CA, --clean-articles（题解正文缓存）
-    std::string article_placement = "document-end"; // --article-placement
-    bool no_problem_to_article_link = false; // --no-problem-to-article-link
-    bool no_article_to_problem_link = false; // --no-article-to-problem-link
-    bool no_article_toc = false;         // --no-article-toc
+    std::string solution_placement = "document-end"; // --solution-placement
+    bool no_problem_to_solution_link = false; // --no-problem-to-solution-link
+    bool no_solution_to_problem_link = false; // --no-solution-to-problem-link
+    bool no_solution_toc = false;         // --no-solution-toc
     bool no_article_meta = false;        // --no-article-meta
     bool yes = false;                     // --yes
 
@@ -161,7 +161,7 @@ enum
     OPT_COOKIE_STRING,
     OPT_WITH_SOLUTIONS,
     OPT_ARTICLE_SOURCE,
-    OPT_MAX_ARTICLES,
+    OPT_MAX_SOLUTIONS,
     OPT_REQUEST_DELAY,
     OPT_NO_DELAY_AUTO_SCALE,
     OPT_SOLUTION_TTL,
@@ -172,12 +172,12 @@ enum
     OPT_REFRESH_ARTICLES,
     OPT_CLEAN_SOLUTIONS,
     OPT_CLEAN_ARTICLES,
-    OPT_ARTICLES_ONLY,
+    OPT_SOLUTIONS_ONLY,
     OPT_ARTICLES_ONLY_DOWNLOAD,
-    OPT_ARTICLE_PLACEMENT,
-    OPT_NO_PROBLEM_TO_ARTICLE_LINK,
-    OPT_NO_ARTICLE_TO_PROBLEM_LINK,
-    OPT_NO_ARTICLE_TOC,
+    OPT_SOLUTION_PLACEMENT,
+    OPT_NO_PROBLEM_TO_SOLUTION_LINK,
+    OPT_NO_SOLUTION_TO_PROBLEM_LINK,
+    OPT_NO_SOLUTION_TOC,
     OPT_NO_ARTICLE_META,
 };
 
@@ -201,11 +201,11 @@ inline const char *option_name_for(int code)
     case OPT_COOKIE: return "--cookie";
     case OPT_COOKIE_STRING: return "--cookie-string";
     case OPT_ARTICLE_SOURCE: return "--article-source";
-    case OPT_MAX_ARTICLES: return "--max-articles";
+    case OPT_MAX_SOLUTIONS: return "--max-solutions";
     case OPT_REQUEST_DELAY: return "--request-delay";
     case OPT_SOLUTION_TTL: return "--solution-ttl";
     case OPT_RATE_LIMIT_WAIT: return "--rate-limit-wait";
-    case OPT_ARTICLE_PLACEMENT: return "--article-placement";
+    case OPT_SOLUTION_PLACEMENT: return "--solution-placement";
     default: return "";
     }
 }
@@ -230,12 +230,12 @@ inline std::string option_argument_hint(const std::string &token)
     if (token == "--cookie") return "Netscape 格式的 cookies.txt 路径";
     if (token == "--cookie-string") return "Cookie 串（形如 \"k=v; k2=v2\"）";
     if (token == "--article-source") return "题解正文来源（auto / official / save）";
-    if (token == "--max-articles") return "每题抓取的题解篇数（正整数或 all）";
+    if (token == "--max-solutions") return "每题抓取的题解篇数（正整数或 all）";
     if (token == "--request-delay") return "请求间隔秒数（如 5 或 8-15）";
     if (token == "--solution-ttl") return "题解列表缓存有效期天数（0 表示只用 ETag）";
     if (token == "--article-ttl") return "题解正文缓存有效期天数（0 表示只用 ETag）";
     if (token == "--rate-limit-wait") return "限流等待秒数（0 表示检测到限流直接停止）";
-    if (token == "--article-placement") return "题解位置（document-end 或 per-problem）";
+    if (token == "--solution-placement") return "题解位置（document-end 或 per-problem）";
     return "";
 }
 
@@ -271,8 +271,9 @@ const char *kUsage =
     "                        分隔或重复 --difficulty\n"
     "      --type <B|P>      按题目类型筛选（可重复，空表示全部类型）\n"
     "      --pid <pid>...    按题号精确筛选；多个值可用空格分隔或重复 --pid。\n"
-    "                        不能与 --tag、--difficulty、--type 同时使用，\n"
-    "                        且每个题号必须存在于题目列表缓存中\n"
+    "                        与其它筛选参数（--tag、--difficulty、--type、\n"
+    "                        --pid-range）同时给出时，命中的题目会追加到其它\n"
+    "                        条件筛选出的题目之外（命中的题目不要求满足其它条件）\n"
     "      --pid-range <a>-<b>\n"
     "                        按题号闭区间筛选；多组值可用空格分隔或重复 --pid-range。\n"
     "                        一组范围两端必须为同一题库（如都为 P 题库或都为 B 题库，\n"
@@ -334,7 +335,7 @@ const char *kUsage =
     "                        被限流 3 次则放弃该站点，两个站点都放弃则终止）。\n"
     "                        official 只用洛谷原站，save 只用第三方镜像洛谷保存站\n"
     "                        题解列表恒取洛谷原站\n"
-    "      --max-articles <n|all>\n"
+    "      --max-solutions <n|all>\n"
     "                        每题抓取篇数，默认 1，按列表顺序取最靠前的 n 篇；\n"
     "                        all 表示该题全部题解\n"
     "      --request-delay <mean|min-max>\n"
@@ -357,19 +358,19 @@ const char *kUsage =
     "      --refresh-articles\n"
     "                        强制重新获取题解正文（忽略 TTL 与 ETag）\n"
 
-    "      --articles-only  只导出题解，不导出题面（需与 -M 或 -L 同用）\n"
+    "      --solutions-only 只导出题解，不导出题面（需与 -M 或 -L 同用）\n"
     "      --articles-only-download\n"
     "                        只抓取并缓存题解，不导出任何文件（不需要 -M / -L）\n"
-    "      --article-placement <document-end|per-problem>\n"
+    "      --solution-placement <document-end|per-problem>\n"
     "                        题解在文档中的位置，默认 document-end（统一置于文档\n"
     "                        最后）；per-problem 表示紧跟对应题目之后\n"
-    "      --no-problem-to-article-link\n"
+    "      --no-problem-to-solution-link\n"
     "                        关闭题目到题解的跳转（-L 为题目标题右侧的「查看题解」\n"
     "                        按钮，-M 为 Markdown 中的跳转链接）\n"
-    "      --no-article-to-problem-link\n"
+    "      --no-solution-to-problem-link\n"
     "                        关闭题解到题目的跳转（-L 为题解标题右侧的「返回题目」\n"
     "                        按钮，-M 为 Markdown 中的跳转链接）\n"
-    "      --no-article-toc 题解标题不进目录（仅 -L；默认进目录并注明所属题目）\n"
+    "      --no-solution-toc 题解标题不进目录（仅 -L；默认进目录并注明所属题目）\n"
     "      --no-article-meta\n"
     "                        不显示题解的来源与原文链接\n"
     "  -y, --yes             把爬取风险的确认次数减少 1 次（减到 0 为止）；\n"
@@ -767,7 +768,7 @@ SolutionRun run_solutions(const Options &options,
         task.source = solution::Source::Official;
     else
         task.source = solution::Source::Auto;
-    task.max_articles = options.max_articles;
+    task.max_articles = options.max_solutions;
     task.list_ttl_days = options.solution_ttl;
     task.article_ttl_days = options.article_ttl;
     task.refresh_solutions = options.refresh_solutions;
@@ -860,8 +861,8 @@ SolutionRun run_solutions(const Options &options,
     // ---- 风险分级与确认（设计 §五）----
     prompt::RiskInfo risk = prompt::plan_risk(plan.total_requests, options.yes);
     risk.problems = plan.problems;
-    risk.per_problem = options.max_articles < 0 ? 0 : options.max_articles;
-    risk.per_problem_all = options.max_articles < 0;
+    risk.per_problem = options.max_solutions < 0 ? 0 : options.max_solutions;
+    risk.per_problem_all = options.max_solutions < 0;
     risk.articles = plan.articles_to_fetch;
     risk.cached_articles = plan.cached_articles;
     risk.list_requests = plan.list_requests;
@@ -1026,7 +1027,7 @@ int main(int argc, char *argv[])
         {"cookie-string",        required_argument, nullptr, OPT_COOKIE_STRING},
         {"with-solutions",       no_argument,       nullptr, OPT_WITH_SOLUTIONS},
         {"article-source",      required_argument, nullptr, OPT_ARTICLE_SOURCE},
-        {"max-articles",        required_argument, nullptr, OPT_MAX_ARTICLES},
+        {"max-solutions",       required_argument, nullptr, OPT_MAX_SOLUTIONS},
         {"request-delay",        required_argument, nullptr, OPT_REQUEST_DELAY},
         {"no-delay-auto-scale",  no_argument,       nullptr, OPT_NO_DELAY_AUTO_SCALE},
         {"solution-ttl",         required_argument, nullptr, OPT_SOLUTION_TTL},
@@ -1037,12 +1038,12 @@ int main(int argc, char *argv[])
         {"refresh-articles",     no_argument,       nullptr, OPT_REFRESH_ARTICLES},
         {"clean-solutions",      no_argument,       nullptr, OPT_CLEAN_SOLUTIONS},
         {"clean-articles",       no_argument,       nullptr, OPT_CLEAN_ARTICLES},
-        {"articles-only",       no_argument,       nullptr, OPT_ARTICLES_ONLY},
+        {"solutions-only",       no_argument,       nullptr, OPT_SOLUTIONS_ONLY},
         {"articles-only-download", no_argument,    nullptr, OPT_ARTICLES_ONLY_DOWNLOAD},
-        {"article-placement",   required_argument, nullptr, OPT_ARTICLE_PLACEMENT},
-        {"no-problem-to-article-link", no_argument, nullptr, OPT_NO_PROBLEM_TO_ARTICLE_LINK},
-        {"no-article-to-problem-link", no_argument, nullptr, OPT_NO_ARTICLE_TO_PROBLEM_LINK},
-        {"no-article-toc",      no_argument,       nullptr, OPT_NO_ARTICLE_TOC},
+        {"solution-placement",  required_argument, nullptr, OPT_SOLUTION_PLACEMENT},
+        {"no-problem-to-solution-link", no_argument, nullptr, OPT_NO_PROBLEM_TO_SOLUTION_LINK},
+        {"no-solution-to-problem-link", no_argument, nullptr, OPT_NO_SOLUTION_TO_PROBLEM_LINK},
+        {"no-solution-toc",     no_argument,       nullptr, OPT_NO_SOLUTION_TOC},
         {"no-article-meta",     no_argument,       nullptr, OPT_NO_ARTICLE_META},
         {"yes",                  no_argument,       nullptr, 'y'},
         {"help",       no_argument,       nullptr, 'h'},
@@ -1184,8 +1185,8 @@ int main(int argc, char *argv[])
         case OPT_WITH_SOLUTIONS:
             options.with_solutions = true;
             break;
-        case OPT_ARTICLES_ONLY:
-            options.articles_only = true;
+        case OPT_SOLUTIONS_ONLY:
+            options.solutions_only = true;
             break;
         case OPT_ARTICLES_ONLY_DOWNLOAD:
             options.articles_only_download = true;
@@ -1207,24 +1208,24 @@ int main(int argc, char *argv[])
             options.solution_option_used = true;
             break;
         }
-        case OPT_MAX_ARTICLES:
+        case OPT_MAX_SOLUTIONS:
         {
             const std::string value = to_lower_ascii(optarg ? optarg : "");
             if (value == "all")
             {
-                options.max_articles = -1;
+                options.max_solutions = -1;
             }
             else
             {
                 long parsed = 0;
                 if (!parse_positive_int(value, 1, 100000, parsed))
                 {
-                    printError("参数 '--max-articles' 的值 '" + std::string(optarg ? optarg : "") +
-                               "' 不是合法的篇数；正确用法：--max-articles <n|all>"
+                    printError("参数 '--max-solutions' 的值 '" + std::string(optarg ? optarg : "") +
+                               "' 不是合法的篇数；正确用法：--max-solutions <n|all>"
                                "（n 为正整数，all 表示该题全部题解）");
                     return 1;
                 }
-                options.max_articles = static_cast<int>(parsed);
+                options.max_solutions = static_cast<int>(parsed);
             }
             options.solution_option_used = true;
             break;
@@ -1301,31 +1302,31 @@ int main(int argc, char *argv[])
         case OPT_CLEAN_ARTICLES:
             options.clean_articles = true;
             break;
-        case OPT_ARTICLE_PLACEMENT:
+        case OPT_SOLUTION_PLACEMENT:
         {
             const std::string value = optarg ? optarg : "";
             if (value != "document-end" && value != "per-problem")
             {
-                printError("参数 '--article-placement' 的值 '" + value +
+                printError("参数 '--solution-placement' 的值 '" + value +
                            "' 不是合法位置；正确用法："
-                           "--article-placement <document-end|per-problem>"
+                           "--solution-placement <document-end|per-problem>"
                            "（默认 document-end，即题解统一置于文档最后）");
                 return 1;
             }
-            options.article_placement = value;
+            options.solution_placement = value;
             options.solution_option_used = true;
             break;
         }
-        case OPT_NO_PROBLEM_TO_ARTICLE_LINK:
-            options.no_problem_to_article_link = true;
+        case OPT_NO_PROBLEM_TO_SOLUTION_LINK:
+            options.no_problem_to_solution_link = true;
             options.solution_option_used = true;
             break;
-        case OPT_NO_ARTICLE_TO_PROBLEM_LINK:
-            options.no_article_to_problem_link = true;
+        case OPT_NO_SOLUTION_TO_PROBLEM_LINK:
+            options.no_solution_to_problem_link = true;
             options.solution_option_used = true;
             break;
-        case OPT_NO_ARTICLE_TOC:
-            options.no_article_toc = true;
+        case OPT_NO_SOLUTION_TOC:
+            options.no_solution_toc = true;
             options.solution_option_used = true;
             break;
         case OPT_NO_ARTICLE_META:
@@ -1552,20 +1553,20 @@ int main(int argc, char *argv[])
     }
 
     // ---- 题解功能：参数使用校验（设计 §十二）----
-    const bool solutions_enabled = options.with_solutions || options.articles_only ||
+    const bool solutions_enabled = options.with_solutions || options.solutions_only ||
                                    options.articles_only_download;
-    if (options.articles_only && options.articles_only_download)
+    if (options.solutions_only && options.articles_only_download)
     {
-        printError("参数 --articles-only 与 --articles-only-download 不能同时使用；"
-                   "--articles-only 只导出题解（不导出题面），"
+        printError("参数 --solutions-only 与 --articles-only-download 不能同时使用；"
+                   "--solutions-only 只导出题解（不导出题面），"
                    "--articles-only-download 只抓取并缓存、不导出任何文件");
         return 1;
     }
     if (!solutions_enabled && options.solution_option_used)
     {
         printError("题解相关参数（--cookie、--cookie-string、--solution-*、"
-                   "--max-articles、--refresh-*、--no-article-*、-y/--yes 等）"
-                   "需要与 --with-solutions（或 --articles-only / "
+                   "--max-solutions、--refresh-*、--no-solution-*、-y/--yes 等）"
+                   "需要与 --with-solutions（或 --solutions-only / "
                    "--articles-only-download）一起使用；正确用法："
                    "luogu-extract -L --cookie cookies.txt --with-solutions ..."
                    "（未启用题解功能时程序完全不碰题解）");
@@ -1573,11 +1574,11 @@ int main(int argc, char *argv[])
     }
     if (solutions_enabled)
     {
-        // --with-solutions / --articles-only 需与 -M 或 -L 同用；
+        // --with-solutions / --solutions-only 需与 -M 或 -L 同用；
         // --articles-only-download 例外（只抓缓存，不需要导出模式）
         if (!options.articles_only_download && !options.markdown && !options.latex)
         {
-            printError("参数 --with-solutions / --articles-only 需要与 -M（导出 "
+            printError("参数 --with-solutions / --solutions-only 需要与 -M（导出 "
                        "Markdown）或 -L（导出 LaTeX）一起使用；若只想抓取并缓存题解，"
                        "请改用 --articles-only-download");
             return 1;
@@ -1616,8 +1617,8 @@ int main(int argc, char *argv[])
         if (!options.font_title_en.empty()) latex_only.push_back("--set-font-title-en-US");
         if (options.no_bilibili_link) latex_only.push_back("--no-bilibili-link");
         // 双向跳转按钮与目录条目只对 LaTeX 有意义（Markdown 侧两个跳转开关
-        // 同样有效，但 --no-article-toc 仅 -L）
-        if (options.no_article_toc) latex_only.push_back("--no-article-toc");
+        // 同样有效，但 --no-solution-toc 仅 -L）
+        if (options.no_solution_toc) latex_only.push_back("--no-solution-toc");
         // -RD 只在 -L 导出下载题面图片时才有意义（-M 不下载图片）
         if (options.new_download) latex_only.push_back("--new-download");
         if (!latex_only.empty())
@@ -1635,7 +1636,7 @@ int main(int argc, char *argv[])
     // 后面跟的裸参数按这些选项的后续值处理；只有导出模式与题解抓取模式
     // （--articles-only-download 只抓缓存、不需要 -M/-L）才允许这样写
     const bool bare_args_allowed = options.markdown || options.latex ||
-                                   options.with_solutions || options.articles_only ||
+                                   options.with_solutions || options.solutions_only ||
                                    options.articles_only_download;
     if (optind < arg_count)
     {
@@ -1684,18 +1685,6 @@ int main(int argc, char *argv[])
                     options.filter.tags.push_back(arg_vector[i]);
             }
         }
-    }
-
-    // --pid 不能与 --tag、--difficulty、--type 同时使用（参数填用错误）
-    if (!options.filter.pids.empty() &&
-        (!options.filter.tags.empty() ||
-         !options.filter.difficulties.empty() ||
-         !options.filter.types.empty()))
-    {
-        printError("参数错误：--pid 不能与 --tag、--difficulty、--type 同时使用；"
-                   "若需按题号与其他条件组合筛选，请改用 --pid-range"
-                   "（--pid-range 支持与上述参数同时使用）");
-        return 1;
     }
 
     // -RD, --new-download 只在 -L 导出下载题面图片时才有意义：
@@ -1747,7 +1736,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    // ---- 题解抓取（--with-solutions / --articles-only*）----
+    // ---- 题解抓取（--with-solutions / --solutions-only / --articles-only-download）----
     // 先按筛选条件选中题目（与后面导出共用同一份结果，避免重复解析题目缓存），
     // 再走「计划 → 风险确认 → 抓取」，最后与题面一起导出到同一份文件
     luogu::ProblemSelection selection;
@@ -1774,11 +1763,11 @@ int main(int argc, char *argv[])
         }
 
         solution_export.enabled = true;
-        solution_export.document_end = (options.article_placement != "per-problem");
-        solution_export.articles_only = options.articles_only;
-        solution_export.problem_to_article_link = !options.no_problem_to_article_link;
-        solution_export.article_to_problem_link = !options.no_article_to_problem_link;
-        solution_export.article_toc = !options.no_article_toc;
+        solution_export.document_end = (options.solution_placement != "per-problem");
+        solution_export.articles_only = options.solutions_only;
+        solution_export.problem_to_article_link = !options.no_problem_to_solution_link;
+        solution_export.article_to_problem_link = !options.no_solution_to_problem_link;
+        solution_export.article_toc = !options.no_solution_toc;
         solution_export.article_meta = !options.no_article_meta;
 
         if (options.articles_only_download)

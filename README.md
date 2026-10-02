@@ -17,7 +17,7 @@
   - 按**标签**筛选（多个标签取「且」，即题目必须同时包含所有标签）；
   - 按**难度**筛选（支持单个数字或闭区间 `1-4`，多个取「或」）；
   - 按**题目类型**筛选（`B` 基础题 / `P` 普通题）；
-  - 按**题号**筛选（`--pid`，多个取「或」；先在题目列表缓存中校验题号是否存在）；
+  - 按**题号**筛选（`--pid`，多个取「或」；可与其它筛选参数同时使用：命中的题目追加到其它条件筛出的题目之外，命中的题目不要求满足其它条件；先在题目列表缓存中校验题号是否存在）；
   - 按**题号范围**筛选（`--pid-range <题号>-<题号>`（闭区间）；先校验两端点存在于缓存且属于同一题库，可与标签/难度/类型条件组合）；
   - 按**题面语言**筛选（`zh-CN` / `en`，英文缺失时自动回退中文）。
 - **导出 Markdown**（`-M`）：每题一个章节，包含时空限制、题目背景、题目描述、输入/输出格式、样例、说明/提示；难度与标签的显示由下方「题目信息显示」开关控制；一级标题可用 `--set-cover-title` 自定义。
@@ -100,6 +100,11 @@ luogu-extract -M --set-cover-title "洛谷竞赛题册（全量）"
 # 8. 按题号导出指定题目（可重复 --pid 或空格分隔；题号必须存在于缓存）
 luogu-extract -L --pid P1001 P1002 --pid P2000 --output 指定题目.tex
 
+# 8.1 --pid 与其它筛选参数同时使用：命中的题目追加到其它条件筛出的题目之外
+#     （下面导出「标签含 动态规划 且难度 3-5 的题目」+ P1001、P1002 两道题）
+luogu-extract -L --tag 动态规划 --difficulty 3-5 --pid P1001 P1002 \
+    --output 筛选并追加.tex
+
 # 9. 按题号范围导出（闭区间；可与标签/难度/类型组合）
 luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5 \
     --output 区间题册.tex
@@ -138,11 +143,11 @@ luogu-extract -L --cookie cookies.txt --tag 动态规划 --with-solutions --outp
 
 # 17. 题解紧跟题目之后
 luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
-    --with-solutions --article-placement per-problem --output 题册.tex
+    --with-solutions --solution-placement per-problem --output 题册.tex
 
 # 18. 抓取某题全部题解（会触发第 5 档警告，需 3 次确认）
 luogu-extract -L --cookie cookies.txt --pid P1001 \
-    --with-solutions --max-articles all --output 单题题册.tex
+    --with-solutions --max-solutions all --output 单题题册.tex
 
 # 19. 离线囤货：只抓缓存不导出；延时放宽到 8~15 秒
 luogu-extract --cookie cookies.txt --pid-range P1000-P1099 \
@@ -154,8 +159,8 @@ luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
 
 # 21. 关闭跳转按钮与目录中的题解条目
 luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
-    --no-problem-to-article-link --no-article-to-problem-link \
-    --no-article-toc --output 题册.tex
+    --no-problem-to-solution-link --no-solution-to-problem-link \
+    --no-solution-toc --output 题册.tex
 
 # 22. 只用保存站（第三方镜像）获取题解正文；该来源不发送任何 Cookie
 luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
@@ -167,7 +172,7 @@ luogu-extract -L --tag 动态规划 --paginate --output 分页题册.tex
 
 # 24. 题解分页且紧跟各自题目
 luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
-    --with-solutions --article-placement per-problem \
+    --with-solutions --solution-placement per-problem \
     --paginate --output 分页题册.tex
 ```
 
@@ -186,10 +191,10 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 | `-CA, --clean-articles` | 清除文章缓存（`<缓存目录>/articles/`）。清除类参数只能彼此组合使用 |
 | `--tags` | 按官方分类打印标签 ID 对照表（可与 `-h` 组合） |
 | `--tag <name\|ID>...` | 按标签筛选；多个值可用空格分隔或重复 `--tag`，题目须包含全部标签；引号整体恰好等于已知标签名（如 `"NOIP 普及组"`）时按一个标签处理 |
-| `--difficulty <spec>` | 按难度（ $0\sim 8$ ）筛选；支持区间写法（如 `1-4`），多组值可用空格分隔或重复 `--difficulty` |
+| `--difficulty <spec>` | 按难度（0~8）筛选；支持区间写法（如 `1-4`），多组值可用空格分隔或重复 `--difficulty` |
 | `--type <B\|P>` | 按题目类型筛选（可重复，空表示全部类型） |
-| `--pid <pid>...` | 按题号精确筛选；多个值可用空格分隔或重复 `--pid`。不能与 `--tag`、`--difficulty`、`--type` 同时使用 |
-| `--pid-range <a>-<b>` | 按题号闭区间筛选；多组值可用空格分隔或重复 `--pid-range`。一组范围两端必须为同一题库（如都为 `P` 题库或都为 `B` 题库，多组范围间可不为同一题库）。可与 `--tag`、`--difficulty`、`--type` 同时使用 |
+| `--pid <pid>...` | 按题号精确筛选；多个值可用空格分隔或重复 `--pid`。每个题号必须存在于题目列表缓存中。可与其它筛选参数（`--tag`、`--difficulty`、`--type`、`--pid-range`）同时使用：命中的题目会**追加**到其它条件筛选出的题目之外（并集），命中的题目不要求满足其它条件（已经符合筛选条件时不会重复导出） |
+| `--pid-range <a>-<b>` | 按题号闭区间筛选；多组值可用空格分隔或重复 `--pid-range`。一组范围两端必须为同一题库（如都为 `P` 题库或都为 `B` 题库，多组范围间可不为同一题库）。可与 `--tag`、`--difficulty`、`--type`、`--pid` 同时使用 |
 | `--lang <zh-CN\|en>` | 题面语言（默认 `zh-CN`；`en` 缺失时回退中文） |
 | `--output <file>` | 输出文件路径（默认 `problems.md` / `problems.tex`） |
 | `--no-show-source-tags` | `-M` / `-L` 均有效：不显示来源、时间、区域、特殊题目标签（默认显示） |
@@ -211,7 +216,7 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 | `--cookie <file>` | 需提供 Netscape 格式的 `cookies.txt`（含登录态）。题解列表接口需要登录态，该参数是启用题解功能的前提 |
 | `--cookie-string <k=v; ...>` | 直接传入 Cookie 串（与 `--cookie` 二选一） |
 | `--article-source <auto\|official\|save>` | 题解**正文**来源，默认 `auto`：缓存优先（两个来源都有时优先原站），未命中的在[洛谷原站](https://www.luogu.com.cn/)与[洛谷保存站](https://www.luogu.me/)之间**轮流分配、并行抓取**；`official` 只用原站；`save` 只用保存站。题解列表恒取洛谷原站 |
-| `--max-articles <n\|all>` | 每题抓取篇数，默认 `1`，按列表顺序取最靠前的 `n` 篇；`all` 表示该题**全部**题解 |
+| `--max-solutions <n\|all>` | 每题抓取篇数，默认 `1`，按列表顺序取最靠前的 `n` 篇；`all` 表示该题**全部**题解 |
 | `--request-delay <mean\|min-max>` | 请求的平均间隔秒数，默认 `5`（实际为均值 ±30% 均匀抖动，即 3.5~6.5 秒）；也支持显式区间（如 `8-15`）与小数（如 `2.5`）；单次间隔上限 300 秒 |
 | `--no-delay-auto-scale` | 关闭「随抓取量自动递增延时」与限流后的额外放大 |
 | `--solution-ttl <days>` | 题解**列表**缓存有效期天数：默认**无限**；`0` 表示每次都发 ETag 条件请求（`304` 时只刷新时间戳） |
@@ -220,12 +225,12 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 | `--allow-partial` | 允许导出正文不完整的题解（默认跳过并在结束时汇总） |
 | `--refresh-solutions` | 强制重新获取题解列表（忽略有效期与 ETag） |
 | `--refresh-articles` | 强制重新获取题解正文（忽略有效期与 ETag） |
-| `--articles-only` | 只导出题解，不导出题面（需与 `-M` 或 `-L` 同用） |
+| `--solutions-only` | 只导出题解，不导出题面（需与 `-M` 或 `-L` 同用） |
 | `--articles-only-download` | 只抓取并缓存题解，不导出任何文件（不需要 `-M` / `-L`） |
-| `--article-placement <document-end\|per-problem>` | 题解在文档中的位置，默认 `document-end`（统一置于文档最后）；`per-problem` 表示紧跟对应题目之后 |
-| `--no-problem-to-article-link` | 关闭题目到题解的跳转（`-L` 为题目标题右侧的「查看题解」按钮，`-M` 为 Markdown 中的跳转链接） |
-| `--no-article-to-problem-link` | 关闭题解到题目的跳转（`-L` 为题解标题右侧的「返回题目」按钮，`-M` 为 Markdown 中的跳转链接） |
-| `--no-article-toc` | 仅 `-L` 有效：题解标题不进目录（默认进目录并注明所属题目） |
+| `--solution-placement <document-end\|per-problem>` | 题解在文档中的位置，默认 `document-end`（统一置于文档最后）；`per-problem` 表示紧跟对应题目之后 |
+| `--no-problem-to-solution-link` | 关闭题目到题解的跳转（`-L` 为题目标题右侧的「查看题解」按钮，`-M` 为 Markdown 中的跳转链接） |
+| `--no-solution-to-problem-link` | 关闭题解到题目的跳转（`-L` 为题解标题右侧的「返回题目」按钮，`-M` 为 Markdown 中的跳转链接） |
+| `--no-solution-toc` | 仅 `-L` 有效：题解标题不进目录（默认进目录并注明所属题目） |
 | `--no-article-meta` | 不显示题解的来源与原文链接 |
 | `-y, --yes` | 把爬取风险的确认次数减少 1 次（减到 0 为止）；不能把第 5 档变为无需确认 |
 | `-h, --help` | 显示帮助（文本与上表内容一致） |
@@ -334,7 +339,7 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 | 文件 | 说明 |
 | --- | --- |
 | `solutions.ndjson` | 题解列表：一行一个题目，记录该题的题解列表、分页信息与抓取元信息（`pid` / `items` / `etag` / `fetched_at` 等） |
-| `articles/<文章编号>.<来源>.json` | 单篇题解正文（洛谷 Markdown 原文；按来源分别入键，正文不再按题目分目录） |
+| `articles/<文章编号>.<来源>.json` | 单篇题解正文 |
 
 - 默认**优先读缓存**：列表的有效期由 `--solution-ttl`、正文的有效期由 `--article-ttl` 控制，两者默认都是**无限**——只要缓存里有就一律直接用，命中即**零请求**；只有显式指定天数后过期内容才会重取；
 - 指定了有效期且已过期时带 `If-None-Match` 发条件请求，命中 `304` 时只刷新时间戳；`--solution-ttl 0` / `--article-ttl 0` 表示每次都发条件请求；
@@ -346,7 +351,7 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 
 ### 输出形态
 
-**位置模式**（`--article-placement`，默认 `document-end`）：
+**位置模式**（`--solution-placement`，默认 `document-end`）：
 
 | 模式 | LaTeX 结构 | Markdown 结构 |
 | --- | --- | --- |
@@ -450,13 +455,13 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 - 清除缓存的参数（`-C` / `-CIMG` / `-CP` / `-CS` / `-CA`）只能彼此组合使用，与非清除类参数（含 `-h`、`--tags`、`-U`、`-M`、`-L` 等）或多余的位置参数同时出现即拒绝执行；
 - `-V` / `--version` 与其他参数（含 `-h`、`--tags`、`-M`、`-L` 等）或多余的位置参数同时使用（该参数必须单独使用）；
 - 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）；
-- 题解相关参数（`--cookie`、`--cookie-string`、`--article-source`、`--solution-*`、`--max-articles`、`--refresh-*`、`--no-article-*`、`--yes` 等）在未启用 `--with-solutions`（或 `--articles-only` / `--articles-only-download`）时，报「缺少 `--with-solutions`」；
-- `--with-solutions` / `--articles-only` 未与 `-M` 或 `-L` 同用（`--articles-only-download` 例外，它不需要导出模式）；
+- 题解相关参数（`--cookie`、`--cookie-string`、`--article-source`、`--solution-*`、`--max-solutions`、`--refresh-*`、`--no-solution-*`、`--yes` 等）在未启用 `--with-solutions`（或 `--solutions-only` / `--articles-only-download`）时，报「缺少 `--with-solutions`」；
+- `--with-solutions` / `--solutions-only` 未与 `-M` 或 `-L` 同用（`--articles-only-download` 例外，它不需要导出模式）；
 - 启用题解功能但未提供 `--cookie` / `--cookie-string`（题解列表接口需要登录态），或两者同时给出；
 - `--request-delay` 非正数、区间不满足 `0 < min ≤ max`、或单次间隔超过 300 秒；
-- `--solution-ttl` / `--article-ttl` 小于 0、`--rate-limit-wait < 0`、`--max-articles` 既不是正整数也不是 `all`；
-- `--article-placement` 不是 `document-end` / `per-problem`，或 `--article-source` 不是 `official` / `save`；
-- `--articles-only` 与 `--articles-only-download` 同时给出；
+- `--solution-ttl` / `--article-ttl` 小于 0、`--rate-limit-wait < 0`、`--max-solutions` 既不是正整数也不是 `all`；
+- `--solution-placement` 不是 `document-end` / `per-problem`，或 `--article-source` 不是 `official` / `save`；
+- `--solutions-only` 与 `--articles-only-download` 同时给出；
 - `-CS` / `--clean-solutions`、`-CA` / `--clean-articles` 与其他参数同时使用；
 - 非交互终端（管道、重定向）下仍需风险确认时**拒绝执行**并说明原因。
 

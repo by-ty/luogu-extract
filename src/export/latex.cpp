@@ -2402,13 +2402,22 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
     }
     // 4.5 图片 → 缓存文件；视频 → 仅链接
     {
-        static const std::regex re("!\\[[^\\]]*\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
+        static const std::regex re("!\\[([^\\]]*)\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
-            const std::string url = m[1].str();
+            const std::string alt = m[1].str();
+            const std::string url = m[2].str();
             if (is_data_uri(url))
                 return std::string(); // data URI 直接丢弃
             if (!looks_like_url(url))
-                return m[0].str(); // 不是真正的图片链接，保留原文（转义阶段处理）
+            {
+                // 不是真正的图片地址（如题面里的 ![](一段文字)）：按 Markdown
+                // 语义，替代文字为空的图片加载失败时不显示任何内容（也不能留下
+                // 空行，整段内容为空时由段落层自动跳过）；有替代文字时保留原文，
+                // 交由转义阶段原样输出
+                if (alt.empty())
+                    return std::string();
+                return m[0].str();
+            }
             if (is_video_url(url))
             {
                 // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时
@@ -2437,16 +2446,23 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
     {
         static const std::regex re("\\[([^\\]]*)\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
+            const std::string label = m[1].str();
+            // 链接文字为空（如题面里的 [](一段文字)）：Markdown 渲染后是
+            // 一个没有内容的超链接，什么都看不见。这里直接输出空内容，既不会
+            // 打印出 `[](…)` 原文，也不会因为整段只剩空内容而多出空行
+            // （段落层对空段落直接跳过）。
+            if (label.empty())
+                return std::string();
             if (is_data_uri(m[2].str()))
-                return m[1].str(); // data URI 链接：只保留链接文字
+                return label; // data URI 链接：只保留链接文字
             if (!looks_like_url(m[2].str()))
                 return m[0].str(); // 不是真正的链接目标，保留原文（转义阶段处理）
             // --no-bilibili-link：链接目标是 bilibili 视频 URL 时只保留链接文字
             if (g_options && !g_options->bilibili_links && is_video_url(m[2].str()))
-                return protect(inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1));
+                return protect(inline_to_latex_impl(label, raws, is_math, depth + 1));
             // B 站视频伪链接补全为完整网页 URL 后作为链接目标
             return protect("\\href{" + escape_latex(video_link_target(m[2].str())) + "}{" +
-                           inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1) + "}");
+                           inline_to_latex_impl(label, raws, is_math, depth + 1) + "}");
         });
     }
     // 6. 自动链接 <https://...> / <bilibili:...>
@@ -4722,9 +4738,9 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         (opt.solution_export.problem_to_article_link ||
          opt.solution_export.article_to_problem_link))
     {
-        // --articles-only 不导出题面，双向跳转按钮会指向不存在的锚点：
+        // --solutions-only 不导出题面，双向跳转按钮会指向不存在的锚点：
         // 自动关闭以避免死链（只提示一次）
-        std::printf("提示：--articles-only 模式下不导出题面，"
+        std::printf("提示：--solutions-only 模式下不导出题面，"
                     "已关闭题目与题解之间的双向跳转按钮（避免死链）。\n");
     }
 
@@ -5327,7 +5343,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
             body_started = true;
         }
 
-        // --article-placement per-problem：题解紧跟对应题目
+        // --solution-placement per-problem：题解紧跟对应题目
         if (per_problem && set)
         {
             for (const auto &view : set->solutions)
@@ -5348,7 +5364,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         }
     }
 
-    // --article-placement document-end（默认）：题解统一置于文档最后，
+    // --solution-placement document-end（默认）：题解统一置于文档最后，
     // 每题一组、同题题解连续排列
     if (export_solutions && !per_problem)
     {

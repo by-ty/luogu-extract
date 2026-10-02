@@ -36,7 +36,7 @@ namespace markdown
     // @param display     题目信息显示开关（与 -L 共用：来源/算法标签、难度；
     //                    默认显示来源类标签，隐藏算法标签与难度）
     // @param solutions   题解包（nullptr 表示不导出题解）；题解与题面同文件
-    // @param solution_export 题解导出的位置与开关（--article-placement 等）
+    // @param solution_export 题解导出的位置与开关（--solution-placement 等）
     // @return 成功返回 true
     bool export_markdown(const luogu::ExportFilter &filter,
                          const std::filesystem::path &output_path,

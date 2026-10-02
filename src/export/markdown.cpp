@@ -342,7 +342,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
             std::fputs("\n\n", out);
         }
 
-        // --article-placement per-problem：该题的题解紧跟题面之后
+        // --solution-placement per-problem：该题的题解紧跟题面之后
         if (with_solutions && !solution_export.document_end && sol_set)
         {
             for (const auto &view : sol_set->solutions)
@@ -354,7 +354,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         }
     }
 
-    // --article-placement document-end（默认）：题解统一置于文档最后，
+    // --solution-placement document-end（默认）：题解统一置于文档最后，
     // 每题一组、同题题解连续排列
     if (with_solutions && solution_export.document_end)
     {

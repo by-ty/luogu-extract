@@ -207,9 +207,9 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
 
     const std::string advice =
         "题解版权归原作者，抓取频率与后果由你自行承担（后果自负）。\n"
-        "建议：先用 --max-articles 1 与少量题号试跑，确认可用后再扩大范围。";
+        "建议：先用 --max-solutions 1 与少量题号试跑，确认可用后再扩大范围。";
     const std::string shrink =
-        "可用 --max-articles 1、--pid 或 --pid-range 缩小范围；中断后重跑会自动续传";
+        "可用 --max-solutions 1、--pid 或 --pid-range 缩小范围；中断后重跑会自动续传";
 
     // ---- 第 1 档（含缓存全命中的降级）：提示后直接继续 ----
     if (info.level <= 1)

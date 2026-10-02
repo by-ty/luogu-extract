@@ -39,6 +39,8 @@ namespace luogu
         std::vector<std::string> types;      // 题目类型：B / P，空表示全部
         std::string lang = "zh-CN";          // 题面语言：zh-CN / en
         std::vector<std::string> pids;       // --pid：按题号精确筛选（多个取“或”）
+        // --pid 为「额外追加」：与其它筛选条件同时给出时，命中的题目追加到
+        // 其它条件筛选出的题目之外（并集），命中的题目不要求满足其它条件
         // --pid-range：按题号闭区间筛选（多组取“或”，两端点均包含；
         // 每组端点已规范化为大写且属于同一题库）
         std::vector<std::pair<std::string, std::string>> pid_ranges;
@@ -192,12 +194,12 @@ namespace luogu
         }
     };
 
-    // 题解导出的位置与开关（--article-placement 与各 --no-article-* 参数）
+    // 题解导出的位置与开关（--solution-placement 与各 --no-solution-* 参数）
     struct SolutionExportOptions
     {
         bool enabled = false;              // 是否导出题解
         bool document_end = true;          // true = document-end；false = per-problem
-        bool articles_only = false;        // --articles-only：只导出题解
+        bool articles_only = false;        // --solutions-only：只导出题解
         bool problem_to_article_link = true; // 「查看题解」按钮（仅 -L）
         bool article_to_problem_link = true; // 「返回题目」按钮（仅 -L）
         bool article_toc = true;           // 题解标题进目录（仅 -L）

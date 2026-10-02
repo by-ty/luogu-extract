@@ -38,7 +38,7 @@ namespace solution
     struct TaskOptions
     {
         Source source = Source::Official; // --article-source
-        // --max-articles：正整数表示每题取前 n 篇；< 0 表示 all（该题全部题解，
+        // --max-solutions：正整数表示每题取前 n 篇；< 0 表示 all（该题全部题解，
         // 不设上限）
         int max_articles = 1;
         // --solution-ttl：题解**列表**的有效期（天）。< 0 表示无限
@@ -115,7 +115,7 @@ namespace solution
     /// 计划阶段。默认只读缓存，不发起任何网络请求。
     /// resolve_lists 为 true 时，会把缓存缺失/已过期的题解列表在计划阶段就
     /// 抓回来（列表请求本来就要发，属于 N + P 里的 P，受请求闸门控制），
-    /// 这样「正文篇数」在风险确认之前就是精确值——`--max-articles all`
+    /// 这样「正文篇数」在风险确认之前就是精确值——`--max-solutions all`
     /// 没有篇数上限，必须靠它才能给出真实的抓取量与风险档位。
     PlanResult make_plan(const std::vector<problem::Problem> &problems,
                          const TaskOptions &opt, bool resolve_lists, Plan &plan);
