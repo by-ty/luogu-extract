@@ -42,6 +42,13 @@ namespace latex
         // bilibili 视频 URL 是否输出为超链接（--no-bilibili-link 置为 false；默认 true）
         bool bilibili_links = true;
 
+        // Markdown 的一级标题（#）是否渲染成 \section（进目录、写页眉），
+        // 而不是默认的 \section*（只当大标题，不进目录）。
+        // --local 转写本地 Markdown 时置为 true：一级标题正是本文档的章节标题，
+        // 目录条目与页眉标题都由它决定；题面 / 题解 / 文章正文里的一级标题
+        // 保持默认（不进目录），以免污染整册的目录与页眉。
+        bool h1_as_section = false;
+
         // 题目信息显示开关（与 -M 共用同一组参数）：
         // 来源/时间/区域/特殊标签、算法标签、难度是否显示
         luogu::DisplayOptions display;
@@ -131,6 +138,26 @@ namespace latex
                       std::string &error,
                       const Options &opt = {},
                       const luogu::ProblemSelection *preselected = nullptr);
+
+    // --local：把本地 Markdown 文本文件转写为 LaTeX 文档（不访问网络、不使用缓存）。
+    // - 文件按普通文本读取，编码自适应（BOM 判定 UTF-8 / UTF-16 / UTF-32，
+    //   无 BOM 时先按严格 UTF-8 校验，否则按 GB18030 转码），统一成 UTF-8；
+    // - 默认输出封面（标题由调用方通过 opt.cover_title 给出）、目录与页眉：
+    //   目录条目与页眉标题由 Markdown 的一级标题（#）决定，--paginate 时
+    //   每处一级标题另起一页；目录超链接由 --no-toc-links 控制；
+    // - doc_only（--doc-only）时不输出封面、目录与页眉标题，整篇连贯输出，
+    //   页眉页码（--toc-backlinks）改为跳转到文档首页。
+    // @param input_path  本地 Markdown 文件路径（后缀名不限）
+    // @param output_path 输出 .tex 文件路径
+    // @param error       失败时返回的错误信息
+    // @param opt         与 -L 共用的排版选项（封面标题、字体、目录链接等）
+    // @param doc_only    --doc-only：不输出封面、目录与页眉标题
+    // @return 成功返回 true
+    bool export_local_markdown(const std::filesystem::path &input_path,
+                               const std::filesystem::path &output_path,
+                               std::string &error,
+                               const Options &opt = {},
+                               bool doc_only = false);
 }
 
 #endif // LUOGU_EXTRACT_LATEX_H

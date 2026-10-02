@@ -46,6 +46,7 @@
 - **图片下载**：并行下载题面中的图片到本地缓存；导出 LaTeX 时图片引用会替换为缓存文件路径。加 `-RD, --new-download` 后不使用之前缓存的图片，而是重新下载图片。
 - **下载题解**（需提供 Cookies，存在风险）：按题目抓取题解的**列表**与**正文**。
 - **下载文章**：按文章编号下载任意文章。
+- **转写本地 Markdown**：把本地 Markdown 文本文件转写成 LaTeX。
 - **标签 ID 对照表**（`--tags`）：按官方分类打印标签名称与数字 ID。
 
 ## 依赖与构建
@@ -104,6 +105,8 @@ make
 | `--set-font-title-en-US <font>` | 仅 `-L` 有效：设置小节标题、目录页标题与每页页眉标题中的西文字体；题目大标题西文跟随 `--set-font-body-en-US`（名称或字体文件地址） |
 | `--no-bilibili-link` | 仅 `-L` 有效：题面中的 B 站视频补全为完整网址后输出为普通文本而非超链接（默认超链接） |
 | `--set-cover-title <title>` | 设置封面标题（`-L`，默认 `luogu extract`）或 Markdown 一级标题（`-M`，默认 `洛谷题目导出`） |
+| `--local <文件地址>` | 仅 `-L` 有效：把本地 Markdown 文本文件转写为 LaTeX；不能与下载题目、题解、文章的功能同时使用 |
+| `--doc-only` | 仅与 `--local` 同用：不输出封面、目录与页眉标题（不能与 `--paginate` 同用） |
 | `--with-solutions` | 启用题解抓取与导出；需与 `-M` 或 `-L` 同用，题解与题面导出到同一个文件 |
 | `--article <文章编号>...` | 按文章编号下载指定的文章（编号为 6~32 位小写字母或数字，取自文章页地址 `/article/<编号>`，如 `p7fsb45w`；大写会自动转小写）；多个值可用空格分隔或重复 `--article`，重复编号只下载一次；导出的文章统一放在文档最后。需与 `-M` 或 `-L` 同用；未给出任何题目筛选参数且未启用题解功能时，文档只含这些文章 |
 | `--cookie <file>` | 需提供 Netscape 格式的 `cookies.txt`（含登录态）。题解列表接口需要登录态，该参数是启用题解功能的前提 |
@@ -270,6 +273,22 @@ make
 - **因限流中止**：汇总「成功 X 篇，因限流中止」，**退出码 3**；
 - **磁盘写入失败**：中止并提示，原缓存保持不变。
 
+## 转写本地 Markdown（`--local`）
+
+`-L --local <文件地址>` 把一份本地 Markdown 文本文件转写成 LaTeX 文档。该功能**只转写本地文件**：不下载题目 / 题解 / 文章，不读写题目与文章缓存。
+
+| 项目 | 说明 |
+| --- | --- |
+| 文件读取 | 后缀名不限，按普通文本文件读取；编码自适应：有 BOM 时按 UTF-8 / UTF-16 LE、BE / UTF-32 LE、BE 解码，无 BOM 时先按严格 UTF-8 校验，不是 UTF-8 再按 GB18030（兼容 GBK、GB2312）转码；CRLF / CR 统一归一化为 LF；空文件、无法识别的编码与超过 64 MB 的文件会报错拒绝 |
+| 封面 | 默认输出；标题默认取文件名（去掉扩展名），`--set-cover-title` 可改 |
+| 目录与页眉 | 默认输出；目录条目与页眉标题都由 Markdown 的**一级标题**（`#`）决定 |
+| 分页 | `--paginate` 时每处一级标题另起一页（第一个一级标题之前不插换页）；不加则连续排版 |
+| 输出 | 默认 `<原文件名>.tex`（与输入文件同目录），`--output` 可改；`--compile` 可在转写后自动编译 |
+| 图片 | 文中引用的图片与题面图片走同一条通道：已在缓存中的直接引用，缺失时**询问是否下载**（回答 n 则跳过，缺失的图片在编译时跳过）；`-RD, --new-download` 时全部重新下载 |
+| 其它排版参数 | 与 `-L` 完全共用：字体（`--set-font-*`）、`--no-bilibili-link`、`--compile` 等 |
+
+`--doc-only` 与 `--local` 同用时不输出封面、目录与页眉标题（不能与 `--paginate` 同用）；此时页眉只保留页码，`--toc-backlinks` 的页码超链接跳转到 PDF 首页。
+
 ## 缓存机制
 
 缓存目录按以下顺序确定：
@@ -351,7 +370,7 @@ make
 - `--compile` 未与 `-L` 同用（如只给 `-M`、`-U`、`--articles-only-download` 或单独使用）；
 - 清除缓存的参数（`-C` / `-CIMG` / `-CP` / `-CF` / `-CS` / `-CA`）只能彼此组合使用，与非清除类参数（含 `-h`、`--tags`、`-U`、`-M`、`-L` 等）或多余的位置参数同时出现即拒绝执行；
 - `-V` / `--version` 与其他参数（含 `-h`、`--tags`、`-M`、`-L` 等）或多余的位置参数同时使用（该参数必须单独使用）；
-- 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）；
+- 出现了程序没有的未知参数：指出未知参数，并在可能时给出提示；
 - 题解与文章相关参数（`--cookie`、`--cookie-string`、`--article-source`、`--solution-*`、`--article-ttl`、`--max-solutions`、`--refresh-*`、`--no-solution-*`、`--no-article-meta`、`--yes` 等）在未启用 `--with-solutions` / `--article`（或 `--solutions-only` / `--articles-only-download`）时，报「缺少 `--with-solutions`」；
 - `--article` 后未接文章编号、编号不符合规则（须为 6~32 位小写字母或数字，大写会自动转小写）、或 `--article` 未与 `-M` / `-L` 同用（`--articles-only-download` 例外）；
 - `--with-solutions` / `--solutions-only` 未与 `-M` 或 `-L` 同用（`--articles-only-download` 例外，它不需要导出模式）；
@@ -360,6 +379,9 @@ make
 - `--solution-ttl` / `--article-ttl` 小于 0、`--rate-limit-wait < 0`、`--max-solutions` 既不是正整数也不是 `all`；
 - `--solution-placement` 不是 `document-end` / `per-problem`，或 `--article-source` 不是 `official` / `save`；
 - `--solutions-only` 与 `--articles-only-download` 同时给出；
+- `--local` 未与 `-L` 同用（如与 `-M` 一起或单独使用）、指定的文件不存在或是目录、重复给出 `--local`，或与下载题目 / 题解 / 文章的功能同时使用；
+- `--doc-only` 未与 `--local` 同用，或与 `--paginate` 同时使用；
+- `--local` 指定的文件是空文件、超过 64 MB，或编码无法识别（不是 UTF-8，也无法按 GB18030 / GBK / GB2312 转码）；
 - 非交互终端（管道、重定向）下仍需风险确认时**拒绝执行**并说明原因。
 
 ## 待添加功能

@@ -75,6 +75,13 @@ struct Options
     // （新图片原子替换缓存中的同名图片，下载失败不影响原有缓存；仅 -L）
     bool new_download = false;
 
+    // ---- 本地 Markdown 转写（--local / --doc-only，仅 -L）----
+    // --local：把本地 Markdown 文本文件转写为 LaTeX（不下载题目/题解/文章，
+    // 也不读写缓存）；空串表示未使用
+    std::string local_file;
+    // --doc-only：不输出封面、目录与页眉标题，整篇连贯输出（仅与 --local 同用）
+    bool doc_only = false;
+
     // ---- 导出设置参数 ----
     // --compile：-L 导出 LaTeX 成功后自动执行 latexmk --xelatex <输出文件名>.tex
     bool compile_latex = false;
@@ -189,6 +196,8 @@ enum
     OPT_NO_SOLUTION_TO_PROBLEM_LINK,
     OPT_NO_SOLUTION_TOC,
     OPT_NO_ARTICLE_META,
+    OPT_LOCAL,
+    OPT_DOC_ONLY,
 };
 
 // 选项码 → 长选项名（用于报错信息）
@@ -209,6 +218,8 @@ inline const char *option_name_for(int code)
     case OPT_FONT_TITLE_EN: return "--set-font-title-en-US";
     case OPT_COVER_TITLE: return "--set-cover-title";
     case OPT_ARTICLE: return "--article";
+    case OPT_LOCAL: return "--local";
+    case OPT_DOC_ONLY: return "--doc-only";
     case OPT_COOKIE: return "--cookie";
     case OPT_COOKIE_STRING: return "--cookie-string";
     case OPT_ARTICLE_SOURCE: return "--article-source";
@@ -239,6 +250,7 @@ inline std::string option_argument_hint(const std::string &token)
     if (token == "--pid") return "题号（如 P1001，可多个，空格分隔或重复 --pid）";
     if (token == "--pid-range") return "题号范围（如 P1001-P1010，可多组，空格分隔或重复 --pid-range）";
     if (token == "--article") return "文章编号（如 p7fsb45w，可多个，空格分隔或重复 --article）";
+    if (token == "--local") return "本地 Markdown 文件路径";
     if (token == "--cookie") return "Netscape 格式的 cookies.txt 路径";
     if (token == "--cookie-string") return "Cookie 串（形如 \"k=v; k2=v2\"）";
     if (token == "--article-source") return "文章正文来源（auto / official / save）";
@@ -337,6 +349,13 @@ const char *kUsage =
     "      --set-cover-title <title>\n"
     "                        设置封面标题（-L，默认 luogu extract）或 Markdown 一级标题\n"
     "                        （-M，默认 洛谷题目导出）\n"
+    "\n"
+    "本地 Markdown 转写选项（仅 -L 有效，不能与下载题目/题解/文章同用）：\n"
+    "      --local <文件地址>\n"
+    "                        把本地 Markdown 文本文件转写为 LaTeX；指定的文件不写入缓存，\n"
+    "                        也不能与下载题目、题解、文章的功能同时使用\n"
+    "      --doc-only        仅与 --local 同用：不输出封面、目录与页眉标题\n"
+    "                        （不能与 --paginate 同用）\n"
     "\n"
     "题解与文章下载选项：\n"
     "      --with-solutions  启用题解抓取与导出；需与 -M 或 -L 同用，\n"
@@ -446,6 +465,148 @@ inline std::string to_upper_ascii(const std::string &s)
     for (auto &c : out)
         c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     return out;
+}
+
+// --local 的默认输出：与输入文件同目录的 <原文件名>.tex（去掉原扩展名）
+inline std::string default_local_output(const std::string &input)
+{
+    std::filesystem::path p = luogu::compat::path_from_utf8(input);
+    p.replace_extension(".tex");
+    return luogu::compat::path_to_utf8(p);
+}
+
+// ---- 参数报错时定位「到底是哪个参数写错了」----
+// getopt 的短选项簇会把 "-local" 拆成 -l -o -c -a -l 逐个解析，出错时 optind
+// 可能仍指向该簇、也可能已指向下一个参数（取决于出错字符是不是簇的最后一个
+// 字符），因此不能简单地取 argv[optind - 1]——那会把上一个参数（如 "-L"）
+// 当成出错的那个。这里统一用 optopt（出错字符）配合两个候选位置定位。
+// 顺带对常见笔误给出提示：「长选项只写了一个连字符」（-local 想写 --local）、
+// 长选项拼写相近（--locale 想写 --local）与长选项缩写有歧义（--art）。
+
+// 是否为「-xyz」形式的短选项簇（单连字符且不是 "--"）
+inline bool is_short_option_cluster(const std::string &token)
+{
+    return token.size() >= 2 && token[0] == '-' && token[1] != '-';
+}
+
+// 取长选项名：--name / --name=value → name
+inline std::string long_option_name_of(const std::string &token)
+{
+    if (token.size() < 2 || token.compare(0, 2, "--") != 0)
+        return "";
+    std::string name = token.substr(2);
+    const size_t eq = name.find('=');
+    if (eq != std::string::npos)
+        name = name.substr(0, eq);
+    return name;
+}
+
+// 「-local」这类把长选项写成单连字符的笔误：首字符恰为出错字符时返回其本应的
+// 长选项名（local），否则返回空串
+inline std::string single_dash_long_name(const std::string &token, int bad_char)
+{
+    if (!is_short_option_cluster(token) ||
+        static_cast<unsigned char>(token[1]) != static_cast<unsigned char>(bad_char))
+        return "";
+    return long_option_name_of("--" + token.substr(1));
+}
+
+// 在已知长选项中找一个与 name 相近的名字（两者互为前缀且至少 3 个字符相同）
+inline std::string suggest_long_option(const std::vector<std::string> &names,
+                                       const std::string &name)
+{
+    if (name.size() < 3)
+        return "";
+    std::string best;
+    for (const auto &candidate : names)
+    {
+        size_t common = 0;
+        while (common < candidate.size() && common < name.size() &&
+               candidate[common] == name[common])
+            ++common;
+        if (common < 3)
+            continue;
+        if (candidate.size() != common && name.size() != common)
+            continue; // 必须一个是另一个的前缀
+        if (best.empty() || candidate.size() < best.size())
+            best = candidate;
+    }
+    return best;
+}
+
+// 字符串末尾是否为中文句末标点（？。！；UTF-8 下都是 3 字节）
+inline bool ends_with_cjk_sentence_end(const std::string &text)
+{
+    if (text.size() < 3)
+        return false;
+    const std::string tail = text.substr(text.size() - 3);
+    return tail == "？" || tail == "。" || tail == "！";
+}
+
+// 未知参数报错里的补充说明（含开头的分隔符；无建议时返回空串）
+inline std::string bad_option_advice(const std::string &token, int optopt,
+                                     const std::vector<std::string> &long_names)
+{
+    if (optopt > 0 && optopt < 128)
+    {
+        // 短选项：可能只是把长选项写成了一个连字符（-local 想写 --local）。
+        // 只有确实像长选项（- 后面跟着一个词）时才提示，避免对 "-l" 这类
+        // 单纯写错的短选项给出无意义建议
+        const std::string name = single_dash_long_name(token, optopt);
+        if (name.empty())
+            return "";
+        const std::string suggestion = suggest_long_option(long_names, name);
+        if (!suggestion.empty())
+            return "；长选项需要两个连字符，是否想输入 '--" + suggestion + "'？";
+        if (name.size() >= 3)
+            return "；若本意是长选项，需要两个连字符（'--" + name + "'）";
+        return "";
+    }
+
+    const std::string name = long_option_name_of(token);
+    if (name.empty())
+        return "";
+    // 缩写有歧义：还有多个长选项以它为前缀
+    std::vector<std::string> prefix_matches;
+    for (const auto &candidate : long_names)
+        if (candidate.size() > name.size() &&
+            candidate.compare(0, name.size(), name) == 0)
+            prefix_matches.push_back(candidate);
+    if (prefix_matches.size() >= 2)
+    {
+        std::string list;
+        for (size_t i = 0; i < prefix_matches.size() && i < 4; ++i)
+            list += std::string(i ? "、" : "") + "--" + prefix_matches[i];
+        if (prefix_matches.size() > 4)
+            list += " 等";
+        return "；该缩写有歧义（可能是 " + list + "），请写出完整的长选项名。";
+    }
+    const std::string suggestion = suggest_long_option(long_names, name);
+    if (!suggestion.empty())
+        return "；是否想输入 '--" + suggestion + "'？";
+    return "";
+}
+
+// 定位出错的参数原文：optopt 是 getopt 报出的短选项字符（0 表示长选项）。
+// 短选项簇里未知字符不是最后一个时 optind 仍指向该簇，是最后一个时已经指向
+// 下一个参数，因此两个位置都要看，取第一个「以该字符开头的短选项簇」。
+inline std::string locate_bad_option(char **argv, int argc, int optind, int optopt)
+{
+    const auto token_at = [&](int idx) -> std::string {
+        return (idx >= 0 && idx < argc) ? std::string(argv[idx]) : std::string();
+    };
+
+    if (optopt > 0 && optopt < 128)
+    {
+        for (int idx : {optind, optind - 1})
+        {
+            const std::string candidate = token_at(idx);
+            if (!single_dash_long_name(candidate, optopt).empty())
+                return candidate;
+        }
+        return std::string("-") + static_cast<char>(optopt);
+    }
+    return token_at(optind - 1);
 }
 
 // 按空白把字符串拆成多个 token（用于 --tag 模拟 贪心 这类写法）
@@ -1151,6 +1312,8 @@ int main(int argc, char *argv[])
         {"cookie-string",        required_argument, nullptr, OPT_COOKIE_STRING},
         {"with-solutions",       no_argument,       nullptr, OPT_WITH_SOLUTIONS},
         {"article",              required_argument, nullptr, OPT_ARTICLE},
+        {"local",                required_argument, nullptr, OPT_LOCAL},
+        {"doc-only",             no_argument,       nullptr, OPT_DOC_ONLY},
         {"article-source",      required_argument, nullptr, OPT_ARTICLE_SOURCE},
         {"max-solutions",       required_argument, nullptr, OPT_MAX_SOLUTIONS},
         {"request-delay",        required_argument, nullptr, OPT_REQUEST_DELAY},
@@ -1175,6 +1338,11 @@ int main(int argc, char *argv[])
         {"version",    no_argument,       nullptr, 'V'},
         {nullptr,      0,                 nullptr, 0},
     };
+
+    // 已知长选项名（参数报错时用于「是否想输入 --xxx」一类的提示）
+    std::vector<std::string> long_option_names;
+    for (const struct option *o = kLongOptions; o->name != nullptr; ++o)
+        long_option_names.push_back(o->name);
 
     Options options;
     int opt;
@@ -1353,6 +1521,26 @@ int main(int argc, char *argv[])
             last_multi_option = 3; // 后续裸参数按 --article 处理
             break;
         }
+        case OPT_LOCAL:
+        {
+            if (optarg == nullptr || optarg[0] == '\0' || optarg[0] == '-')
+            {
+                printError("参数 '--local' 后缺少本地文件路径；"
+                           "正确用法：--local <文件地址>（如 --local 笔记.md）");
+                return 1;
+            }
+            if (!options.local_file.empty())
+            {
+                printError("参数 '--local' 只能指定一个本地文件（已指定 '" +
+                           options.local_file + "'）；如需转写多个文件，请分多次执行");
+                return 1;
+            }
+            options.local_file = optarg;
+            break;
+        }
+        case OPT_DOC_ONLY:
+            options.doc_only = true;
+            break;
         case OPT_SOLUTIONS_ONLY:
             options.solutions_only = true;
             break;
@@ -1619,16 +1807,27 @@ int main(int argc, char *argv[])
             break;
         case '?':
         {
-            // 未知参数：提示程序没有此参数，并提示使用 -h, --help 查看帮助
-            const char *token = (optind > 0 && optind <= arg_count) ? arg_vector[optind - 1] : "";
-            printError("未知参数 '" + std::string(token) + "'（程序没有此参数），"
+            // 未知参数：optopt 为出错的短选项字符（长选项为 0）。
+            // 用 locate_bad_option 定位出错参数的原文（短选项簇不能只看
+            // argv[optind - 1]，见该函数的说明），并按常见笔误给出提示
+            const std::string token =
+                locate_bad_option(arg_vector, arg_count, optind, optopt);
+            const std::string advice =
+                bad_option_advice(token, optopt, long_option_names);
+            // 建议以句末标点（？。！）结尾时直接接下一句，否则补一个逗号
+            printError("未知参数 '" + token + "'（程序没有此参数）" +
+                       (advice.empty() ? "，" : advice +
+                                                  (ends_with_cjk_sentence_end(advice)
+                                                       ? ""
+                                                       : "，")) +
                        "请使用 -h, --help 查看帮助信息");
             return 1;
         }
         case ':':
         {
-            // 选项后缺少必要的参数值
-            const std::string token = (optind > 0 && optind <= arg_count) ? arg_vector[optind - 1] : "";
+            // 选项后缺少必要的参数值（本程序只有长选项需要参数值）
+            const std::string token =
+                locate_bad_option(arg_vector, arg_count, optind, optopt);
             const std::string hint = option_argument_hint(token);
             if (!hint.empty())
                 printError("参数 '" + token + "' 后缺少必要的参数值；正确用法：" +
@@ -1790,6 +1989,68 @@ int main(int argc, char *argv[])
         return 1;
     }
 
+    // ---- --local / --doc-only：本地 Markdown 转写（仅 -L，不能与其它功能同用）----
+    const bool local_mode = !options.local_file.empty();
+    if (options.doc_only && !local_mode)
+    {
+        printError("参数 --doc-only 仅与 --local（转写本地 Markdown 文件）一起使用；"
+                   "正确用法：luogu-extract -L --local <文件地址> --doc-only");
+        return 1;
+    }
+    if (local_mode)
+    {
+        if (!options.latex)
+        {
+            printError("参数 --local 仅在使用 -L（导出 LaTeX）时可用；"
+                       "本地 Markdown 只能转写为 LaTeX（-M 导出 Markdown 不涉及转写）");
+            return 1;
+        }
+        // 与下载题目、题解、文章的功能互斥
+        std::vector<std::string> local_conflicts;
+        if (options.update) local_conflicts.push_back("-U, --update");
+        if (solutions_enabled)
+            local_conflicts.push_back("--with-solutions / --solutions-only / "
+                                      "--articles-only-download");
+        if (articles_enabled) local_conflicts.push_back("--article");
+        if (!options.filter.tags.empty()) local_conflicts.push_back("--tag");
+        if (!options.filter.difficulties.empty()) local_conflicts.push_back("--difficulty");
+        if (!options.filter.types.empty()) local_conflicts.push_back("--type");
+        if (!options.filter.pids.empty()) local_conflicts.push_back("--pid");
+        if (!options.filter.pid_ranges.empty()) local_conflicts.push_back("--pid-range");
+        if (!local_conflicts.empty())
+        {
+            std::string joined;
+            for (size_t i = 0; i < local_conflicts.size(); ++i)
+                joined += (i ? "、" : "") + local_conflicts[i];
+            printError("参数 --local 不能与下载题目、题解、文章的功能（" + joined +
+                       "）同时使用；--local 只把指定的本地文件转写为 LaTeX，"
+                       "不下载题目、题解与文章，也不读写题目与文章缓存");
+            return 1;
+        }
+        if (options.doc_only && options.paginate)
+        {
+            printError("参数 --doc-only 不能与 --paginate 同时使用；"
+                       "--doc-only 不输出封面与目录、整篇连贯输出，没有可另起一页的章节");
+            return 1;
+        }
+        // 指定的文件必须存在且是普通文件（读取时还会再校验一次编码与可读性）
+        std::error_code file_ec;
+        const std::filesystem::path local_path =
+            luogu::compat::path_from_utf8(options.local_file);
+        if (!std::filesystem::exists(local_path, file_ec) || file_ec)
+        {
+            printError("参数 --local 指定的文件 '" + options.local_file +
+                       "' 不存在；请检查文件路径");
+            return 1;
+        }
+        if (std::filesystem::is_directory(local_path, file_ec) && !file_ec)
+        {
+            printError("参数 --local 指定的 '" + options.local_file +
+                       "' 是目录；请指定一个 Markdown 文本文件");
+            return 1;
+        }
+    }
+
     // 仅 -L 支持的参数与 -M 一起使用属于参数填用错误：拒绝执行并提示正确用法
     // （--no-show-source-tags / --show-algorithm-tags / --show-difficulty-tags
     //   对 -M 同样有效，不在此列）
@@ -1837,10 +2098,12 @@ int main(int argc, char *argv[])
     // --pid / --pid-range / --tag / --difficulty 支持「空格分隔多个值」的写法，
     // 后面跟的裸参数按这些选项的后续值处理；只有导出模式与题解抓取模式
     // （--articles-only-download 只抓缓存、不需要 -M/-L）才允许这样写
-    const bool bare_args_allowed = options.markdown || options.latex ||
-                                   options.with_solutions || options.solutions_only ||
-                                   options.articles_only_download ||
-                                   !options.articles.empty();
+    // --local 只转写指定的文件：多余的位置参数一律按参数错误处理
+    const bool bare_args_allowed = !local_mode &&
+                                   (options.markdown || options.latex ||
+                                    options.with_solutions || options.solutions_only ||
+                                    options.articles_only_download ||
+                                    !options.articles.empty());
     if (optind < arg_count)
     {
         if (!bare_args_allowed)
@@ -2054,9 +2317,13 @@ int main(int argc, char *argv[])
     }
     else if (options.latex)
     {
-        // 输出路径按 UTF-8 构造 filesystem::path（Windows 下中文路径可用）
+        // 输出路径按 UTF-8 构造 filesystem::path（Windows 下中文路径可用）；
+        // --local 的默认输出为 <原文件名>.tex（与输入文件同目录）
         const std::filesystem::path out_path = luogu::compat::path_from_utf8(
-            options.output.empty() ? "problems.tex" : options.output);
+            options.output.empty()
+                ? (local_mode ? default_local_output(options.local_file)
+                              : std::string("problems.tex"))
+                : options.output);
 
         // 组装 LaTeX 显示选项（题目信息显示开关与 -M 共用同一组参数）
         latex::Options latex_opt;
@@ -2078,16 +2345,46 @@ int main(int argc, char *argv[])
         latex_opt.font_title_zh = options.font_title_zh;
         latex_opt.font_title_en = options.font_title_en;
         latex_opt.cover_title = options.cover_title;
+        // --local：封面标题默认取文件名（去掉扩展名），--set-cover-title 优先
+        if (local_mode && latex_opt.cover_title.empty())
+            latex_opt.cover_title = luogu::compat::path_to_utf8(
+                luogu::compat::path_from_utf8(options.local_file).stem());
 
         latex_opt.solutions = solutions_enabled ? &solution_bundle : nullptr;
         latex_opt.articles = articles_ptr;
         latex_opt.solution_export = solution_export;
 
         std::string error;
-        if (!latex::export_latex(options.filter, out_path, error, latex_opt,
-                                 (solutions_enabled || articles_enabled)
-                                     ? &selection
-                                     : nullptr))
+        if (local_mode)
+        {
+            // 转写本地 Markdown：不读题目列表缓存，也不抓取题目 / 题解 / 文章
+            const std::filesystem::path in_path =
+                luogu::compat::path_from_utf8(options.local_file);
+            std::printf("正在转写本地 Markdown：%s\n",
+                        luogu::compat::path_to_utf8(in_path).c_str());
+            std::fflush(stdout);
+            if (!latex::export_local_markdown(in_path, out_path, error, latex_opt,
+                                              options.doc_only))
+            {
+                printError(error);
+                result = 1;
+            }
+            else if (options.compile_latex)
+            {
+                // --compile：导出成功后自动执行 latexmk --xelatex <输出文件名>.tex
+                result = compile_latex_document(out_path);
+            }
+            else
+            {
+                printSuccess("已把 '" + luogu::compat::path_to_utf8(in_path) +
+                             "' 转写为 '" + luogu::compat::path_to_utf8(out_path) +
+                             "'");
+            }
+        }
+        else if (!latex::export_latex(options.filter, out_path, error, latex_opt,
+                                      (solutions_enabled || articles_enabled)
+                                          ? &selection
+                                          : nullptr))
         {
             printError(error);
             result = 1;

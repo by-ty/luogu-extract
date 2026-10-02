@@ -39,6 +39,7 @@
 #include "luogu-extract/util/compat.h"
 #include "luogu-extract/util/image_util.h"
 #include "luogu-extract/util/problem_info.h"
+#include "luogu-extract/util/text_encoding.h"
 #include "luogu-extract/util/version.h"
 
 namespace
@@ -4153,7 +4154,15 @@ std::string render_markdown(const std::string &markdown, int fold_depth)
                 }
                 else
                 {
-                    out += "\\" + std::string(kCmds[n - 1]) + "{" + title + "}\n\n";
+                    // 一级标题（#）：--local 转写本地 Markdown 时用 \section
+                    // （进目录、写页眉，目录条目与页眉标题都由它决定）；
+                    // 其余场合保持 \section*（题面 / 题解 / 文章正文里的一级标题
+                    // 只是大标题，不进目录、不改页眉）
+                    const bool h1_section =
+                        (n == 1) && g_options && g_options->h1_as_section;
+                    out += "\\" +
+                           std::string(h1_section ? "section" : kCmds[n - 1]) + "{" +
+                           title + "}\n\n";
                 }
                 ++i;
                 continue;
@@ -4744,140 +4753,18 @@ std::string standalone_article_to_latex(const luogu::SolutionView &view,
 }
 } // namespace
 
-bool latex::export_latex(const luogu::ExportFilter &filter,
-                         const std::filesystem::path &output_path,
-                         std::string &error,
-                         const Options &opt,
-                         const luogu::ProblemSelection *preselected)
+namespace
 {
-    error.clear();
-
-    // 挂上本次导出的显示选项：行内转换（如 bilibili 链接）据此判断，
-    // 函数返回（含提前返回）时自动还原
-    OptionsGuard options_guard(&opt);
-
-    // 筛选（-M / -L 共用），结果已按题号排序。
-    // 题解流程已筛选过一次时直接复用（preselected），避免重复解析题目列表缓存
-    std::vector<problem::Problem> local_problems;
-    std::vector<std::string> resolved_tags;
-    if (preselected)
-    {
-        local_problems = preselected->problems;
-        resolved_tags = preselected->resolved_tags;
-    }
-    else if (!luogu::select_problems(filter, local_problems, &resolved_tags, error))
-    {
-        return false;
-    }
-    const std::vector<problem::Problem> &problems = local_problems;
-
-    // ---- 题解与文章导出（设计 §十）----
-    const bool export_solutions = opt.solutions != nullptr && opt.solution_export.enabled;
-    // --article 的文章：与题解同文件、同级别，统一放在文档最后
-    const bool export_articles = opt.articles != nullptr && !opt.articles->items.empty();
-    const bool articles_only = export_solutions && opt.solution_export.articles_only;
-    const bool per_problem = export_solutions && !opt.solution_export.document_end;
-    if (export_solutions && articles_only &&
-        (opt.solution_export.problem_to_article_link ||
-         opt.solution_export.article_to_problem_link))
-    {
-        // --solutions-only 不导出题面，双向跳转按钮会指向不存在的锚点：
-        // 自动关闭以避免死链（只提示一次）
-        std::printf("提示：--solutions-only 模式下不导出题面，"
-                    "已关闭题目与题解之间的双向跳转按钮（避免死链）。\n");
-    }
-
-    // 检查图片是否都已下载到缓存；缺失时在终端用中文询问是否下载。
-    // 同一 URL 跨题目去重，避免重复下载与并发写同一缓存文件。
-    // -RD, --new-download：不使用缓存中已有的图片，所有被引用的图片都视为
-    // 待下载（下载时原子替换缓存中的同名文件）
-    std::vector<std::string> missing;
-    {
-        std::set<std::string> seen_missing;
-        std::error_code ec;
-        // 题面、题解正文与文章正文中引用的图片一并处理（题解与文章的图片
-        // 同样走现有的图片下载通道：洛谷图床串行 + 0.5~3 秒随机间隔，
-        // 不受 --request-delay 影响）
-        std::vector<std::string> candidate_urls;
-        for (const auto &p : problems)
-            for (const auto &url : p.image_urls())
-                candidate_urls.push_back(url);
-        if (export_solutions)
-        {
-            for (const auto &item : opt.solutions->items)
-                for (const auto &view : item.solutions)
-                    for (const auto &url : image_util::extract_urls(view.content))
-                        candidate_urls.push_back(url);
-        }
-        if (export_articles)
-        {
-            for (const auto &view : opt.articles->items)
-                for (const auto &url : image_util::extract_urls(view.content))
-                    candidate_urls.push_back(url);
-        }
-        for (const auto &url : candidate_urls)
-        {
-            // 视频等非图片链接不算“未下载的图片”
-            if (!looks_like_url(url) || is_video_url(url))
-                continue;
-            if (seen_missing.count(url))
-                continue;
-            if (opt.new_download ||
-                !std::filesystem::exists(crawler::image_cache_path(url), ec) || ec)
-            {
-                seen_missing.insert(url);
-                missing.push_back(url);
-            }
-        }
-    }
-    if (!missing.empty())
-    {
-        if (opt.new_download)
-            std::printf("筛选出的题目共引用了 %zu 张图片；-RD, --new-download 将全部重新下载"
-                        "（下载失败时保留原有缓存）。\n现在下载吗？[y/N] ", missing.size());
-        else
-            std::printf("筛选出的题目共引用了 %zu 张尚未下载的图片。\n现在下载吗？[y/N] ", missing.size());
-        fflush(stdout);
-        char answer_buf[16];
-        if (!fgets(answer_buf, sizeof(answer_buf), stdin))
-            answer_buf[0] = '\0';
-        std::string answer(answer_buf);
-        if (!answer.empty() && (answer[0] == 'y' || answer[0] == 'Y'))
-        {
-            const crawler::derror download_result =
-                crawler::download_images(missing, opt.new_download);
-            if (download_result != crawler::SUCCESS)
-            {
-                if (opt.new_download)
-                    std::printf("部分图片重新下载失败；原有缓存保持不变，"
-                                "仍然缺失的图片将在编译时被跳过（\\IfFileExists）。\n");
-                else
-                    std::printf("部分图片下载失败；缺失的图片将在编译时被跳过"
-                                "（\\IfFileExists）。\n");
-            }
-        }
-        else
-        {
-            std::printf("已跳过下载；缺失的图片将在编译时被跳过"
-                        "（\\IfFileExists）。\n");
-        }
-    }
-
-    // 逐题渲染用的显示选项：语言以筛选参数为准，其余（标签/难度/目录着色
-    // 等显示开关）沿用本次导出的设置
-    Options opt_lang = opt;
-    opt_lang.lang = filter.lang;
-
-    // 输出采用“临时文件 + fsync + rename”的原子写：
-    // 导出中途崩溃/失败不会留下半截 .tex 覆盖旧文件
-    const std::filesystem::path tmp_path =
-        luogu::compat::temp_sibling_path(output_path);
-    FILE *out = luogu::compat::fopen(tmp_path, "w");
-    if (!out)
-    {
-        error = "无法打开输出文件 '" + luogu::compat::path_to_utf8(output_path) + "'";
-        return false;
-    }
+// 写出 LaTeX 文档前言：文档类、宏包、页眉页脚、题解与文章用的宏、封面标题
+// 与字体设置（\documentclass 到字体设置结束，不含 \begin{document}）。
+// doc_only（--doc-only）时不输出页眉标题，只保留页码。
+void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
+{
+    // 题解与文章用的宏只在本次导出确实包含它们时写出
+    const bool export_solutions =
+        opt.solutions != nullptr && opt.solution_export.enabled;
+    const bool export_articles =
+        opt.articles != nullptr && !opt.articles->items.empty();
 
     // openany：章节可在任意页开始，避免封面后的空页（book 默认章节
     // 从奇数页开始，\maketitle 之后紧跟 \chapter* 会留出一张空白页）
@@ -4987,10 +4874,19 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 
     std::fputs("\\pagestyle{fancy}\n", out);
     std::fputs("\\fancyhf{}\n", out);
-    std::fprintf(out, "\\fancyhead[LE]{%s}\n", page_in_head.c_str());
-    std::fprintf(out, "\\fancyhead[RE]{\\nouppercase{%s \\rightmark}}\n", head_fonts.c_str());
-    std::fprintf(out, "\\fancyhead[LO]{\\nouppercase{%s \\rightmark}}\n", head_fonts.c_str());
-    std::fprintf(out, "\\fancyhead[RO]{%s}\n", page_in_head.c_str());
+    // --doc-only：不输出页眉标题，只保留外侧页码
+    if (doc_only)
+    {
+        std::fprintf(out, "\\fancyhead[LE]{%s}\n", page_in_head.c_str());
+        std::fprintf(out, "\\fancyhead[RO]{%s}\n", page_in_head.c_str());
+    }
+    else
+    {
+        std::fprintf(out, "\\fancyhead[LE]{%s}\n", page_in_head.c_str());
+        std::fprintf(out, "\\fancyhead[RE]{\\nouppercase{%s \\rightmark}}\n", head_fonts.c_str());
+        std::fprintf(out, "\\fancyhead[LO]{\\nouppercase{%s \\rightmark}}\n", head_fonts.c_str());
+        std::fprintf(out, "\\fancyhead[RO]{%s}\n", page_in_head.c_str());
+    }
 
     // 标题字体分两套：
     // 1) 题目大标题（\section）：中文跟随 --set-font-title-zh-CN；未指定时
@@ -5304,10 +5200,16 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     // 正文/标题/代码 CJK 字体；本函数只负责在用户指定 --set-font-* 时覆盖，
     // 以及为代码块西文设置 Consolas -> Menlo -> DejaVu Sans Mono 回退链。
     latex::write_font_setup(out, opt);
+}
+} // namespace
 
-    std::fputs("\\begin{document}\n\n", out);
-    std::fputs("\\maketitle\n", out);
-
+namespace
+{
+// 写出目录页：章标题（\contentsname）+ \@starttoc；目录条目是否带超链接
+// 由 hyperref 的 linktoc 选项控制（对应 --no-toc-links）。
+// \hypertarget{luogotoc} 是页眉页码（--toc-backlinks）跳回目录页的目标锚点。
+void write_toc(FILE *out, const latex::Options &opt)
+{
     // 目录：设置标题字体时，目录页中的题目标题同样使用对应字体
     std::string toc_open, toc_close;
     if (!opt.font_title_zh.empty() || !opt.font_title_en.empty())
@@ -5338,6 +5240,161 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\makeatother\n", out);
     std::fputs((toc_close + "\n").c_str(), out);
     std::fputs("\\newpage\n", out);
+}
+} // namespace
+
+namespace
+{
+// 检查文档引用的图片是否都在缓存中；缺失时在终端用中文询问是否下载。
+// 同一 URL 去重，避免重复下载与并发写同一缓存文件。
+// new_download（-RD, --new-download）时全部重新下载（原子替换缓存中的同名文件）。
+// subject 为中文提示里的主语（如「筛选出的题目」「本地 Markdown 文件」）。
+void offer_missing_images(const std::vector<std::string> &candidate_urls,
+                          bool new_download, const std::string &subject)
+{
+    std::vector<std::string> missing;
+    std::set<std::string> seen_missing;
+    std::error_code ec;
+    for (const auto &url : candidate_urls)
+    {
+        // 视频等非图片链接不算“未下载的图片”
+        if (!looks_like_url(url) || is_video_url(url))
+            continue;
+        if (seen_missing.count(url))
+            continue;
+        if (new_download ||
+            !std::filesystem::exists(crawler::image_cache_path(url), ec) || ec)
+        {
+            seen_missing.insert(url);
+            missing.push_back(url);
+        }
+    }
+    if (missing.empty())
+        return;
+
+    if (new_download)
+        std::printf("%s共引用了 %zu 张图片；-RD, --new-download 将全部重新下载"
+                    "（下载失败时保留原有缓存）。\n现在下载吗？[y/N] ",
+                    subject.c_str(), missing.size());
+    else
+        std::printf("%s共引用了 %zu 张尚未下载的图片。\n现在下载吗？[y/N] ",
+                    subject.c_str(), missing.size());
+    fflush(stdout);
+    char answer_buf[16];
+    if (!fgets(answer_buf, sizeof(answer_buf), stdin))
+        answer_buf[0] = '\0';
+    const std::string answer(answer_buf);
+    if (!answer.empty() && (answer[0] == 'y' || answer[0] == 'Y'))
+    {
+        const crawler::derror download_result =
+            crawler::download_images(missing, new_download);
+        if (download_result != crawler::SUCCESS)
+        {
+            if (new_download)
+                std::printf("部分图片重新下载失败；原有缓存保持不变，"
+                            "仍然缺失的图片将在编译时被跳过（\\IfFileExists）。\n");
+            else
+                std::printf("部分图片下载失败；缺失的图片将在编译时被跳过"
+                            "（\\IfFileExists）。\n");
+        }
+    }
+    else
+    {
+        std::printf("已跳过下载；缺失的图片将在编译时被跳过"
+                    "（\\IfFileExists）。\n");
+    }
+}
+} // namespace
+
+bool latex::export_latex(const luogu::ExportFilter &filter,
+                         const std::filesystem::path &output_path,
+                         std::string &error,
+                         const Options &opt,
+                         const luogu::ProblemSelection *preselected)
+{
+    error.clear();
+
+    // 挂上本次导出的显示选项：行内转换（如 bilibili 链接）据此判断，
+    // 函数返回（含提前返回）时自动还原
+    OptionsGuard options_guard(&opt);
+
+    // 筛选（-M / -L 共用），结果已按题号排序。
+    // 题解流程已筛选过一次时直接复用（preselected），避免重复解析题目列表缓存
+    std::vector<problem::Problem> local_problems;
+    std::vector<std::string> resolved_tags;
+    if (preselected)
+    {
+        local_problems = preselected->problems;
+        resolved_tags = preselected->resolved_tags;
+    }
+    else if (!luogu::select_problems(filter, local_problems, &resolved_tags, error))
+    {
+        return false;
+    }
+    const std::vector<problem::Problem> &problems = local_problems;
+
+    // ---- 题解与文章导出（设计 §十）----
+    const bool export_solutions = opt.solutions != nullptr && opt.solution_export.enabled;
+    // --article 的文章：与题解同文件、同级别，统一放在文档最后
+    const bool export_articles = opt.articles != nullptr && !opt.articles->items.empty();
+    const bool articles_only = export_solutions && opt.solution_export.articles_only;
+    const bool per_problem = export_solutions && !opt.solution_export.document_end;
+    if (export_solutions && articles_only &&
+        (opt.solution_export.problem_to_article_link ||
+         opt.solution_export.article_to_problem_link))
+    {
+        // --solutions-only 不导出题面，双向跳转按钮会指向不存在的锚点：
+        // 自动关闭以避免死链（只提示一次）
+        std::printf("提示：--solutions-only 模式下不导出题面，"
+                    "已关闭题目与题解之间的双向跳转按钮（避免死链）。\n");
+    }
+
+    // 检查图片是否都已下载到缓存；缺失时在终端用中文询问是否下载。
+    // 题面、题解正文与文章正文中引用的图片一并处理（题解与文章的图片同样走
+    // 现有的图片下载通道：洛谷图床串行 + 0.5~3 秒随机间隔，不受 --request-delay 影响）
+    {
+        std::vector<std::string> candidate_urls;
+        for (const auto &p : problems)
+            for (const auto &url : p.image_urls())
+                candidate_urls.push_back(url);
+        if (export_solutions)
+        {
+            for (const auto &item : opt.solutions->items)
+                for (const auto &view : item.solutions)
+                    for (const auto &url : image_util::extract_urls(view.content))
+                        candidate_urls.push_back(url);
+        }
+        if (export_articles)
+        {
+            for (const auto &view : opt.articles->items)
+                for (const auto &url : image_util::extract_urls(view.content))
+                    candidate_urls.push_back(url);
+        }
+        offer_missing_images(candidate_urls, opt.new_download, "筛选出的题目");
+    }
+    // 逐题渲染用的显示选项：语言以筛选参数为准，其余（标签/难度/目录着色
+    // 等显示开关）沿用本次导出的设置
+    Options opt_lang = opt;
+    opt_lang.lang = filter.lang;
+
+    // 输出采用“临时文件 + fsync + rename”的原子写：
+    // 导出中途崩溃/失败不会留下半截 .tex 覆盖旧文件
+    const std::filesystem::path tmp_path =
+        luogu::compat::temp_sibling_path(output_path);
+    FILE *out = luogu::compat::fopen(tmp_path, "w");
+    if (!out)
+    {
+        error = "无法打开输出文件 '" + luogu::compat::path_to_utf8(output_path) + "'";
+        return false;
+    }
+
+    write_preamble(out, opt, /*doc_only=*/false);
+
+
+    std::fputs("\\begin{document}\n\n", out);
+    std::fputs("\\maketitle\n", out);
+
+    write_toc(out, opt);
 
     std::fputs("\n\n", out);
 
@@ -5495,6 +5552,195 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         return false;
     }
     // 落盘并 fsync 后原子替换目标文件；失败时清理临时文件
+    if (!luogu::compat::flush_and_sync(out) || std::fclose(out) != 0)
+    {
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
+        return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp_path, output_path, ec);
+    if (ec)
+    {
+        std::filesystem::remove(tmp_path, ec);
+        error = "无法把输出文件写入 '" + luogu::compat::path_to_utf8(output_path) +
+                "': " + ec.message();
+        return false;
+    }
+    return true;
+}
+
+namespace
+{
+// 按一级标题（Markdown 的 #）把内容切成若干段：每段从下一个一级标题开始，
+// 供 --paginate 在「每处一级标题」之前换页。代码围栏（``` / ~~~）内部的 #
+// 不是标题（与渲染器的判定保持一致），不参与切分。
+std::vector<std::string> split_by_h1(const std::string &markdown)
+{
+    std::vector<std::string> sections;
+    std::string current;
+    char fence = 0; // 当前代码围栏字符（` 或 ~），0 表示不在代码块内
+    size_t fence_len = 0;
+    size_t start = 0;
+    for (;;)
+    {
+        const size_t nl = markdown.find('\n', start);
+        const std::string line =
+            (nl == std::string::npos) ? markdown.substr(start)
+                                      : markdown.substr(start, nl - start);
+        const std::string trimmed = trim(line);
+
+        // 一级标题：# 后面是空格或行尾（且不在代码块内）
+        bool is_h1 = false;
+        if (fence == 0 && !trimmed.empty() && trimmed[0] == '#')
+        {
+            size_t n = 0;
+            while (n < trimmed.size() && trimmed[n] == '#')
+                ++n;
+            is_h1 = (n == 1 && (n == trimmed.size() || trimmed[n] == ' '));
+        }
+        // 当前段已有内容时，一级标题另起一段；开头（或只有空行）时不切
+        if (is_h1 &&
+            current.find_first_not_of(" \t\r\n") != std::string::npos)
+        {
+            sections.push_back(current);
+            current.clear();
+        }
+        current += line;
+        if (nl != std::string::npos)
+            current += '\n';
+
+        // 代码围栏的开合（与渲染器一致：整行 trim 后以 ``` / ~~~ 开头）
+        if (fence != 0)
+        {
+            if (trimmed.size() >= fence_len &&
+                trimmed.compare(0, fence_len, std::string(fence_len, fence)) == 0)
+            {
+                fence = 0;
+                fence_len = 0;
+            }
+        }
+        else if (trimmed.size() >= 3 && (trimmed[0] == '`' || trimmed[0] == '~'))
+        {
+            size_t n = 0;
+            while (n < trimmed.size() && trimmed[n] == trimmed[0])
+                ++n;
+            if (n >= 3)
+            {
+                fence = trimmed[0];
+                fence_len = n;
+            }
+        }
+
+        if (nl == std::string::npos)
+            break;
+        start = nl + 1;
+    }
+    if (current.find_first_not_of(" \t\r\n") != std::string::npos ||
+        sections.empty())
+        sections.push_back(current);
+    return sections;
+}
+} // namespace
+
+bool latex::export_local_markdown(const std::filesystem::path &input_path,
+                                  const std::filesystem::path &output_path,
+                                  std::string &error, const Options &opt,
+                                  bool doc_only)
+{
+    error.clear();
+
+    // 本地 Markdown 的一级标题（#）就是本文档的章节标题：渲染成 \section，
+    // 从而进目录、写页眉（题面 / 题解正文里的 # 不受影响）
+    Options local_opt = opt;
+    local_opt.h1_as_section = true;
+    const Options &effective_opt = local_opt;
+    OptionsGuard options_guard(&local_opt);
+
+    // ---- 1. 读取本地文件 ----
+    // 编码自适应：BOM（UTF-8 / UTF-16 LE、BE / UTF-32 LE、BE）→ 严格 UTF-8
+    // 校验 → GB18030（GBK / GB2312）转码；统一成 UTF-8 并归一化换行，
+    // 生成的 .tex 才能被 xelatex + ctex 正确排版
+    std::string markdown;
+    if (!textenc::read_text_file_utf8(input_path, markdown, error))
+        return false;
+
+    // ---- 2. 文中引用的图片 ----
+    // 与题面、题解、文章走同一条通道：已在缓存中的直接引用，缺失时询问是否
+    // 下载（-RD, --new-download 时全部重新下载）
+    offer_missing_images(image_util::extract_urls(markdown), effective_opt.new_download,
+                         "本地 Markdown 文件");
+
+    // ---- 3. 输出：临时文件 + fsync + 原子替换 ----
+    const std::filesystem::path tmp_path =
+        luogu::compat::temp_sibling_path(output_path);
+    FILE *out = luogu::compat::fopen(tmp_path, "w");
+    if (!out)
+    {
+        error = "无法打开输出文件 '" + luogu::compat::path_to_utf8(output_path) + "'";
+        return false;
+    }
+
+    // 内容按字节数写出：含控制字符（源文件异常时）也不会被 C 字符串终止符截断
+    auto write_body = [&](const std::string &body) -> bool {
+        if (std::fwrite(body.data(), 1, body.size(), out) != body.size())
+        {
+            std::fclose(out);
+            std::error_code ec;
+            std::filesystem::remove(tmp_path, ec);
+            error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) +
+                    "' 失败";
+            return false;
+        }
+        return true;
+    };
+
+    // ---- 4. 封面与目录 ----
+    write_preamble(out, effective_opt, doc_only);
+    std::fputs("\\begin{document}\n\n", out);
+    if (doc_only)
+    {
+        // --doc-only：没有封面与目录页；页眉页码（--toc-backlinks）改为跳回
+        // 文档首页——在正文最前面放一个与目录页同名的锚点即可
+        std::fputs("\\hypertarget{luogotoc}{}\n", out);
+    }
+    else
+    {
+        std::fputs("\\maketitle\n", out);
+        write_toc(out, effective_opt);
+    }
+
+    // ---- 5. 正文 ----
+    // 一级标题（#）由 markdown_to_latex 渲染成 \section：进目录，同时把标题
+    // 写进 \rightmark（页眉）。--paginate 时每处一级标题另起一页；--doc-only
+    // 不换页，整篇连贯输出。
+    const bool paginate = effective_opt.paginate && !doc_only;
+    const std::vector<std::string> sections =
+        paginate ? split_by_h1(markdown) : std::vector<std::string>{markdown};
+    bool wrote_any = false;
+    for (size_t i = 0; i < sections.size(); ++i)
+    {
+        // 第一段之前不插换页：文档开头本来就是新一页的开始
+        if (i > 0 && wrote_any)
+            std::fputs("\\newpage\n", out);
+        if (!write_body(markdown_to_latex(sections[i]) + "\n"))
+            return false;
+        if (sections[i].find_first_not_of(" \t\r\n") != std::string::npos)
+            wrote_any = true;
+    }
+
+    // ---- 6. 收尾 ----
+    // 缺少 \end{document} 时 LaTeX 不会正常结束文档（目录 .toc 也写不出来）
+    std::fputs("\\end{document}\n", out);
+    if (std::ferror(out))
+    {
+        std::fclose(out);
+        std::error_code ec;
+        std::filesystem::remove(tmp_path, ec);
+        error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
+        return false;
+    }
     if (!luogu::compat::flush_and_sync(out) || std::fclose(out) != 0)
     {
         std::error_code ec;
