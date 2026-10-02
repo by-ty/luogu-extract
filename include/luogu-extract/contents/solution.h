@@ -19,13 +19,9 @@
 // License for more details.
 
 // include/luogu-extract/contents/solution.h
-// 题解抓取：题解列表（JSON 接口 + 分页）、正文获取（来源适配）。
-//
-// 三条硬约束（设计 §三）：
-// 1. 题解列表接口需要登录态，--cookie 是启用题解功能的前提；
-// 2. 题解列表恒取洛谷原站（保存站没有等价的「题目 → 题解列表」入口），
-//    --article-source 只决定正文来源；
-// 3. 列表一律走 JSON 接口，程序不解析任何题解列表页面的 HTML DOM。
+// 题解抓取：列表走 JSON 接口（需登录态，--cookie 是前提），正文按来源适配。
+// 列表恒取洛谷原站（保存站没有等价入口），--article-source 只决定正文来源；
+// 列表一律走 JSON 接口，程序不解析任何列表页面的 HTML DOM。
 #ifndef LUOGU_EXTRACT_CONTENTS_SOLUTION_H
 #define LUOGU_EXTRACT_CONTENTS_SOLUTION_H
 
@@ -37,7 +33,7 @@
 
 namespace solution
 {
-    /// 题解列表中的一条摘要（字段容错：未知/缺失一律取默认值，不抛异常）
+    /// 题解列表摘要（未知/缺失字段一律取默认值，不抛异常）
     struct Summary
     {
         std::string lid, title;
@@ -52,10 +48,8 @@ namespace solution
 
     /// 正文来源：官方原站 / 保存站（第三方镜像）/ 自动（两者并用）
     ///
-    /// Auto 只影响「这次去哪里抓」：已经在缓存里的题解一律直接用
-    /// （两个来源都有时优先原站），未命中的按原站、保存站轮流分配，
-    /// 两条通道并行抓取，各自计算延时与限流等待。缓存仍按实际来源入键，
-    /// 因此 Auto 不是缓存键。
+    /// Auto 只影响本次去哪里抓（已有缓存一律直接用，两个来源都有时优先原站）；
+    /// 缓存按实际来源入键，因此 Auto 不是缓存键。
     enum class Source
     {
         Official,
@@ -64,19 +58,18 @@ namespace solution
     };
 
     const char *source_display_name(Source src); // 洛谷原站 / 洛谷保存站 / 自动
-    const char *source_key(Source src);          // official / save（用于缓存文件名）
+    const char *source_key(Source src);          // official / save（缓存文件名用）
     bool source_from_key(const std::string &key, Source &out);
 
-    /// Auto 模式下每条抓取通道对应的具体来源与通道号
+    /// Auto 模式下每条通道对应的具体来源与通道号
     crawler::Channel channel_of(Source src);
     Source site_of(crawler::Channel ch);
 
-    /// lid 白名单校验：仅接受 [a-z0-9]{6,32}。
-    /// lid 来自网络数据，可能被构造成 "../../x"，必须在使用前校验；
-    /// 不匹配的条目一律丢弃并告警（防路径穿越）。
+    /// lid 白名单：仅 [a-z0-9]{6,32}。lid 来自网络，可能被构造成 "../../x"，
+    /// 不匹配者一律丢弃并告警（防路径穿越）。
     bool valid_lid(const std::string &lid);
 
-    /// 列表接口的最大页数保护（避免异常响应导致无限翻页）
+    /// 列表接口最大页数（防异常响应导致无限翻页）
     const int kMaxListPages = 50;
 
     /// 单页解析结果
@@ -84,14 +77,13 @@ namespace solution
     {
         std::vector<Summary> items;
         int per_page = 0;          // perPage / pageSize
-        int total = 0;             // count / totalCount（缺失时为 0）
-        bool structure_ok = false; // 是否找到了承载题解数组的字段
+        int total = 0;             // count / totalCount（缺失为 0）
+        bool structure_ok = false; // 是否找到承载题解数组的字段
         std::string error;
     };
 
-    /// 解析题解列表接口的响应体（顶层结构容错：
-    /// {"currentData":{…}} 与 {"status":200,"data":{…}} 两种形态都尝试，
-    /// 数组字段优先 solutions，其次 result）。
+    /// 解析列表响应（顶层兼容 {"currentData":{…}} 与 {"status":200,"data":{…}}，
+    /// 数组字段优先 solutions，其次 result）
     ListPage parse_list_page(const std::string &body, int page);
 
     /// 列表抓取结果
@@ -110,10 +102,8 @@ namespace solution
         std::string error;
     };
 
-    /// 抓取题解列表。
-    /// @param pid  题目编号
-    /// @param need 需要的篇数；< 0 表示全部（受 kMaxListPages 与每题上限保护）
-    /// @param etag 上次的 ETag（非空时发条件请求，命中 304 时 not_modified 为 true）
+    /// 抓取题解列表：need < 0 表示全部（受 kMaxListPages 与每题上限保护）；
+    /// etag 非空时发条件请求，命中 304 则 not_modified 为 true
     ListFetch fetch_list(const std::string &pid, int need, const std::string &etag);
 
     /// 正文抓取结果
@@ -132,10 +122,9 @@ namespace solution
         long http_status = 0;
     };
 
-    /// 按来源抓取一篇题解正文（src 必须是具体来源 Official / Save）。
-    /// - official：洛谷原站 /article/<lid>（带 Cookie）；
-    /// - save：保存站 markdown 接口（第三方镜像，不发送任何 Cookie）。
-    /// ch 指定请求闸门通道：两条通道各自计算延时、限流等待与放弃状态。
+    /// 按来源抓取正文（src 必须是具体来源 Official / Save）：official 走原站
+    /// /article/<lid>（带 Cookie），save 走保存站 markdown 接口（不发任何 Cookie）。
+    /// ch 指定请求闸门通道，两条通道各自计算延时与限流等待。
     ArticleFetch fetch_article(Source src, const std::string &lid,
                                const std::string &etag,
                                crawler::Channel ch = crawler::Channel::Official);
@@ -143,10 +132,10 @@ namespace solution
     /// 单篇正文上限（2 MB）：超限截断并标记 content_full=false
     const size_t kMaxArticleBytes = 2 * 1024 * 1024;
 
-    /// 解析洛谷原站的正文 JSON（data.article）
+    /// 解析原站正文 JSON（data.article）
     bool parse_official_article(const std::string &body, article::Article &out,
                                 std::string &error);
-    /// 解析保存站的正文 JSON（data.content 为 markdown 原文）
+    /// 解析保存站正文 JSON（data.content 为 markdown 原文）
     bool parse_save_article(const std::string &body, article::Article &out,
                             std::string &error);
 } // namespace solution

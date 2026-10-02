@@ -20,14 +20,9 @@
 
 // include/luogu-extract/crawler/request_gate.h
 // 请求闸门：题解相关请求的串行节流、限流检测与暂停重试、凭据通道。
-//
-// 覆盖范围（设计 §6.1）：
-// - 受控：题解列表接口（含分页）、题解正文（原站 / 保存站）；
-// - 不受控：题目列表 latest.ndjson.gz、标签接口、题面页面、图片下载、
-//   字体与本地操作（图片仍为洛谷图床串行 + 0.5~3 秒随机间隔）。
-//
-// 限流处理只做两件事：等待或停止。不换域名硬冲、不降低延时重试、
-// 不使用代理池、不伪造指纹、不绕验证码。
+// 受控：题解列表（含分页）与题解正文；不受控：题目列表、标签接口、题面页面、
+// 图片下载与本地操作（图片另有洛谷图床串行 + 0.5~3 秒随机间隔）。
+// 限流只做等待或停止，不换域名硬冲、不降延时重试、不绕风控。
 #ifndef LUOGU_EXTRACT_CRAWLER_REQUEST_GATE_H
 #define LUOGU_EXTRACT_CRAWLER_REQUEST_GATE_H
 
@@ -47,9 +42,8 @@ namespace crawler
         Other,           // 其它（本闸门不干预）
     };
 
-    /// 端点配置。默认走洛谷原站与洛谷保存站（第三方镜像）；
-    /// 环境变量 LUOGU_EXTRACT_BASE_OFFICIAL / LUOGU_EXTRACT_BASE_SAVE
-    /// 可用于把端点指向本地 mock 服务器（测试用，帮助文本中不列出）。
+    /// 端点配置。可用环境变量 LUOGU_EXTRACT_BASE_OFFICIAL /
+    /// LUOGU_EXTRACT_BASE_SAVE 指向本地 mock 服务器（测试用，帮助文本不列出）
     struct Endpoints
     {
         std::string official_base = "https://www.luogu.com.cn";
@@ -64,13 +58,11 @@ namespace crawler
         long max_ms = 6500;
     };
 
-    /// 解析 --request-delay 的值：
-    /// "5"（均值，实际为 ±30% 均匀抖动）、"2.5"（支持小数）、
-    /// "8-15"（显式闭区间，不做均值换算）。
-    /// 校验：必须为正数；区间需满足 0 < min ≤ max；单项上限 300 秒。
+    /// 解析 --request-delay："5"（均值，±30% 抖动）、"2.5"（小数）、
+    /// "8-15"（闭区间）。要求正数、0 < min ≤ max、单项上限 300 秒
     bool parse_delay_spec(const std::string &spec, DelaySpec &out, std::string &error);
 
-    /// 自动递增系数（设计 §6.3）：按本次运行的实际网络请求数 Np 定档
+    /// 延时自动递增系数：按本次运行的实际请求数 Np 定档
     double auto_scale_for(long long planned_requests);
 
     /// 闸门配置
@@ -81,10 +73,8 @@ namespace crawler
         int rate_limit_wait_sec = 120;    // --rate-limit-wait（0 = 检测到限流直接停止）
         int max_rate_limit_rounds = 2;    // 一次运行内最多触发的等待轮数
         long timeout_sec = 60;            // 单次请求超时
-        // 命中限流时是否在闸门内部交互式等待并重试：
-        // - true（默认，单来源模式）：打印暂停提示，等待后重试当前请求；
-        // - false（auto 两站点并行模式）：立即返回「被限流」，由调度器把该站点
-        //   暂时下线、把任务重新分配给另一个站点
+        // 命中限流时是否在闸门内交互式等待并重试：true（单来源）等待后重试；
+        // false（auto 并行）立即返回被限流，由调度器把该站点下线并转给另一站点
         bool interactive_retry = true;
     };
 
@@ -97,36 +87,34 @@ namespace crawler
     };
     const int kChannelCount = 2;
 
-    /// 计划阶段调用：设定延时配置并一次性算定自动递增系数，
-    /// 运行期保持恒定（行为可预测、可复现、可打印）。
-    /// 单参数版本配置原站通道（单来源模式下的唯一通道）。
+    /// 计划阶段配置延时并一次算定自动递增系数，运行期保持恒定（可复现、可打印）。
+    /// 单参数版本配置原站通道（单来源模式下的唯一通道）
     void gate_configure(const GateConfig &cfg, long long planned_requests);
     void gate_configure_channel(Channel ch, const GateConfig &cfg,
                                 long long planned_requests);
 
-    /// 计划阶段拿到更精确的请求数后重新设定它（只重算自动递增系数，
-    /// 不清空限流等待轮数与已生效的额外放大）
+    /// 拿到更精确的请求数后重算自动递增系数（不清空限流等待轮数与已生效的放大）
     void gate_set_planned_requests(long long planned_requests);
     void gate_set_planned_requests(Channel ch, long long planned_requests);
 
-    /// 生效延时的区间（毫秒）与均值（秒）。含自动递增系数与限流后的额外放大。
+    /// 生效延时区间（毫秒）与均值（秒），含自动递增系数与限流后的额外放大
     std::pair<long, long> gate_effective_delay_ms(Channel ch = Channel::Official);
     double gate_effective_delay_seconds(Channel ch = Channel::Official);
     double gate_scale(Channel ch = Channel::Official);  // 含限流后的 1.5 倍放大
     bool gate_scale_boosted();  // 本次运行是否已因限流放大过
 
-    // ---- 限流记账（auto 模式的两站点调度器使用）----
+    // 限流记账（auto 模式调度器使用）
 
     /// 一次「疑似限流」的结果
     struct ChannelLimitInfo
     {
-        bool abandoned = false;  // 连续限流达到 3 次，本通道已放弃
+        bool abandoned = false;  // 连续限流达 3 次，本通道已放弃
         long wait_ms = 0;        // 本通道需要等待多久（0 表示不必等待）
-        std::string reason;      // 原因描述
+        std::string reason;
     };
 
-    /// 记录一次限流：连续计数 +1，达到 3 次即放弃该通道；
-    /// 否则设置该通道的等待截止时间（等待期间任务会临时转给另一通道）
+    /// 记录一次限流：连续计数 +1，达 3 次即放弃该通道；
+    /// 否则设置该通道的等待截止时间（等待期间任务临时转给另一通道）
     ChannelLimitInfo gate_note_rate_limit(Channel ch, const std::string &reason);
 
     /// 记录一次成功（连续限流计数清零）
@@ -148,15 +136,14 @@ namespace crawler
     /// 是否两个通道都被放弃（auto 模式下应当终止下载）
     bool gate_all_channels_abandoned();
 
-    /// 打印一行「延时自动提升」的说明（未提升时打印基础区间）
+    /// 打印一行「延时自动提升」说明（未提升时打印基础区间）
     void gate_print_delay_notice(long long planned_requests);
 
-    /// 按请求类别等待请求间隔（同一条通道内串行）。
-    /// 等待可被用户打断：按 S 立即停止（返回 false），按 C 跳过剩余等待。
-    /// @return false 表示用户要求立即停止本次抓取
+    /// 按请求类别等待间隔（同一通道内串行）。等待可被用户打断：
+    /// 按 S 立即停止（返回 false），按 C 跳过剩余等待
     bool gate_wait(RequestClass cls, Channel ch = Channel::Official);
 
-    // ---- 凭据通道 ----
+    // 凭据通道
 
     /// 载入 Netscape 格式 cookies.txt
     bool gate_load_cookies(const std::filesystem::path &file, std::string &error,
@@ -165,14 +152,14 @@ namespace crawler
     bool gate_set_cookie_string(const std::string &text, std::string &error);
     size_t gate_cookie_count();
     bool gate_has_cookies();
-    /// 清空凭据：内存 jar、提示用的文件名，以及两个请求句柄里 libcurl
-    /// Cookie 引擎已装入的全部 Cookie（引擎保持启用，可继续收下发 Cookie）
+    /// 清空内存 jar、提示用文件名，以及两个请求句柄里 libcurl 已装入的 Cookie
+    /// （引擎保持启用，可继续收下发 Cookie）
     void gate_clear_cookies();
 
     /// Cookie 文件路径（仅用于错误提示，绝不打印内容）
     std::string gate_cookie_file_hint();
 
-    // ---- 请求执行 ----
+    // 请求执行
 
     enum class RequestStatus
     {
@@ -209,9 +196,8 @@ namespace crawler
         int attempts = 0;    // 实际发出的请求次数（含重试）
     };
 
-    /// 经请求闸门发起一次 GET：
-    /// 延时等待（可中断）→ 请求 → 限流判定 → 命中则暂停并重试一次
-    /// （interactive_retry 为 false 时直接返回 RateLimited，交给调度器处理）。
+    /// 经请求闸门发起一次 GET：延时等待（可中断）→ 请求 → 限流判定 →
+    /// 命中则暂停并重试一次（interactive_retry=false 时直接返回 RateLimited）
     RequestResult http_get(const RequestOptions &opt, RequestClass cls,
                            Channel ch = Channel::Official);
 
@@ -222,12 +208,11 @@ namespace crawler
     void gate_request_stop(const std::string &reason = "");
     /// 是否因限流而中止（退出码非 0）
     bool gate_rate_limited_out();
-    /// 最近一次限流的原因描述（用于汇总；与 gate_channel_limit_reason 一样返回拷贝）
+    /// 最近一次限流原因（返回拷贝，同 gate_channel_limit_reason）
     std::string gate_rate_limit_reason();
 
     /// 清空本次运行的停止/限流状态与各通道的限流计数、放弃标志、限流放大
-    /// （不影响 Cookie 与延时配置）。
-    /// 同一进程内多次执行 app::run（交互模式）时应在其入口调用
+    /// （不影响 Cookie 与延时配置）。交互模式多次执行 app::run 时应在入口调用
     void gate_reset_state();
 } // namespace crawler
 

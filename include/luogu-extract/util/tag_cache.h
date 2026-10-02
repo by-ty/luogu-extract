@@ -28,7 +28,7 @@
 
 namespace tagcache
 {
-    // 去掉 UTF-8 BOM（\xEF\xBB\xBF），官方数据里个别名称带该字符
+    // 去掉 UTF-8 BOM（\xEF\xBB\xBF）；官方数据里个别名称带该字符
     inline std::string strip_bom(std::string s)
     {
         const std::string bom = "\xEF\xBB\xBF";
@@ -38,12 +38,11 @@ namespace tagcache
         return s;
     }
 
-    // 标签缓存（由 -U 生成的 tags.json 加载而来）
-    // 兼容旧格式 {"<id>": "<名称>"} 与新格式 {"<id>": {"name": ..., "type": ...}}
+    // 标签缓存（由 -U 生成的 tags.json 加载）；兼容旧格式 {"<id>": "<名称>"} 与新格式（含 type）
     struct Cache
     {
-        std::unordered_map<int, std::string> id_to_name;     // 标签 ID -> 中文名
-        std::unordered_map<std::string, int> name_to_id;     // 中文名 -> 标签 ID
+        std::unordered_map<int, std::string> id_to_name;
+        std::unordered_map<std::string, int> name_to_id;
         std::unordered_map<std::string, int> name_to_type;   // 中文名 -> 官方分类 type
 
         // 从指定路径加载；成功且至少有一条记录时返回 true
@@ -53,15 +52,13 @@ namespace tagcache
         bool load_from_cache_dir();
     };
 
-    // 进程内共享的标签缓存：第一次调用时从缓存目录读取并解析一次 tags.json，
-    // 之后所有调用直接复用同一份数据，避免每处理一道题就重复读文件。
+    // 进程内共享的标签缓存：首次调用解析一次 tags.json，之后复用，避免每题重复读文件
     const Cache &shared_cache();
 
-    // tags.json 是否成功加载过（用于区分“缓存缺失”与“空缓存”）
+    // tags.json 是否成功加载过（区分"缓存缺失"与"空缓存"）
     bool shared_cache_loaded();
 
-    // 重新从磁盘加载共享缓存（更新缓存 -U 或清理缓存 -C 之后调用）。
-    // 缓存对象原地重载，shared_cache() 之前返回的引用仍然有效。
+    // 重新从磁盘加载共享缓存（-U 更新或 -C 清理后调用）；原地重载，先前的引用仍有效
     void reset_shared_cache();
 }
 

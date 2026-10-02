@@ -46,7 +46,6 @@ void print_warning(const std::string &message)
     std::fflush(stdout);
 }
 
-// 安全的字符串取值：类型不符或缺失时返回默认值
 std::string str_value(const json &obj, const char *key, const std::string &fallback = "")
 {
     if (!obj.is_object() || !obj.contains(key))
@@ -85,9 +84,7 @@ long long ll_value(const json &obj, const char *key, long long fallback = 0)
     return fallback;
 }
 
-// 在若干候选路径中找到承载题解数组的那一支：
-// - 顶层可能是 {"data":{…}}，也可能是 {"currentData":{…}}；
-// - 数组字段优先 solutions，其次 result。
+// 定位题解数组：顶层可能是 data 或 currentData，数组字段优先 solutions 再 result（含嵌套形态）
 bool locate_solutions(const json &root, const json *&array_out, const json *&holder_out)
 {
     std::vector<const json *> candidates;
@@ -110,7 +107,6 @@ bool locate_solutions(const json &root, const json *&array_out, const json *&hol
             if (!cand->contains(key))
                 continue;
             const json &value = (*cand)[key];
-            // {"solutions": {"result": [...]}} 与 {"solutions": [...]} 都支持
             if (value.is_array())
             {
                 array_out = &value;
@@ -140,7 +136,7 @@ bool locate_solutions(const json &root, const json *&array_out, const json *&hol
     return false;
 }
 
-// 已经带了 Cookie 却仍被判为未登录时的补充提示（Cookie 过期）
+// 已带 Cookie 却仍被判未登录时的补充提示（Cookie 过期）
 std::string cookie_hint()
 {
     if (crawler::gate_has_cookies())
@@ -148,7 +144,6 @@ std::string cookie_hint()
     return "";
 }
 
-// 是否为 HTML（列表接口在未登录/风控时会返回 HTML 页面）
 bool looks_like_html(const std::string &body)
 {
     std::string head = body.substr(0, 512);
@@ -246,7 +241,6 @@ solution::ListPage solution::parse_list_page(const std::string &body, int page)
     }
     out.structure_ok = true;
 
-    // 分页信息：优先 count/totalCount 与 perPage/pageSize
     if (holder)
     {
         out.total = int_value(*holder, "count", int_value(*holder, "totalCount", 0));
@@ -274,9 +268,7 @@ solution::ListPage solution::parse_list_page(const std::string &body, int page)
         }
         if (item.contains("solutionFor") && item["solutionFor"].is_object())
         {
-            // 接口中 solutionFor 承载的是所属题目信息：difficulty 为题目难度，
-            // type 是题库类型字符串（"P"/"B"…）而非数值，故 solution_type
-            // 保持默认值 0（字段容错：未知/缺失一律取默认值，不抛异常）。
+            // solutionFor 是所属题目信息：difficulty 为题目难度；type 是 "P"/"B" 等字符串而非数值，故 solution_type 保持 0
             s.difficulty = int_value(item["solutionFor"], "difficulty");
         }
 
@@ -292,7 +284,7 @@ solution::ListPage solution::parse_list_page(const std::string &body, int page)
     }
 
     if (out.items.empty() && out.total == 0)
-        out.total = 0; // 结构可解析且为空数组 = 该题确实没有题解
+        out.total = 0; // 空数组 = 该题确实没有题解
     return out;
 }
 
@@ -375,16 +367,14 @@ solution::ListFetch solution::fetch_list(const std::string &pid, int need,
         for (auto &item : parsed.items)
         {
             if (!seen.insert(item.lid).second)
-                continue; // 按 lid 去重，保持接口返回顺序
+                continue;
             result.items.push_back(std::move(item));
         }
 
-        // 该页没有内容（空数组）或返回条目不足一页 → 已到最后一页
         if (parsed.items.empty() || before < static_cast<size_t>(parsed.per_page))
             break;
         if (!want_all && static_cast<int>(result.items.size()) >= need)
             break;
-        // 已知总数时按总数收敛
         if (result.total_available > 0 &&
             static_cast<int>(result.items.size()) >= result.total_available)
             break;
@@ -406,7 +396,7 @@ solution::ArticleFetch solution::fetch_article(Source src, const std::string &li
                                                const std::string &etag,
                                                crawler::Channel ch)
 {
-    // Auto 不是具体站点：这里必须已经由调度器决定落到哪个站点
+    // Auto 不是具体站点，必须已由调度器决定落到哪个站点
     if (src == Source::Auto)
         src = Source::Official;
     ArticleFetch result;
@@ -415,7 +405,7 @@ solution::ArticleFetch solution::fetch_article(Source src, const std::string &li
     crawler::RequestOptions opt;
     if (src == Source::Save)
     {
-        // 保存站（第三方镜像）：纯 markdown 直取，不发送任何 Cookie
+        // 保存站：纯 markdown 直取，不发送任何 Cookie
         opt.url = ep.save_base + "/article/query/" + lid;
         opt.send_cookie = false;
         opt.json_content_only = false;
@@ -476,7 +466,7 @@ solution::ArticleFetch solution::fetch_article(Source src, const std::string &li
     }
     else if (looks_like_html(response.body))
     {
-        // 兼容形态：接口未返回 JSON 时退回解析页面内嵌的 lentille-context
+        // 接口未返回 JSON 时退回解析页面内嵌的 lentille-context
         result.article = article::Article(response.body);
         parsed = !result.article.content.empty();
         if (!parsed)
@@ -529,7 +519,7 @@ bool solution::parse_official_article(const std::string &body, article::Article 
         if (!root.contains("data") || !root["data"].is_object() ||
             !root["data"].contains("article"))
         {
-            // 未登录等错误模板会带 status/errorType
+            // 未登录错误模板会带 status=401
             if (root.contains("status") && root["status"].is_number_integer() &&
                 root["status"].get<int>() == 401)
             {
@@ -543,8 +533,7 @@ bool solution::parse_official_article(const std::string &body, article::Article 
     }
     catch (const std::exception &e)
     {
-        // 兜底：字段类型不符等异常绝不能逃出抓取线程
-        // （auto 模式下本函数运行在 std::thread 里，未捕获异常会直接 terminate）
+        // 兜底：字段类型不符等异常绝不能逃出抓取线程（auto 模式下本函数运行在 std::thread 里）
         error = std::string("题解数据字段异常：") + e.what();
         return false;
     }

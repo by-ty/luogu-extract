@@ -56,10 +56,8 @@ std::string safe_string(const json &j, const char *key)
     return j[key].get<std::string>();
 }
 
-// 按显示开关从题目标签中筛出要输出的标签：
-// 算法（官方 type 2）标签仅在 show_algorithm 时显示，其余标签（来源、时间、
-// 区域、特殊题目等）仅在 show_others 时显示；结果保持缓存中的原顺序。
-// 标签类型来自 -U 生成的 tags.json，缓存缺失时按“非算法标签”处理。
+// 算法（官方 type 2）标签仅在 show_algorithm 时显示，其余标签（来源、时间、区域、
+// 特殊题目等）仅在 show_others 时显示；结果保持缓存原顺序，缺失 tags.json 时按非算法处理。
 std::vector<std::string> visible_tags(const std::vector<std::string> &tags,
                                       bool show_algorithm, bool show_others)
 {
@@ -85,12 +83,9 @@ std::vector<std::string> visible_tags(const std::vector<std::string> &tags,
     return out;
 }
 
-
-// 把远端文本压成单行：题号、标题、原文链接等来自缓存的数据可能夹带换行
-// （problem.cpp 的控制字符过滤保留了 \t \n \r），直接写进「# <题号> <标题>」
-// 这类由我们生成的单行结构会把标题断成两行，甚至凭空多出一个标题行。
-// 只替换换行与制表符，不转义 Markdown 特殊字符：正文仍按原文输出，
-// 避免破坏正常排版。
+// 把远端数据压成单行：缓存里的题号/标题/链接可能夹带 \t \n \r，直接写进
+// 「# <题号> <标题>」这类单行结构会断行甚至凭空多出标题；只替换这几类字符，
+// 不转义 Markdown 特殊字符（正文仍按原文输出）。
 std::string single_line(std::string text)
 {
     for (char &c : text)
@@ -99,12 +94,8 @@ std::string single_line(std::string text)
     return text;
 }
 
-// 输出一篇题解或文章（Markdown 侧，设计 §10.4）：
-// - 显式 HTML 锚点：中文标题的自动锚点在不同渲染器下不一致，必须显式指定；
-// - 题解 → 题目 的「返回题目」与 题目 → 题解 的「查看题解」两个开关独立；
-//   按文章下载的文章（--article）不与题目绑定，没有「返回题目」链接；
-// - 元信息块（来源 / 原文）由 --no-article-meta 关闭；
-// - 正文按洛谷 Markdown 原文输出（Markdown 侧既有语义）。
+// 输出一篇题解或文章：显式 HTML 锚点必须写（中文标题的自动锚点在各渲染器下不一致）；
+// 「返回题目」仅在题解绑定题目时输出；元信息块由 --no-article-meta 关闭，正文按原文输出。
 bool write_markdown_article(FILE *out,
                             const std::function<bool(const std::string &)> &write_str,
                             const std::function<bool()> &fail_write,
@@ -152,8 +143,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
 {
     error.clear();
 
-    // 筛选（-M / -L 共用），结果已按题号排序。
-    // 题解流程已筛选过一次时直接复用（preselected），避免重复解析题目列表缓存
+    // 筛选（-M / -L 共用，结果已按题号排序）；题解流程已筛过时直接复用 preselected
     std::vector<problem::Problem> local_problems;
     std::vector<std::string> resolved_tags;
     if (preselected)
@@ -167,15 +157,11 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
     }
     const std::vector<problem::Problem> &problems = local_problems;
 
-    // 显示开关（与 -L 共用同一组参数）：
-    // --show-difficulty-tags 显示难度（默认不显示）；
-    // --show-algorithm-tags 显示算法（type 2）标签（默认隐藏）；
-    // --no-show-source-tags 隐藏算法以外的标签（来源/时间/区域/特殊等，默认显示）
+    // 显示开关（与 -L 共用）：难度与算法（type 2）标签默认隐藏，其余标签默认显示
     const bool show_difficulty = display.difficulty;
     const bool use_en = (filter.lang == "en");
 
-    // 输出采用“临时文件 + fsync + rename”的原子写：
-    // 导出中途失败不会留下半截文件覆盖旧输出
+    // 原子写（临时文件 + fsync + rename）：中途失败不会用半截文件覆盖旧输出
     const std::filesystem::path tmp_path = luogu::compat::temp_sibling_path(output_path);
     FILE *out = luogu::compat::fopen(tmp_path, "w");
     if (!out)
@@ -184,8 +170,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         return false;
     }
 
-    // 把字符串内容按字节数完整写出：内容里意外出现 NUL 等控制字符时
-    // 不会被 C 字符串终止符静默截断（解析阶段已过滤控制字符，这里兜底）
+    // 按字节数完整写出：内容里若出现 NUL 也不会被 C 字符串终止符静默截断
     auto write_str = [&](const std::string &s) -> bool {
         return std::fwrite(s.data(), 1, s.size(), out) == s.size();
     };
@@ -197,21 +182,20 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         return false;
     };
 
-    // 题解导出相关（设计 §十）：题解与题面同文件，默认统一置于文档最后
     const bool with_solutions = solutions != nullptr && solution_export.enabled;
-    // --article 的文章（与题解同文件，统一放在文档最后）
+    // --article 的文章同样放在文档最后
     const bool with_articles = articles != nullptr && !articles->items.empty();
     size_t solution_total = 0;
     if (with_solutions)
         for (const auto &item : solutions->items)
             solution_total += item.solutions.size();
 
-    // 一级标题：--set-cover-title 指定时使用指定标题，否则用默认标题
+    // 一级标题：--set-cover-title 为空时用默认标题
     const std::string cover = cover_title.empty() ? "洛谷题目导出" : cover_title;
     std::string header_count;
     if (solution_export.articles_only)
     {
-        // --solutions-only：文档里没有题面，只统计题解与文章
+        // --solutions-only：文档没有题面，只统计题解与文章
         header_count = "共 " + std::to_string(solution_total) + " 篇题解";
         if (with_articles)
             header_count += "，" + std::to_string(articles->items.size()) + " 篇文章";
@@ -245,10 +229,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         return fail_write();
     std::fputs("\n\n", out);
 
-    // 渲染一道题的题面（难度 / 标签 / 时空限制 + 背景 / 描述 / 输入输出格式 /
-    // 样例 / 说明提示）。--solutions-only 只导出题解与文章、不导出题面，这时
-    // 不调用本函数（题解仍按题目顺序单独输出，见下方 per-problem 分支）。
-    // sol_set 为该题的题解（题面处的「查看题解」链接用），可为 nullptr。
+    // 渲染一道题的题面；sol_set 为该题题解（「查看题解」链接用），可为 nullptr。
     auto write_problem = [&](const problem::Problem &p,
                              const luogu::ProblemSolutionSet *sol_set) -> bool
     {
@@ -275,9 +256,8 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
             if (!en.empty()) hint = en;
         }
 
-        // B 站视频在题面里写作 ![](bilibili:221107) 这类图片语法，Markdown 里
-        // 会变成指向 bilibili: 伪协议的坏图；补全为指向视频网页的超链接
-        // （-L 的 --no-bilibili-link 仅对 LaTeX 生效，Markdown 始终输出链接）
+        // B 站视频的 ![](bilibili:...) 是坏图，补全为视频网页超链接
+        // （--no-bilibili-link 仅对 LaTeX 生效，Markdown 始终输出链接）
         background = luogu::markdown_bilibili_links(background);
         description = luogu::markdown_bilibili_links(description);
         formatI = luogu::markdown_bilibili_links(formatI);
@@ -288,8 +268,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         std::fprintf(out, "# %s %s\n\n", single_line(p.pid).c_str(),
                      single_line(title).c_str());
 
-        // 题面处的「查看题解」链接：目标为文末该题第一篇题解的显式锚点
-        // （中文标题的自动锚点在不同 Markdown 渲染器下不一致，必须显式指定）
+        // 「查看题解」指向该题第一篇题解的显式锚点（中文标题的自动锚点不可靠）
         if (with_solutions && solution_export.problem_to_article_link && sol_set &&
             !sol_set->solutions.empty())
         {
@@ -301,18 +280,14 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         if (show_difficulty)
             std::fprintf(out, "难度：%s\n\n", luogu::difficulty_label(p.difficulty));
 
-        // 标签：算法（type 2）标签默认隐藏（--show-algorithm-tags 时显示），
-        // 其余标签默认显示（--no-show-source-tags 时隐藏）；两类都不显示时
-        // 不输出「标签」一栏
+        // 标签：两类都不显示时不输出「标签」一栏（开关语义见 visible_tags）
         const std::vector<std::string> shown_tags =
             visible_tags(p.tags, display.algorithm_tags, display.source_tags);
         if (!shown_tags.empty())
             std::fprintf(out, "标签：%s\n\n",
                          single_line(join_strings(shown_tags, "、")).c_str());
 
-        // 时空限制：多组限制输出最小-最大范围；Markdown 用纯文本 "~"
-        // （format_limits 的 LaTeX 数学写法 $\sim$ 不适用于 Markdown）。
-        // 没有时空限制数据时不输出这两行
+        // 时空限制：Markdown 用纯文本 "~"（format_limits 的 $\sim$ 是 LaTeX 写法）
         const pss limits = luogu::format_limits(p.time, p.memory, false);
         if (!limits.first.empty() || !limits.second.empty())
         {
@@ -414,8 +389,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         }
     }
 
-    // --solution-placement document-end（默认）：题解统一置于文档最后，
-    // 每题一组、同题题解连续排列
+    // --solution-placement document-end（默认）：题解统一置于文档最后，同题连续
     if (with_solutions && solution_export.document_end)
     {
         std::fputs("---\n\n# 题解\n\n", out);
@@ -437,8 +411,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         }
     }
 
-    // --article：文章统一置于文档最后（同时下载题解与文章时，文章在题解之后）。
-    // 文章不与题目绑定，因此没有题目分组标题，也没有「返回题目」链接
+    // --article：文章置于文档最后（在题解之后），不与题目绑定，无「返回题目」链接
     if (with_articles)
     {
         std::fputs("---\n\n# 文章\n\n", out);
@@ -471,10 +444,8 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         return false;
     }
 
-    // 原子替换目标文件（覆盖已存在的旧输出）。
     // Windows 下必须用 compat::atomic_replace：MinGW-w64 的
-    // std::filesystem::rename 走 _wrename，目标已存在时会直接失败，
-    // 第二次导出同名文件就会报错（见 util/compat.h 的 atomic_replace）
+    // std::filesystem::rename 在目标已存在时直接失败（见 util/compat.h）
     std::string replace_error;
     if (!luogu::compat::atomic_replace(tmp_path, output_path, replace_error))
     {

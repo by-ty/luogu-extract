@@ -52,10 +52,7 @@ void print_warning(const std::string &message)
 
 long long now_seconds() { return static_cast<long long>(std::time(nullptr)); }
 
-// 该题本次打算抓取的篇数（含已命中缓存的部分）。
-// all（max_articles < 0）没有任何篇数上限：列表已知时就是全部可用篇数；
-// 列表未知时按一页（10 篇）估算，仅用于给请求闸门一个初步的延时系数——
-// all 模式下计划阶段会把列表抓全，随后用精确值重新计算。
+// 本次打算抓取的篇数（含缓存命中）：all（max_articles < 0）无上限，列表未知时按一页 10 篇估算（仅作请求闸门初步延时系数）
 int wanted_count(int max_articles, int available, bool known)
 {
     if (max_articles < 0)
@@ -65,19 +62,17 @@ int wanted_count(int max_articles, int available, bool known)
     return max_articles;
 }
 
-// 正文缓存是否可直接使用（未过期且完整、未要求强制刷新）。
-// 有效期由 --article-ttl 单独控制：默认无限，即正文一律优先用缓存
+// 正文缓存可直接使用：未强制刷新、内容完整且未过期（--article-ttl 默认无限 = 一律优先用缓存）
 bool doc_cache_usable(const solcache::DocEntry &doc, const solution::TaskOptions &opt)
 {
     if (opt.refresh_articles)
         return false;
     if (!doc.content_full || doc.content.empty())
-        return false; // 上次抓到的正文不完整：本次重抓
+        return false;
     return solcache::is_fresh(doc.fetched_at, opt.article_ttl_days);
 }
 
-// 列表缓存是否可直接使用。有效期由 --solution-ttl 单独控制：
-// 默认无限，即只要缓存里有列表就一直用
+// 列表缓存可直接使用：未强制刷新且未过期（--solution-ttl 默认无限 = 有缓存就一直用）
 bool list_cache_usable(const solcache::ListEntry &list, const solution::TaskOptions &opt)
 {
     if (opt.refresh_solutions)
@@ -120,12 +115,11 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
         }
         else
         {
-            // 需要重新获取列表（翻页数在抓取时才知道，按 1 页起步估算）
+            // 需重新抓列表（实际页数抓取时才知，先按 1 页估算）
             ++plan.list_requests;
             if (resolve_lists)
             {
-                // 计划阶段就把列表抓回来（受请求闸门控制）：
-                // 这样「实际待抓正文篇数」在风险确认前就是精确值
+                // 计划阶段就抓回列表（受请求闸门控制），让「待抓正文篇数」在风险确认前就是精确值
                 const int need = (opt.max_articles < 0) ? -1 : opt.max_articles;
                 const std::string etag = has_cache ? cached.etag : std::string();
                 ListFetch fetched = fetch_list(p.pid, need, etag);
@@ -150,7 +144,7 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
                 item.list_not_modified = fetched.not_modified && has_cache;
                 if (item.list_not_modified)
                 {
-                    // 304：沿用缓存里的条目与 ETag，只会在抓取阶段刷新时间戳
+                    // 304：沿用缓存条目与 ETag，只会在抓取阶段刷新时间戳
                     item.list_items = cached.items;
                     item.list_etag = cached.etag;
                     item.total_available = cached.total_available;
@@ -168,8 +162,7 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
         item.no_solution = item.list_known && item.list_items.empty();
         item.wanted = wanted_count(opt.max_articles, item.available, item.list_known);
 
-        // 逐篇计划：判定缓存命中（auto 模式下两个来源都算，优先原站），
-        // 需要抓取的按来源轮流分配站点
+        // 逐篇判定缓存命中（auto 下两个来源都算、优先原站），需要抓取的按来源轮流分配站点
         if (item.list_known)
         {
             const int take =
@@ -187,7 +180,6 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
                 solcache::DocEntry doc;
                 if (opt.source == Source::Auto)
                 {
-                    // 两个来源的缓存都优先使用，同时存在时优先原站
                     if (usable_cache(Source::Official, doc))
                     {
                         article.cached = true;
@@ -212,7 +204,6 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
                 else
                 {
                     ++item.to_fetch;
-                    // auto：原站、保存站轮流分配（这篇原站 → 下篇保存站 → …）
                     article.site = (opt.source == Source::Auto)
                                        ? static_cast<int>(plan.articles_to_fetch % 2)
                                        : (opt.source == Source::Save ? 1 : 0);
@@ -223,7 +214,6 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
         }
         else
         {
-            // 列表未知（非 all 模式、且缓存不可用）：按最坏情况估算待抓篇数
             item.to_fetch = item.wanted;
             plan.articles_to_fetch += item.wanted;
         }
@@ -236,9 +226,7 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
         plan.items.push_back(std::move(item));
     }
 
-    // ---- --article：按文章编号下载的文章（与题目无关，统一放在文档最后）----
-    // 与题解正文完全相同的缓存判定与来源分配规则（--article-source /
-    // --article-ttl / --refresh-articles）
+    // --article 指定的文章（与题目无关、排在最后）：缓存判定与来源分配规则同题解正文
     for (const auto &lid : opt.article_lids)
     {
         StandaloneArticlePlan item;
@@ -276,7 +264,7 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
         }
         else
         {
-            // auto：原站、保存站轮流分配（与题解正文共用同一个轮转计数）
+            // auto：轮流分配，与题解正文共用同一个轮转计数
             item.site = (opt.source == Source::Auto)
                             ? static_cast<int>(plan.articles_to_fetch % 2)
                             : (opt.source == Source::Save ? 1 : 0);
@@ -293,7 +281,6 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
 
 namespace
 {
-// 一次正文抓取的处理结果
 struct FetchOutcome
 {
     enum class Kind
@@ -302,10 +289,10 @@ struct FetchOutcome
         NotFound,           // 不可访问（已删除 / 无权限）
         SkippedIncomplete,  // 正文不完整且未允许导出
         PartialExported,    // 正文不完整但按 --allow-partial 导出
-        Failed,             // 网络或解析失败
-        NeedLogin,          // 需要登录态
+        Failed,
+        NeedLogin,
         RateLimited,        // 被限流（auto 模式交给调度器处理）
-        Stopped,            // 用户停止
+        Stopped,
     };
     Kind kind = Kind::Ok;
     solcache::DocEntry doc;
@@ -313,14 +300,12 @@ struct FetchOutcome
     bool not_modified = false;
 };
 
-// 抓取一篇题解的正文并落缓存（顺序模式与 auto 模式共用）
 FetchOutcome fetch_one_article(const std::string &pid, const solution::Summary &summary,
                                solution::Source site, const solution::TaskOptions &opt)
 {
     FetchOutcome out;
     const crawler::Channel ch = solution::channel_of(site);
 
-    // 该来源已有的缓存：用于 ETag 条件请求
     solcache::DocEntry existing;
     const bool has_existing =
         solcache::load_doc(pid, summary.lid, site, existing) &&
@@ -414,7 +399,6 @@ FetchOutcome fetch_one_article(const std::string &pid, const solution::Summary &
     return out;
 }
 
-// 把抓取到的正文组装成导出用的题解视图
 luogu::SolutionView make_view(const solution::Summary &summary,
                               const solcache::DocEntry &doc,
                               solution::Source site)
@@ -435,7 +419,6 @@ luogu::SolutionView make_view(const solution::Summary &summary,
     return view;
 }
 
-// --article 的文章摘要：只有编号，标题与作者等信息来自缓存或接口响应
 solution::Summary summary_of_lid(const std::string &lid)
 {
     solution::Summary summary;
@@ -443,13 +426,11 @@ solution::Summary summary_of_lid(const std::string &lid)
     return summary;
 }
 
-// 任务对象是文章（按编号下载，pid 为空）还是题解（与题目绑定）
 const char *task_noun(const std::string &pid)
 {
     return pid.empty() ? "文章" : "题解";
 }
 
-// 顺序模式：把一次抓取结果计入统计
 void apply_outcome(const FetchOutcome &outcome, solution::CrawlStats &stats)
 {
     switch (outcome.kind)
@@ -485,7 +466,7 @@ void apply_outcome(const FetchOutcome &outcome, solution::CrawlStats &stats)
     }
 }
 
-// ---- auto 模式：两条通道并行抓取的调度 ----
+// auto 模式：两条通道并行抓取的调度
 
 struct AutoTask
 {
@@ -528,13 +509,9 @@ bool auto_site_available(AutoContext &ctx, int site)
     return crawler::gate_channel_block_remaining_ms(ch) == 0;
 }
 
-// 挑选下一个可执行的任务：只取「首选本通道」的任务。
-//
-// 不做贪婪接管是有意为之：某个站点被限流时，只有**当前这一篇**会临时
-// 转给另一个站点，本站点其余任务留在自己队列里，等限流延时到期后重试；
-// 重试若再次被限流才继续累计次数，连续 3 次才放弃该站点并把剩余任务
-// 全部转走（如果允许另一侧随便接管，本站点就再也不会有重试机会，
-// 「连续 3 次」的判定也就永远不会触发）。
+// 挑选下一个可执行的任务：只取「首选本通道」的任务。不做贪婪接管是有意为之：
+// 站点被限流时只有当前这一篇临时转给另一站点，其余任务留在本队列等延时到期重试；
+// 连续 3 次被限流才放弃该站点并转走剩余任务（允许随便接管则「连续 3 次」永不触发）。
 size_t auto_pick_task(AutoContext &ctx, int site)
 {
     for (size_t i = 0; i < ctx.queue.size(); ++i)
@@ -616,8 +593,7 @@ void auto_worker(AutoContext &ctx, int site)
                     crawler::gate_channel_block_remaining_ms(ch);
                 if (wait_ms > 0)
                 {
-                    // 本通道处于限流等待：期间任务由另一个站点接管，
-                    // 等自己的等待到期后再继续
+                    // 限流等待中：期间任务由另一站点接管，等本通道等待到期后再继续
                     ctx.cv.wait_for(lock, std::chrono::milliseconds(
                                               std::min<long long>(wait_ms, 200)));
                     continue;
@@ -625,7 +601,7 @@ void auto_worker(AutoContext &ctx, int site)
                 if (ctx.queue.empty())
                 {
                     if (ctx.in_flight == 0)
-                        return; // 全部完成
+                        return;
                     ctx.cv.wait_for(lock, std::chrono::milliseconds(100));
                     continue;
                 }
@@ -652,8 +628,7 @@ void auto_worker(AutoContext &ctx, int site)
         }
         catch (const std::exception &e)
         {
-            // 兜底：线程函数里未捕获的异常会直接 std::terminate（且没有中文
-            // 提示），这里把解析/缓存层的意外异常折算成一次抓取失败
+            // 兜底：线程函数里未捕获的异常会直接 std::terminate，这里折算成一次抓取失败
             outcome.kind = FetchOutcome::Kind::Failed;
             outcome.error = std::string("抓取") + task_noun(task.pid) +
                             "时发生异常：" + e.what();
@@ -681,9 +656,8 @@ void auto_worker(AutoContext &ctx, int site)
                      ctx.tasks[slot].retries == 0 &&
                      auto_site_available(ctx, 1 - site))
             {
-                // 换另一个站点再试一次：保存站是第三方镜像，可能没有收录某篇
-                // 题解；原站的文章也可能已被删除而镜像仍有副本。
-                // 只改派一次，避免两个站点之间来回弹跳。
+                // 换另一站点再试一次：镜像可能没收录某篇，原站文章也可能已删而镜像仍有副本；
+                // 只改派一次，避免两站之间来回弹跳
                 ++ctx.tasks[slot].retries;
                 ctx.tasks[slot].preferred = 1 - site;
                 ctx.queue.push_back(slot);
@@ -709,8 +683,7 @@ void auto_worker(AutoContext &ctx, int site)
                 }
                 else
                 {
-                    // 暂时重新分配到另一个站点；若另一个站点也不可用，
-                    // 就留在自己这里等限流延时到期后重试
+                    // 暂时改派到另一站点；若另一站点也不可用，就留在此处等限流延时到期后重试
                     ctx.tasks[slot].preferred =
                         auto_site_available(ctx, 1 - site) ? (1 - site) : site;
                 }
@@ -726,15 +699,12 @@ void auto_worker(AutoContext &ctx, int site)
             {
                 crawler::gate_note_success(ch);
                 auto_apply_locked(ctx, slot, site, outcome);
-                // 只有真正拿到正文（含按 --allow-partial 导出的不完整正文）才计入
-                // 「成功」，与顺序模式（apply_outcome）保持一致：重试后仍然 404 /
-                // 抓取失败的篇目只计入「不可访问 / 抓取失败」的汇总
+                // 只有真正拿到正文（含 --allow-partial 的不完整正文）才计入「成功」，与顺序模式 apply_outcome 一致；重试后仍 404 或抓取失败的只计入「不可访问 / 抓取失败」
                 if (outcome.kind == FetchOutcome::Kind::Ok ||
                     outcome.kind == FetchOutcome::Kind::PartialExported)
                     ++ctx.fetched;
 
-                // 跳过与失败的提示与顺序模式保持一致（不静默），
-                // 文案先攒好，出了锁再打印，避免持锁做 I/O
+                // 文案先攒好、出锁再打印（避免持锁做 I/O），提示内容与顺序模式一致
                 switch (outcome.kind)
                 {
                 case FetchOutcome::Kind::NotFound:
@@ -780,9 +750,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     const bool auto_mode = (opt.source == Source::Auto);
     const int total = static_cast<int>(plan.items.size());
 
-    // 每道题一个导出桶：题解按题目顺序、列表顺序排列；
-    // --article 的每篇文章也各占一个桶（排在全部题目之后），
-    // 这样自动模式的调度器不需要区分「题解」与「文章」
+    // 每道题一个导出桶（题解按题目顺序、列表顺序），--article 的每篇文章也各占一桶并排在最后，使调度器不必区分「题解」与「文章」
     const size_t problem_buckets = plan.items.size();
     const size_t bucket_count = problem_buckets + plan.standalone_articles.size();
     std::vector<std::vector<luogu::SolutionView>> buckets(bucket_count);
@@ -792,7 +760,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     AutoContext auto_ctx;
     auto_ctx.opt = &opt;
 
-    // 顺序模式下的待抓任务
     std::vector<std::pair<size_t, size_t>> seq_tasks; // (桶下标, 篇目下标)
 
     for (size_t pi = 0; pi < plan.items.size(); ++pi)
@@ -803,11 +770,9 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                     item.pid.c_str(), item.name.c_str());
         std::fflush(stdout);
 
-        // ---- 1. 题解列表：计划阶段已就绪（缓存可用或已抓取）----
         if (item.list_from_network)
         {
-            // 计划阶段抓到的列表现在才落盘（确认之前不改动缓存）；
-            // 304 时沿用缓存里的条目，只刷新时间戳
+            // 计划阶段抓到的列表现在才落盘（确认前不改动缓存）；304 沿用缓存条目，只刷新时间戳
             solcache::ListEntry entry;
             entry.pid = item.pid;
             entry.fetched_at = now_seconds();
@@ -839,7 +804,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
             continue;
         }
 
-        // ---- 2. 逐篇：缓存命中直接用，其余进入待抓队列 ----
         bucket_used[pi] = true;
         buckets[pi].resize(item.articles.size());
         bucket_state[pi].assign(item.articles.size(), 0);
@@ -898,7 +862,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         }
     }
 
-    // ---- 2b. --article：按文章编号下载的文章（与题目无关，排在最后）----
     const size_t standalone_count = plan.standalone_articles.size();
     if (standalone_count > 0)
     {
@@ -927,14 +890,13 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                     ++stats.articles_cached;
                     continue;
                 }
-                // 理论上不会发生（计划阶段刚判定命中）：退化为重抓
             }
 
             if (auto_mode)
             {
                 AutoTask task;
                 task.bucket = bi;
-                task.pid.clear(); // 空 pid = 按文章下载（不与题目绑定）
+                task.pid.clear();
                 task.summary = summary;
                 task.preferred = item.site;
                 auto_ctx.queue.push_back(auto_ctx.tasks.size());
@@ -949,10 +911,8 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         }
     }
 
-    // ---- 3. 抓取正文 ----
     if (auto_mode)
     {
-        // 只有文章时不说「题解正文」（文章与题解共用同一套抓取与来源规则）
         const bool only_articles = plan.items.empty() && !plan.standalone_articles.empty();
         std::printf("%s正文来源：原站与保存站轮流分配、并行抓取"
                     "（缓存命中的篇目直接使用缓存）\n",
@@ -964,7 +924,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         official_thread.join();
         save_thread.join();
 
-        // 汇总统计
         stats.fetched = auto_ctx.fetched;
         stats.fetched_official = auto_ctx.fetched_official;
         stats.fetched_save = auto_ctx.fetched_save;
@@ -974,7 +933,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         stats.skipped_incomplete = auto_ctx.skipped_incomplete;
         stats.incomplete_exported = auto_ctx.incomplete_exported;
 
-        // 把 slot 填回各题的桶（保持题目顺序与列表顺序），随后是各篇文章
+        // slot 填回各题的桶（保持题目与列表顺序），随后是各篇文章
         size_t slot = 0;
         for (size_t pi = 0; pi < plan.items.size(); ++pi)
         {
@@ -1036,7 +995,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
             const size_t ai = task.second;
             // 桶下标 >= 题目数即为 --article 的文章桶
             const bool is_article = bi >= problem_buckets;
-            StandaloneArticlePlan art; // 文章桶的计划（题目桶不用）
+            StandaloneArticlePlan art; // 仅文章桶使用
             if (is_article)
                 art = plan.standalone_articles[bi - problem_buckets];
             const std::string pid = is_article ? std::string() : plan.items[bi].pid;
@@ -1053,7 +1012,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
             }
             catch (const std::exception &e)
             {
-                // 兜底：与 auto 模式一致，异常一律折算成一次抓取失败
                 outcome.kind = FetchOutcome::Kind::Failed;
                 outcome.error = std::string("抓取") + task_noun(pid) +
                                 "时发生异常：" + e.what();
@@ -1107,7 +1065,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         }
     }
 
-    // ---- 4. 组装导出用的题解包与文章包（跳过未成功的篇目）----
+    // 组装导出用的题解包与文章包，跳过未成功的篇目
     for (size_t pi = 0; pi < problem_buckets; ++pi)
     {
         if (!bucket_used[pi])
@@ -1136,8 +1094,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         articles.items.push_back(std::move(buckets[bi][0]));
     }
 
-    // 一篇都没拿到（且没有缓存可用）时视为失败：
-    // 避免「全部失败却报告成功」（例如保存站不可用）
+    // 一篇都没拿到时视为失败，避免「全部失败却报告成功」（如保存站不可用）
     if (stats.fetched == 0 && stats.cached == 0 && stats.not_modified == 0 &&
         stats.failed > 0)
     {

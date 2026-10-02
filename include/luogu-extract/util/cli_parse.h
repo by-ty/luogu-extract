@@ -19,9 +19,7 @@
 // License for more details.
 
 // include/luogu-extract/util/cli_parse.h
-// 命令行参数值的解析与校验：main.cpp 的参数解析与简易命令行交互程序
-// （src/interactive/interactive.cpp）共用这一份实现，保证「同样的值」在两处
-// 得到完全相同的判定与中文报错文案。
+// 命令行参数值的解析与校验：main.cpp 与交互程序共用，保证判定与报错文案一致。
 #ifndef LUOGU_EXTRACT_UTIL_CLI_PARSE_H
 #define LUOGU_EXTRACT_UTIL_CLI_PARSE_H
 
@@ -31,39 +29,33 @@
 
 namespace cliparse
 {
-    // ASCII 大小写转换（不影响多字节的 UTF-8 字节）
+    // ASCII 大小写转换（不改动多字节 UTF-8 字节）
     std::string to_lower_ascii(const std::string &s);
     std::string to_upper_ascii(const std::string &s);
 
-    // 按空白拆成多个 token（空 token 忽略）
+    // 按空白拆分（忽略空 token）
     std::vector<std::string> split_whitespace(const std::string &s);
 
-    // 解析非负/正整数参数：允许首尾空白，超出 [min,max] 或含非数字字符时返回 false
+    // 解析整数：允许首尾空白；超出 [min,max] 或含非数字字符返回 false
     bool parse_positive_int(const std::string &value, long min_value,
                             long max_value, long &out);
 
-    // 解析难度规格："N"（单个数字）或 "A-B"（闭区间），展开后追加到 difficulties
+    // 难度规格 "N" 或 "A-B"（闭区间），展开后追加到 difficulties
     bool parse_difficulty_spec(const std::string &spec, std::vector<int> &difficulties);
 
-    // 解析一组 --pid-range 规格 "<题号>-<题号>"（两端点均包含）。
-    // 成功时把规范化（大写）的两端点写入 out 并返回 true；
-    // 失败时返回 false，并把中文错误信息（含相关要求）写入 err。
+    // --pid-range "<题号>-<题号>"（两端含）：规范化（大写）写入 out；失败写中文 err 并返回 false
     bool parse_pid_range_arg(const std::string &spec,
                              std::pair<std::string, std::string> &out,
                              std::string &err);
 
-    // --local 的默认输出：与输入文件同目录的 <原文件名>.tex（去掉原扩展名）
+    // --local 默认输出：同目录的 <原文件名>.tex
     std::string default_local_output(const std::string &input);
 
-    // 该值是否会被当作「字体文件地址」处理：含路径分隔符、以常见字体扩展名
-    // 结尾，或当前目录下存在同名文件；其余值按系统已安装的字体名称处理。
+    // 是否按字体文件地址处理（含路径分隔符、字体扩展名，或当前目录存在同名文件）
     bool font_value_is_file_address(const std::string &value);
 
-    // 校验字体参数（--set-font-*）的值，并区分两种写法：
-    // - 系统已安装的字体名称：直接透传给 fontspec；
-    // - 字体文件地址：必须真实存在，否则报错拒绝执行；存在时转成绝对路径并把
-    //   '\' 归一化为 '/'，便于写入 LaTeX 代码。
-    // 返回错误信息（空串表示合法）；合法时把规范化结果写入 font_out。
+    // 校验 --set-font-*：系统已安装的字体名直接透传；文件地址必须存在，否则报错拒绝执行。
+    // 合法时把归一化结果（绝对路径、'\' -> '/'）写入 font_out；返回错误信息（空串=合法）
     std::string validate_font_option(const std::string &option_name,
                                      const std::string &value,
                                      std::string &font_out);

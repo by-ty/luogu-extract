@@ -28,12 +28,12 @@
 
 namespace
 {
-// 重定向到文件/管道时不写 ANSI 转义序列（只影响日志观感）
+// 非 TTY 时不输出 ANSI 转义序列
 const char *kColorReset = luogu::compat::stdout_is_tty() ? "\033[0m" : "";
 const char *kColorYellow = luogu::compat::stdout_is_tty() ? "\033[1;33m" : "";
 const char *kColorAlert = luogu::compat::stdout_is_tty() ? "\033[1;41;37m" : "";
 
-// 第 5 档最后一次确认要求原样输入的短语（唯一的强化授权手段）
+// 第 5 档最后一次确认需原样输入的短语
 const char *kStrongPhrase = "I know what I am doing";
 
 prompt::Io &current_io()
@@ -95,7 +95,7 @@ bool prompt::confirm(const std::string &prompt_text)
     std::string line;
     if (!current_io().read_line || !current_io().read_line(line))
     {
-        // 读不到输入：失败闭合（视为拒绝）
+        // 读不到输入时失败闭合（视为拒绝）
         out_line("");
         return false;
     }
@@ -119,7 +119,6 @@ bool prompt::confirm_phrase(const std::string &prompt_text, const std::string &p
         out_line("");
         return false;
     }
-    // 去掉首尾空白后必须与短语完全一致
     const size_t first = line.find_first_not_of(" \t\r\n");
     if (first == std::string::npos)
         return false;
@@ -172,9 +171,7 @@ prompt::RiskInfo prompt::plan_risk(long long total_requests, bool yes)
 
 prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
 {
-    // 「题解 / 文章」篇数的中文描述：只有题解时就是「N 篇题解」，
-    // 只有文章（--article 单独使用）时只说文章，两者都有时并列。
-    // 注意：题解为 0 篇但确实在抓题解（题目选了、题解全命中缓存）时仍按题解描述
+    // has_solutions：题解数为 0 但确实在抓题解（题目已选、题解全命中缓存）时也按题解描述
     const bool has_solutions = info.solution_to_fetch > 0 ||
                                info.cached_solutions > 0 ||
                                info.standalone_articles == 0;
@@ -191,7 +188,7 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
         return phrase;
     };
 
-    // ---- 预计 0 次网络请求（全部命中缓存）：一行精简提示，不做任何确认 ----
+    // 预计 0 次网络请求（全部命中缓存）：只提示，不确认
     if (info.total_requests <= 0)
     {
         std::string cached_line;
@@ -211,7 +208,7 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
         return ConfirmResult::Proceed;
     }
 
-    // ---- 规模与耗时：三要素与估算，先给出便于用户当场决定 ----
+    // 先给出规模与耗时估算，便于用户当场决定
     std::string scale_line = "即将抓取：";
     if (has_solutions && info.problems > 0)
     {
@@ -259,7 +256,7 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
     const std::string shrink =
         "可用 --max-solutions 1、--pid 或 --pid-range 缩小范围；中断后重跑会自动续传";
 
-    // ---- 第 1 档（含缓存全命中的降级）：提示后直接继续 ----
+    // 第 1 档：提示后直接继续
     if (info.level <= 1)
     {
         print_warning("[提示] 本次抓取量很小（" +
@@ -268,7 +265,7 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
         return ConfirmResult::Proceed;
     }
 
-    // ---- --yes 把确认次数减到 0：仍然重新打印风险要点后继续 ----
+    // --yes 使确认次数减为 0：仍重新打印风险要点后继续
     if (info.confirmations <= 0)
     {
         print_warning("[警告] 本次将抓取 " +
@@ -281,7 +278,7 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
         return ConfirmResult::Proceed;
     }
 
-    // ---- 无 TTY 且仍需确认：失败闭合，绝不默认继续 ----
+    // 无 TTY 且仍需确认：失败闭合，绝不默认继续
     if (!interactive())
     {
         print_alert("[拒绝执行] 当前不是交互终端，风险确认无法进行。");
@@ -298,7 +295,7 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
     const int total_confirm = info.confirmations;
     for (int i = 1; i <= total_confirm; ++i)
     {
-        // 每次确认之间重新打印风险要点（不做刷屏式重复）
+        // 每次确认前重新打印风险要点
         if (info.level >= 5)
         {
             print_alert("[醒目警告] 本次将抓取 " + count_text +
@@ -323,11 +320,10 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
         }
         print_line(advice);
 
-        // 第 5 档的最后一次确认要求原样输入指定短语
+        // 第 5 档的最后一次确认改为原样输入短语
         if (info.level >= 5 && i == total_confirm)
         {
-            // 次数由 total_confirm 决定（--yes 时第 5 档只有 2 次确认），
-            // 不能写死「第三次」
+            // 确认次数由 --yes 调整，不能写死「第三次」
             const std::string prompt_text =
                 "最后一次确认（" + std::to_string(i) + "/" +
                 std::to_string(total_confirm) + "）：请输入「" + kStrongPhrase +
@@ -364,7 +360,7 @@ bool prompt::wait_delay(long ms)
             stop = true;
             return true;
         }
-        // 按 C 跳过剩余等待（请求间隔很短，不需要二次确认）
+        // 按 C 立即继续（请求间隔很短，无需二次确认）
         return key == 'c' || key == 'C';
     });
     if (stop)
@@ -409,7 +405,7 @@ prompt::WaitOutcome prompt::wait_with_keys(long seconds, const std::string &reas
                 resume = true;
                 return true;
             }
-            // 其它按键：不识别则重新提示，最多 3 次
+            // 未识别的按键最多提示 3 次
             if (unknown_keys < 3)
             {
                 ++unknown_keys;

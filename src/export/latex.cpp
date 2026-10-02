@@ -47,8 +47,7 @@
 namespace
 {
 
-// 解析 [first, last) 内的非负十进制数字；失败或溢出时返回 false。
-// 用于处理缓存内容中可能出现的畸形/超长数字（此前 std::stoi/stoul 会抛异常）。
+// 解析 [first, last) 内的非负十进制数字；失败或溢出返回 false（std::stoi 对缓存里的畸形内容会抛异常）。
 bool parse_nonneg_int(const char *first, const char *last, size_t &out)
 {
     if (first >= last)
@@ -60,7 +59,7 @@ bool parse_nonneg_int(const char *first, const char *last, size_t &out)
             return false;
         const size_t d = static_cast<size_t>(*p - '0');
         if (v > (std::numeric_limits<size_t>::max() - d) / 10)
-            return false; // 溢出
+            return false;
         v = v * 10 + d;
     }
     out = v;
@@ -76,10 +75,8 @@ std::string trim(const std::string &s)
     return s.substr(a, b - a + 1);
 }
 
-// 是否是代码围栏的收尾行（传入已 trim 的行）：CommonMark 规定收尾围栏由
-// >= fence_len 个同类围栏字符组成，后面只能跟空白。此前只要行首有 fence_len
-// 个围栏字符就算收尾，代码块里出现 ```cpp 这样的行（结束围栏带信息串，
-// CommonMark 不允许）会提前结束代码块，块内剩余内容错位到正文。
+// 是否代码围栏的收尾行（传入已 trim 的行）：CommonMark 要求 >= fence_len 个同类围栏字符且其后只有空白；
+// 只按行首计数会把块内的 ```cpp 误判为收尾行，导致代码块提前结束、块内内容错位到正文。
 bool is_fence_closer(const std::string &trimmed_line, char fence, size_t fence_len)
 {
     if (fence_len == 0 || trimmed_line.size() < fence_len)
@@ -95,31 +92,28 @@ bool is_fence_closer(const std::string &trimmed_line, char fence, size_t fence_l
     return true;
 }
 
-// 表格单元格的空白清理：除 ASCII 空格外，还要去掉洛谷题面里用来「对齐
-// 源码」的全角空格（U+3000）以及不换行空格、各种 Unicode 空格。
-// 表格按列居中/右对齐排版时，残留的填充空格会把文字挤偏——例如 tuack
-// 表格的表头写成「|测试点编号　　|」，两个全角空格会让标题相对列中心
-// 左偏整整一个全角空格，看起来就是「表头没有居中」。
+// 表格单元格空白清理：洛谷用全角空格（U+3000）等 Unicode 空白对齐源码，残留填充会把居中/右对齐的文字
+// 挤偏（如「|测试点编号　　|」让表头相对列中心左偏一个全角空格）。下面列出所有要剥掉的空白字符。
 std::string trim_cell(const std::string &s)
 {
     static const char *kSpaces[] = {
-        "\xE3\x80\x80", // U+3000 全角空格（洛谷表格最常见的填充）
-        "\xC2\xA0",     // U+00A0 不换行空格
-        "\xE2\x80\x80", // U+2000 EN QUAD
-        "\xE2\x80\x81", // U+2001 EM QUAD
-        "\xE2\x80\x82", // U+2002 EN SPACE
-        "\xE2\x80\x83", // U+2003 EM SPACE
-        "\xE2\x80\x84", // U+2004
-        "\xE2\x80\x85", // U+2005
-        "\xE2\x80\x86", // U+2006
-        "\xE2\x80\x87", // U+2007
-        "\xE2\x80\x88", // U+2008
-        "\xE2\x80\x89", // U+2009
-        "\xE2\x80\x8A", // U+200A
-        "\xE2\x80\x8B", // U+200B 零宽空格
-        "\xE2\x80\xAF", // U+202F 窄不换行空格
-        "\xE2\x81\xA0", // U+2060 WORD JOINER
-        "\xEF\xBB\xBF", // U+FEFF BOM
+        "\xE3\x80\x80",
+        "\xC2\xA0",
+        "\xE2\x80\x80",
+        "\xE2\x80\x81",
+        "\xE2\x80\x82",
+        "\xE2\x80\x83",
+        "\xE2\x80\x84",
+        "\xE2\x80\x85",
+        "\xE2\x80\x86",
+        "\xE2\x80\x87",
+        "\xE2\x80\x88",
+        "\xE2\x80\x89",
+        "\xE2\x80\x8A",
+        "\xE2\x80\x8B",
+        "\xE2\x80\xAF",
+        "\xE2\x81\xA0",
+        "\xEF\xBB\xBF",
     };
     std::string out = trim(s);
     bool changed = true;
@@ -153,8 +147,7 @@ std::string to_lower_ascii(std::string s)
     return s;
 }
 
-// 跳过从 s[pos]（必须是 '{'）开始的配对花括号组，返回组后第一个字符的下标；
-// 找不到配对时返回 s.size()
+// 跳过 s[pos]（必须是 '{'）开始的配对花括号组，返回组后第一个字符的下标；找不到配对时返回 s.size()
 size_t skip_brace_group(const std::string &s, size_t pos)
 {
     int d = 1;
@@ -170,9 +163,8 @@ size_t skip_brace_group(const std::string &s, size_t pos)
     return d == 0 ? i : s.size();
 }
 
-// 统计 array/subarray 列规格的列数：只在花括号外统计列字母（l/c/r/p/m/b，
-// 以及 *{n}{...} 展开后的列），@{...} / >{...} / <{...} 的内容不算列。
-// 此前用「spec 里所有字母个数」计数，{p{2cm}} 会被算成 3 列（p、c、m）。
+// 统计 array/subarray 列规格的列数：只数花括号外的列字母（l/c/r/p/m/b 与 *{n}{...} 展开的列），
+// @{...}/>{...}/<{...} 的内容与 p{2cm} 这类参数里的字母都不算列。
 size_t count_array_columns(const std::string &spec)
 {
     size_t columns = 0;
@@ -188,8 +180,6 @@ size_t count_array_columns(const std::string &spec)
         }
         if (c == '{')
         {
-            // 列字母后面的花括号参数（如 p{2cm} 的宽度）不算列：整组跳过，
-            // 否则 p{2cm} 会被数成 3 列（p、c、m）
             i = skip_brace_group(spec, i);
             continue;
         }
@@ -227,9 +217,8 @@ size_t count_array_columns(const std::string &spec)
     return columns;
 }
 
-// 列规格是否只用了 array 环境认识的写法（l/c/r/p/m/b、竖线、@{}/>{}/<{}、
-// *{n}{}、数字与空格）。是则原样保留列规格（保住对齐），否则退回「全部 c 列」
-// ——重建为 c 列虽然丢对齐，但一定不会因为未加载的列类型/命令而编译失败。
+// 列规格是否只用了 array 认识的写法：是则原样保留（保住 l/c/r 对齐与 p{} 定宽列），
+// 否则退回「全部 c 列」——丢对齐，但一定不会因为未加载的列类型/命令而编译失败。
 bool array_spec_is_safe(const std::string &spec)
 {
     static const std::string kAllowed = "lcrpmb|@{}<>*0123456789. ";
@@ -239,10 +228,8 @@ bool array_spec_is_safe(const std::string &spec)
     return true;
 }
 
-// 洛谷题面常在公式里用 \newcommand/\renewcommand 自定义命令，
-// 标准 LaTeX 中若与已有命令同名会报 "already defined"；统一转成 \def（允许重复定义）
-// 对齐环境行归一化：洛谷题面里 \begin{array}{c} 等常有多余/缺少的 &，
-// 导致 "Extra alignment tab"；把每行统一到目标列数（array 按 spec，矩阵按最大行宽）
+// 对齐环境行归一化：洛谷题面里 \begin{array}{c} 等常有多余/缺少的 &（报 Extra alignment tab），
+// 把每行统一到目标列数（array 按列规格，矩阵按最大行宽）。
 std::string regex_transform(const std::string &s, const std::regex &re,
                             const std::function<std::string(const std::smatch &)> &convert);
 
@@ -288,14 +275,13 @@ std::string normalize_alignment(std::string s, int depth = 0)
 
         size_t body_start = name_end + 1;
         size_t spec_cols = 0;
-        std::string spec; // 原始列规格（安全时原样保留，见下）
+        std::string spec;
         if (name == "array" || name == "subarray")
         {
             if (body_start < s.size() && s[body_start] == '{')
             {
-                // 列规格里可以再嵌花括号（p{2cm}、@{...}、>{\cmd}），必须按花括号
-                // 配对找真正的收尾 }：取第一个 } 会把 {p{2cm}} 截成 "p{2cm"，
-                // 既算错列数，又让多余的 } 落进表格正文（编译报 Extra }）
+                // 列规格里可以再嵌花括号（p{2cm}、@{...}、>{\cmd}），必须按配对找真正的收尾 }：
+                // 取第一个 } 会把 {p{2cm}} 截成 "p{2cm"，多余的 } 还会落进表格正文（报 Extra }）。
                 const size_t spec_end = skip_brace_group(s, body_start);
                 if (spec_end <= s.size() && spec_end > body_start + 1 &&
                     s[spec_end - 1] == '}')
@@ -344,16 +330,14 @@ std::string normalize_alignment(std::string s, int depth = 0)
             ++p;
             continue;
         }
-        // 先递归处理嵌套的对齐环境（内层 array 列规格、行内 & 等）；
-        // 限制递归深度，防止恶意内容构造超深嵌套环境导致栈溢出
+        // 先递归处理嵌套的对齐环境（内层列规格、行内 & 等）；限制递归深度，防止恶意超深嵌套导致栈溢出。
         std::string body = (depth >= kMaxEnvDepth)
                                ? s.substr(body_start, end_pos - body_start)
                                : normalize_alignment(
                                      s.substr(body_start, end_pos - body_start),
                                      depth + 1);
 
-        // 去掉多余的 &&（洛谷题面常见写法，LaTeX 会报 Extra alignment tab）；
-        // 只处理本层（跳过嵌套环境内部）
+        // 去掉多余的 &&（洛谷常见写法，LaTeX 报 Extra alignment tab）；只处理本层，跳过嵌套环境内部。
         {
             std::string t;
             int d = 0;
@@ -390,8 +374,7 @@ std::string normalize_alignment(std::string s, int depth = 0)
             body = std::move(t);
         }
 
-        // 按行拆分（\\ 或 \cr）：忽略花括号内和嵌套环境内部，
-        // 否则内层 aligned/array 的 \\ 会被误当成外层换行
+        // 按 \\ 或 \cr 拆行：忽略花括号内与嵌套环境内部，否则内层 aligned/array 的 \\ 会被误当外层换行。
         std::vector<std::string> rows;
         std::string cur;
         int depth = 0;
@@ -447,7 +430,6 @@ std::string normalize_alignment(std::string s, int depth = 0)
         if (!trim(cur).empty() || rows.empty())
             rows.push_back(cur);
 
-        // 统计每行单元格数（忽略行首 \hline；嵌套环境内部不算）
         auto count_cells = [](const std::string &row) {
             size_t n = 1;
             int d = 0;
@@ -476,10 +458,8 @@ std::string normalize_alignment(std::string s, int depth = 0)
             }
             return n;
         };
-        // 目标列数：
-        // - array/subarray：以显式列规格为准（多余的 & 截掉）
-        // - cases 系列：固定 2 列
-        // - matrix/aligned 等：按最宽的一行
+        // 目标列数：array/subarray 以显式列规格为准（规格为空时取最宽行），cases 系列固定 2 列，
+        // matrix/aligned 等按最宽的一行。
         size_t target;
         if (name == "array" || name == "subarray")
         {
@@ -500,7 +480,6 @@ std::string normalize_alignment(std::string s, int depth = 0)
                 target = std::max(target, count_cells(r));
         }
 
-        // 逐行归一化：截断多余单元格、补齐缺失单元格
         std::string new_body;
         for (size_t ri = 0; ri < rows.size(); ++ri)
         {
@@ -510,8 +489,7 @@ std::string normalize_alignment(std::string s, int depth = 0)
             std::string row = rows[ri];
             std::string hline;
             size_t start = 0;
-            // 连续多个 \hline / \noalign{\hline} 都要作为行前缀取走，
-            // 否则第二个 \hline 会变成单元格内容触发 Misplaced \noalign
+            // 连续多个 \hline / \noalign{\hline} 都要作为行前缀取走，否则第二个会变成单元格内容触发 Misplaced \noalign。
             while (true)
             {
                 if (row.compare(start, 6, "\\hline") == 0 &&
@@ -581,7 +559,7 @@ std::string normalize_alignment(std::string s, int depth = 0)
                 if (ci && !kNoAmpEnvs.count(name))
                     new_body += " & ";
                 else if (ci)
-                    new_body += " "; // gathered 等环境不接受 &
+                    new_body += " ";
                 if (!kNoAmpEnvs.count(name) || !cells[ci].empty())
                     new_body += cells[ci];
             }
@@ -592,8 +570,6 @@ std::string normalize_alignment(std::string s, int depth = 0)
                                     name != "dcases" && name != "rcases");
         if (name == "array" || (matrix_family && target > 10))
         {
-            // 列规格：只用了 array 认识的写法时原样保留（保住 l/c/r 对齐与
-            // p{} 定宽列）；否则退回全部 c 列，保证一定能编译
             const std::string new_spec =
                 array_spec_is_safe(spec) && !spec.empty()
                     ? spec
@@ -609,9 +585,8 @@ std::string normalize_alignment(std::string s, int depth = 0)
     return out;
 }
 
-// 数学公式里是否有“顶层”（不在任何 \begin 环境、也不在花括号内）的 & 或 \\ / \cr。
-// 洛谷题面常把两段矩阵用顶层 & 和 \\ 直接拼在一行（KaTeX 能渲染），
-// 标准 LaTeX 必须包进一个对齐环境才能编译
+// 数学公式里是否有「顶层」（不在任何环境与花括号内）的 & 或 \\ / \cr。
+// 洛谷常把两段矩阵用顶层 & 和 \\ 拼在一行（KaTeX 能渲染），标准 LaTeX 必须包进对齐环境才能编译。
 bool has_top_level_align(const std::string &s)
 {
     int brace = 0;
@@ -661,20 +636,14 @@ bool has_top_level_align(const std::string &s)
     return false;
 }
 
-// 控制词是否由 ASCII 字母组成（TeX 控制词的定义）
 bool is_tex_letter(char c)
 {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
-// 编译期能读写文件、执行命令或重建控制词的 TeX 控制词黑名单（精确整词匹配，
-// 大小写敏感）。题面、题解、文章与样例都是不可信远程文本，数学片段会原样
-// 写进 .tex，其中 \write18{...}（开启 shell-escape 时执行任意命令）、
-// \openout/\write（任意写文件）、\input/\includegraphics（读文件并写进 PDF）、
-// \catcode/\csname（重建被禁控制词）、\def 等都会在编译期生效。
-// 注意：只匹配**完整**控制词，因此 \in、\infty、\int 这类以黑名单词为前缀的
-// 正常命令不受影响；\end 只在 \end{document} 这一种写法上处理（\end{cases}
-// 等正常环境必须保留）。
+// 编译期能读写文件、执行命令或重建控制词的 TeX 控制词黑名单（整词匹配、大小写敏感）。题面/题解/文章/样例
+// 都是不可信远程文本，其中的 \write18、\openout、\input、\catcode、\csname 等会随数学片段写进 .tex 并在编译期生效。
+// 只匹配完整控制词，\in、\infty、\int 这类以黑名单词为前缀的正常命令不受影响；\end 只针对 \end{document}。
 const std::set<std::string> &dangerous_tex_commands()
 {
     static const std::set<std::string> kCommands = {
@@ -687,8 +656,7 @@ const std::set<std::string> &dangerous_tex_commands()
         "LoadClass", "bibliography", "bibliographystyle",
         "shipout", "output", "everyjob", "everypar", "everymath",
         "everydisplay", "everyhbox", "everyvbox", "everycr",
-        // 字符类别 / 控制序列重建（\catcode 改类别、\csname 拼命令名，
-        // 两者都能重新造出上面被拆掉的控制词，必须禁用）
+        // \catcode 改字符类别、\csname 拼命令名，两者都能重建上面被禁的控制词，必须一并禁用
         "csname", "endcsname", "catcode", "lccode", "uccode", "mathcode",
         "delcode", "sfcode", "escapechar", "endlinechar", "newlinechar",
         "lowercase", "uppercase", "expandafter", "noexpand", "string",
@@ -696,31 +664,24 @@ const std::set<std::string> &dangerous_tex_commands()
         // 字体（XeTeX 会把 [] 里的任意文件当字体读取）
         "font", "nullfont", "newfont", "letterspacefont", "fontspec",
         "setmainfont", "setsansfont", "setmonofont", "newfontfamily",
-        // 无条件循环：配合条件判断可以写出永不结束的 \loop...\repeat，
-        // 让 latexmk/排版引擎挂死（KaTeX 不支持这两个命令）
+        // 无条件循环：配合条件判断可写出永不结束的 \loop...\repeat，让排版引擎挂死（KaTeX 也不支持）
         "loop", "repeat",
     };
     return kCommands;
 }
 
-// 控制词是否属于「按前缀整类禁用」的引擎原语：XeTeX 的 \XeTeXpicfile 等
-// 会读取任意文件，pdfTeX / LuaTeX 的 \pdf... \luatex... 同理。正常 KaTeX
-// 内容里不会出现这些前缀，因此按前缀整体禁用。
+// 按前缀整类禁用的引擎原语：XeTeX 的 \XeTeXpicfile 等能读取任意文件，pdfTeX / LuaTeX 的 \pdf... \luatex... 同理；
+// 正常 KaTeX 内容不会出现这些前缀。
 bool has_forbidden_tex_prefix(const std::string &name)
 {
     return name.rfind("XeTeX", 0) == 0 || name.rfind("pdf", 0) == 0 ||
            name.rfind("luatex", 0) == 0;
 }
 
-// 把不可信文本里能控制编译器的 TeX 控制词拆掉：在反斜杠后插入一个空格，
-// 原来的控制词就变成控制符号 "\ "（排版为一个空格）＋普通字母，不再执行。
-// 该写法在数学模式与文本模式里都合法，也不会引入新的花括号不平衡。
-// 说明：只拆「能读写文件 / 执行命令 / 改字符类别 / 重建控制词 / 加载字体 /
-// 无条件循环」这些原语。\def、\newcommand、\let 等宏定义命令**保留**：
-// 它们的定义体在同一个字符串里，体内出现的危险原语同样会被拆掉，因此
-// 单独一个 \def 无法绕过上面的防护；而洛谷题面确实有用宏定义的公式
-// （本文件还会把 \newcommand 转成 \def 来支持它们），一并拆掉会让这些
-// 正常公式退化成字面文本。
+// 拆掉不可信文本里能控制编译器的 TeX 控制词：在反斜杠后插入一个空格，原控制词就变成控制符号 "\ " + 普通字母，
+// 不再执行；该写法在数学模式与文本模式里都合法，也不会引入新的花括号不平衡。只拆「读写文件 / 执行命令 /
+// 改字符类别 / 重建控制词 / 加载字体 / 无条件循环」这些原语；\def、\newcommand、\let 等宏定义命令保留
+// ——它们的定义体在同一个字符串里，体内出现的危险原语同样会被拆掉，无法绕过防护，而洛谷确实有用宏定义的正常公式。
 std::string defuse_tex_commands(const std::string &s)
 {
     std::string out;
@@ -741,8 +702,7 @@ std::string defuse_tex_commands(const std::string &s)
                       has_forbidden_tex_prefix(name);
         if (!danger && name == "end")
         {
-            // 只处理 \end{document}（会提前结束文档、丢弃剩余内容并让 LaTeX
-            // 认为文档已结束）；\end{cases} 之类的正常环境原样保留。
+            // 只处理 \end{document}：它会提前结束文档、丢弃剩余内容；\end{cases} 之类的正常环境原样保留。
             // 允许 \end 与 {document} 之间出现空格/制表符（TeX 允许）。
             size_t k = j;
             while (k < s.size() && (s[k] == ' ' || s[k] == '\t'))
@@ -760,7 +720,7 @@ std::string defuse_tex_commands(const std::string &s)
         }
         if (danger)
         {
-            out += "\\ "; // 反斜杠 + 空格：控制符号，原控制词失效
+            out += "\\ ";
             out.append(s, i + 1, j - i - 1);
         }
         else
@@ -772,16 +732,12 @@ std::string defuse_tex_commands(const std::string &s)
     return out;
 }
 
-
-// 送进 std::regex 管道的单个文本块上限。libstdc++ 的 std::regex 用回溯式 DFS
-// 匹配，重复片段（如 [^$]+）每迭代一层递归：超长、无空白的输入会把栈耗尽，
-// 进程直接 SIGSEGV（实测 3 万字符的公式、一行 5 万个 *a* 都能触发）。
-// 8192 远低于实测崩溃点，且正常题面/题解的单块文本远小于它。
+// 送进 std::regex 的单个文本块上限：libstdc++ 的 std::regex 用回溯式 DFS，重复片段每迭代一层递归，
+// 超长无空白输入会把栈耗尽直接 SIGSEGV（实测 3 万字符公式、一行 5 万个 *a* 可触发）；8192 远低于崩溃点。
 const size_t kMaxRegexChunk = 8192;
 
-// 把超长文本切成若干 <= limit 的块供正则管道处理：优先在最近的换行处切，
-// 其次在最近的空白处切（TeX 里换行与空格等价，按空白切不改变排版结果），
-// 都没有就硬切（此时宁可让这一块按纯文本处理，也不能让正则崩掉进程）。
+// 把超长文本切成 <= limit 的块供正则管道处理：优先最近的换行，其次最近的空白（TeX 里换行与空格等价），
+// 都没有就硬切（宁可让这一块按纯文本处理，也不能让正则崩掉进程）。
 std::vector<std::string> split_for_regex(const std::string &s, size_t limit)
 {
     std::vector<std::string> out;
@@ -795,14 +751,14 @@ std::vector<std::string> split_for_regex(const std::string &s, size_t limit)
             break;
         }
         const size_t cut = start + limit;
-        // 从 start 扫到 cut，记录「配对完整」的切点：$公式$ 与 `行内代码` 内部
-        // 的空白不能切（切开后两半都不再匹配公式/代码语法，会变成字面文本），
-        // 优先换行（跨行结构更少），其次是任意不在这些结构内部的空白
+        // 从 start 扫到 cut，记录「配对完整」的切点：$公式$ 与 `行内代码` 内部的空白不能切（切开后两半都不再匹配
+        // 公式/代码语法）；优先换行（跨行结构更少），其次是任意不在这些结构内部的空白。
         size_t split = cut;
         {
-            bool in_math = false;   // $...$ 内
-            bool in_code = false;   // `...` 内
-            bool backslash = false; // 上一个字符是未转义的反斜杠
+            // 跟踪 $...$、`...` 与未转义的反斜杠：判断切点是否落在这些结构内部
+            bool in_math = false;
+            bool in_code = false;
+            bool backslash = false;
             size_t last_nl = std::string::npos;
             size_t last_safe = std::string::npos;
             for (size_t k = start; k <= cut && k < s.size(); ++k)
@@ -833,10 +789,8 @@ std::vector<std::string> split_for_regex(const std::string &s, size_t limit)
 
 std::string sanitize_math_chunk(std::string s);
 
-// 数学片段入口：超长片段先按 kMaxRegexChunk 切块再走修复管线（见
-// kMaxRegexChunk 的说明：不做这道切分，3 万字符的公式就会让 std::regex
-// 递归耗尽栈、进程直接崩溃）。切块只影响畸形超长公式的修复效果，
-// 正常长度的公式逐字节等价。
+// 数学片段入口：超长片段先按 kMaxRegexChunk 切块再走修复管线（见那里的说明：不切块会让 std::regex 递归爆栈）；
+// 切块只影响畸形超长公式的修复效果，正常长度的公式逐字节等价。
 std::string sanitize_math(std::string s)
 {
     if (s.size() <= kMaxRegexChunk)
@@ -850,9 +804,8 @@ std::string sanitize_math(std::string s)
 
 std::string sanitize_math_chunk(std::string s)
 {
-    // \verb 内容是字面文本：先整体保护起来（占位符），
-    // 等所有转换结束后再按文本模式转义还原，
-    // 避免中间的 \color / px / % # 等转换污染 verb 内容
+    // \verb 内容是字面文本：先用占位符整体保护，等所有转换结束后再按文本模式转义还原，
+    // 避免中间的 \color / px / % # 等转换污染 verb 内容。
     std::vector<std::string> verb_raws;
     auto verb_placeholder = [&](size_t i) {
         return std::string("\x02V") + std::to_string(i) + "\x02";
@@ -865,13 +818,11 @@ std::string sanitize_math_chunk(std::string s)
         });
     }
 
-    // 源数据里的 \text{\\}（KaTeX 允许文本内换行）在 LaTeX 的表格/矩阵里
-    // 会触发 Misplaced \cr；\newline 在文本模式任何位置都合法
+    // 源数据里的 \text{\\}（KaTeX 允许文本内换行）在表格/矩阵里会触发 Misplaced \cr；\newline 在文本模式处处合法
     static const std::regex kTextNewline(R"(\\text\{\s*\\\\\s*\})");
     s = std::regex_replace(s, kTextNewline, "\\text{\\newline}");
 
-    // Unicode 数学符号（∑ 等）是普通字符，\limits 要求数学算子，
-    // 转成对应的 LaTeX 命令
+    // Unicode 数学符号（∑ 等）是普通字符，\limits 要求数学算子，转成对应的 LaTeX 命令
     static const std::map<std::string, std::string> kUnicodeMath = {
         {"\u2211", "\\sum"}, {"\u220f", "\\prod"}, {"\u222b", "\\int"},
         {"\u222e", "\\oint"}, {"\u221e", "\\infty"}, {"\u2264", "\\le"},
@@ -904,17 +855,15 @@ std::string sanitize_math_chunk(std::string s)
         }
     }
 
-    // 公式末尾悬空的 ^ / _（如“……则省略 ^”）：没有指数/下标参数，
-    // 直接当成符号输出，避免 Missing { inserted（已转义的 \_ 不受影响）。
-    // ^ 用 \wedge（∧）；_ 是下划线，用 \wedge 语义不对，用字面下划线 \_
+    // 公式末尾悬空的 ^ / _（如「……则省略 ^」）没有指数/下标参数，直接当符号输出，避免 Missing { inserted。
+    // ^ 用 \wedge（∧）；_ 是下划线，用字面下划线 \text{\_}（已转义的 \_ 不受影响）。
     static const std::regex kTrailingCaret(R"((^|[^\\])([\^_])(?=\s*\$?\s*$))");
     s = regex_transform(s, kTrailingCaret, [&](const std::smatch &m) {
         return m[1].str() + (m[2].str() == "^" ? "\\wedge" : "\\text{\\_}");
     });
 
-    // KaTeX 兼容：\colorbox{#hex} / \textcolor{#hex} / \color{#hex}
-    // → xcolor 的 HTML 颜色模型
-    // 3 位十六进制色值（如 #fff）补齐成 6 位（xcolor HTML 模型要求）
+    // KaTeX 兼容：\colorbox{#hex} / \textcolor{#hex} / \color{#hex} → xcolor 的 HTML 颜色模型；
+    // 3 位十六进制色值（#fff）按 xcolor 要求补齐成 6 位。
     auto hex_pad = [](const std::string &h) {
         if (h.size() == 3)
             return std::string() + h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
@@ -933,11 +882,10 @@ std::string sanitize_math_chunk(std::string s)
         return "\\color[HTML]{" + hex_pad(m[1].str()) + "}";
     });
 
-    // 2 位十六进制（洛谷题面里的 \color{ff}）按白色处理，避免 Undefined color
+    // 2 位十六进制（洛谷的 \color{ff}）按白色处理，避免 Undefined color
     static const std::regex kColor2Hex(R"(\\color\{([0-9a-fA-F]{2})\})");
     s = std::regex_replace(s, kColor2Hex, "\\color{white}");
 
-    // \fcolorbox{frame}{bg}{...}：任一参数是十六进制时转成 HTML 模型
     static const std::regex kFColorBox(R"(\\fcolorbox\{([^}]*)\}\{([^}]*)\}\{)");
     static const std::map<std::string, std::string> kNamedHex = {
         {"black", "000000"}, {"white", "FFFFFF"}, {"red", "FF0000"},
@@ -979,17 +927,16 @@ std::string sanitize_math_chunk(std::string s)
     static const std::regex kPx(R"((\d+(?:\.\d+)?)px)");
     s = std::regex_replace(s, kPx, "$1pt");
 
-    // \hspace 不接受 mu（数学单位），必须用 \mkern；\hspace{3mu} → \mkern3mu
+    // \hspace 不接受 mu（数学单位），必须用 \mkern
     static const std::regex kHspaceMu(R"(\\hspace\{(\d+(?:\.\d+)?)mu\})");
     s = std::regex_replace(s, kHspaceMu, "\\mkern$1mu");
 
-    // 洛谷题面常见笔误 \\end{cases} / \\\\end{cases}（多写/少写反斜杠）：
-    // 行分隔符 \\ 会吃掉 \end 的反斜杠，统一还原成单个 \end{
+    // 洛谷常见笔误 \\end{cases} / \\\\end{cases}：行分隔符会吃掉 \end 的反斜杠，统一还原成单个 \end{
     static const std::regex kRowEnd(R"(\\+end\{)");
     s = std::regex_replace(s, kRowEnd, "\\end{");
 
-    // \overline\texttt{ab} 这类“重音命令直接跟另一个命令”的写法：
-    // 重音命令需要花括号参数，把后面的命令连同参数一起包进 {} 
+    // \overline\texttt{ab} 这类「重音命令直接跟另一个命令」的写法：重音命令需要花括号参数，
+    // 把后面的命令连同参数一起包进 {}
     {
         static const std::set<std::string> kAccents = {
             "overline", "underline", "overbrace", "underbrace", "widehat",
@@ -1034,9 +981,9 @@ std::string sanitize_math_chunk(std::string s)
                     }
                     if (end > w2)
                     {
-                        t += s.substr(p, w - p); // \overline
+                        t += s.substr(p, w - p);
                         t += "{";
-                        t += s.substr(w, end - w); // \texttt{ab}
+                        t += s.substr(w, end - w);
                         t += "}";
                         p = end;
                         matched = true;
@@ -1056,14 +1003,12 @@ std::string sanitize_math_chunk(std::string s)
     static const std::regex kCaretDegree(R"(\^\\degree)");
     s = std::regex_replace(s, kCaretDegree, "^{\\circ}");
 
-    // 旧字体命令 \tt{...} → \texttt{...}；\tt 后跟数字/字母串也转换
     static const std::regex kTT(R"(\\tt\{)");
     static const std::regex kTTPlain(R"(\\tt\s+([A-Za-z0-9]+))");
     s = std::regex_replace(s, kTT, "\\texttt{");
     s = std::regex_replace(s, kTTPlain, "\\texttt{$1}");
 
-    // 裸 \texttt（后面没跟 {，如 \texttt \\_）在数学模式会吞掉下一个
-    // 命令当参数，补一个空花括号
+    // 裸 \texttt（后面没有 {）会吞掉下一个命令当参数，补一个空花括号
     static const std::regex kTTBare(R"(\\texttt(?![{]))");
     s = std::regex_replace(s, kTTBare, "\\texttt{}");
 
@@ -1071,8 +1016,7 @@ std::string sanitize_math_chunk(std::string s)
     static const std::regex kKern(R"(\\kern\{)");
     s = std::regex_replace(s, kKern, "\\hspace{");
 
-    // \space 后紧跟中文字符在 xelatex 会报 Undefined control sequence，
-    // 转成控制空格（数学/文本模式都可用）
+    // \space 后紧跟中文字符在 xelatex 报 Undefined control sequence，转成控制空格（数学/文本模式都可用）
     {
         std::string t;
         size_t p = 0;
@@ -1118,8 +1062,7 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // \texttt{...} 在数学模式里，命令（\textcolor、\textbackslash 等）直接保留
-    // （LaTeX 数学模式 texttt 能正常执行）；只需转义裸特殊字符 _ # % & ^ ~ { }
+    // \texttt{...} 在数学模式里能正常执行命令（\textcolor 等直接保留），只需转义裸特殊字符 _ # % & ^ ~ { }
     {
         std::string t;
         size_t p = 0;
@@ -1136,14 +1079,13 @@ std::string sanitize_math_chunk(std::string s)
                         !std::isalpha(static_cast<unsigned char>(s[q + 1])))
                     {
                         content += s[q];
-                        content += s[q + 1]; // 转义对原样保留
+                        content += s[q + 1];
                         q += 2;
                         continue;
                     }
                     if (s[q] == '\\' && q + 1 < s.size() &&
                         std::isalpha(static_cast<unsigned char>(s[q + 1])))
                     {
-                        // 控制词（如 \textcolor）整体保留
                         size_t w = q + 1;
                         while (w < s.size() &&
                                std::isalpha(static_cast<unsigned char>(s[w])))
@@ -1165,8 +1107,7 @@ std::string sanitize_math_chunk(std::string s)
                 }
                 if (depth == 0)
                 {
-                    // 数学符号在 texttt（文本模式）里未定义，需包 $...$ 显示；
-                    // 字号命令（\small 等）在数学模式未定义，直接去掉
+                    // texttt（文本模式）里数学符号未定义，需包 $...$ 显示；字号命令（\small 等）在数学模式未定义，直接去掉
                     static const std::set<std::string> kMathSymbols = {
                         "sim", "times", "le", "ge", "leq", "geq", "neq", "ne",
                         "in", "notin", "pm", "mp", "cdot", "div", "oplus",
@@ -1204,9 +1145,7 @@ std::string sanitize_math_chunk(std::string s)
                             }
                             if (std::isalpha(static_cast<unsigned char>(content[k + 1])))
                             {
-                                // 控制词（\textcolor、\textbackslash 等）连同其
-                                // 花括号参数（如 \textcolor{red}、\textbackslash{}）
-                                // 原样保留，否则转义参数里的 { } 会破坏命令
+                                // 控制词（\textcolor、\textbackslash 等）连同其花括号参数原样保留，否则转义参数里的 { } 会破坏命令
                                 size_t j = k + 1;
                                 while (j < content.size() &&
                                        std::isalpha(static_cast<unsigned char>(content[j])))
@@ -1236,18 +1175,13 @@ std::string sanitize_math_chunk(std::string s)
                                            : word_end - 1);
                                 if (kSizeCmds.count(name))
                                 {
-                                    // 字号命令去掉（内容保留，被循环继续处理）
                                     k = j - 1;
                                     continue;
                                 }
                                 if (kMathSymbols.count(name))
                                 {
-                                    // 数学符号连同参数包起来（如 \sqrt{2}）。
-                                    // 用 \ensuremath 而不是 $...$：\texttt 在数学
-                                    // 模式里并不切换到文本模式，此时再写 $...$
-                                    // 会结束外层数学模式（\sqrt 落在文本模式里
-                                    // 直接报 Missing $ inserted）；\ensuremath
-                                    // 在文本模式与数学模式下都能正常排版
+                                    // 数学符号连同参数包起来（如 \sqrt{2}）。用 \ensuremath 而不是 $...$：\texttt 在数学模式里并不切换到
+                                    // 文本模式，此时再写 $...$ 会结束外层数学模式（\sqrt 落进文本模式直接报 Missing $ inserted）。
                                     esc += "\\ensuremath{" + word + "}";
                                     k = j - 1;
                                     continue;
@@ -1257,14 +1191,13 @@ std::string sanitize_math_chunk(std::string s)
                             }
                             else
                             {
-                                // 转义对（\{ \} \_ 等）原样保留
                                 esc += c;
                                 esc += content[k + 1];
                                 ++k;
                             }
                             continue;
                         }
-                        if (c == '\\') // 结尾悬空的 \ → \textbackslash{}
+                        if (c == '\\')
                         {
                             esc += "\\textbackslash{}";
                             continue;
@@ -1286,8 +1219,7 @@ std::string sanitize_math_chunk(std::string s)
                     p = q + 1;
                     continue;
                 }
-                // 找不到闭合花括号（畸形/未闭合的 \texttt{）：剩余内容原样输出，
-                // 避免对每个同类前缀重新扫描到末尾（O(n²) 的 CPU 停顿）
+                // 找不到闭合花括号（畸形/未闭合的 \texttt{）：剩余内容原样输出，避免对每个同类前缀重新扫描到末尾（O(n²) 停顿）
                 t += s.substr(p);
                 p = s.size();
                 continue;
@@ -1298,8 +1230,8 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // \operatorname{...} 参数里含 \color 时，\limits 会报
-    // "Limit controls must follow a math operator"，把参数整体包一层花括号
+    // \operatorname{...} 参数里含 \color 时 \limits 报 Limit controls must follow a math operator，
+    // 把参数整体包一层花括号
     {
         std::string t;
         size_t p = 0;
@@ -1330,8 +1262,7 @@ std::string sanitize_math_chunk(std::string s)
                 }
                 else
                 {
-                    // 找不到闭合花括号（畸形/未闭合的 \operatorname{）：剩余内容
-                    // 原样输出，避免对每个同类前缀重新扫描到末尾（O(n²) 停顿）
+                    // 未闭合的 \operatorname{：剩余内容原样输出，避免对每个同类前缀重扫到末尾（O(n²) 停顿）
                     t += s.substr(p);
                     p = s.size();
                     continue;
@@ -1343,8 +1274,7 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // \text{...} 里的数学符号（\le、\ldots 等）在文本模式未定义，
-    // 包上 $...$；\text{ 与 \texttt{ 区分开（\texttt 已单独处理）
+    // \text{...} 里的数学符号（\le、\ldots 等）在文本模式未定义，包上 $...$；\text{ 与 \texttt{ 区分开
     {
         static const std::set<std::string> kTextMathSymbols = {
             "le", "leq", "ge", "geq", "ne", "neq", "sim", "times", "div",
@@ -1432,8 +1362,6 @@ std::string sanitize_math_chunk(std::string s)
                 }
                 else
                 {
-                    // 找不到闭合花括号（畸形/未闭合的 \text{）：剩余内容原样输出，
-                    // 避免对每个同类前缀重新扫描到末尾（O(n²) 的 CPU 停顿）
                     t += s.substr(p);
                     p = s.size();
                     continue;
@@ -1445,8 +1373,7 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // 裸 \sout（未跟 {）会吞掉后续命令作为参数（如 \sout\text{...}），
-    // 直接删掉，保留正文
+    // 裸 \sout（未跟 {）会吞掉后续命令作为参数（如 \sout\text{...}），直接删掉，保留正文
     {
         std::string t;
         size_t p = 0;
@@ -1460,7 +1387,7 @@ std::string sanitize_math_chunk(std::string s)
             }
             if (s.compare(p, 5, "\\sout") == 0)
             {
-                p += 5; // 裸 \sout 删掉
+                p += 5;
                 continue;
             }
             t += s[p];
@@ -1469,10 +1396,8 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-
-    // bm 包无法处理 \bm{...\color...} / \boldsymbol{...\color...}，
-    // 内容含 color 时额外包一层花括号；\bm 的参数里 ~ 会触发
-    // Missing number，转成数学空格
+    // bm 包无法处理 \bm{...\color...} / \boldsymbol{...\color...}，内容含 color 时额外包一层花括号；
+    // \bm 的参数里 ~ 会触发 Missing number，转成数学空格。
     {
         std::string t;
         size_t p = 0;
@@ -1530,8 +1455,6 @@ std::string sanitize_math_chunk(std::string s)
                 }
                 else
                 {
-                    // 找不到闭合花括号（畸形/未闭合的 \bm{）：剩余内容原样输出，
-                    // 不再对每个同类前缀重新扫描到字符串末尾（O(n²) 的 CPU 停顿）
                     t += s.substr(p);
                     p = s.size();
                     continue;
@@ -1543,11 +1466,10 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // 对齐环境行归一化（多余/缺少 &、数组列规格不匹配）
     s = normalize_alignment(s);
 
-    // 顶层 & / \\：有 \begin 环境时把整段包进 aligned（如两段矩阵用 & 直接拼接），
-    // 没有环境时按普通字符转义（$&@$、样例输入换行等）
+    // 顶层 & / \\：有 \begin 环境时把整段包进 aligned（洛谷常把两段矩阵用 & 直接拼接），
+    // 没有环境时按普通字符转义（$&@$、样例输入换行等）。
     {
         const bool in_env = s.find("\\begin{") != std::string::npos;
         if (in_env && has_top_level_align(s))
@@ -1568,8 +1490,6 @@ std::string sanitize_math_chunk(std::string s)
                 }
                 else if (c == '\\' && k + 1 < s.size() && s[k + 1] == '\\')
                 {
-                    // \text{\\} 在表格/矩阵里会触发 Misplaced \cr，
-                    // \newline 在文本模式里任何位置都合法
                     t += "\\text{\\newline}";
                     k += 2;
                 }
@@ -1583,15 +1503,14 @@ std::string sanitize_math_chunk(std::string s)
         }
     }
 
-    // \newcommand → \def（先于 %/# 转义，这样定义体内的 #1 参数引用
-    // 在转义阶段已被识别为 \def 宏参数而保留）
+    // 洛谷公式常用 \newcommand/\renewcommand 自定义命令，与 LaTeX 已有命令同名会报 already defined，
+    // 统一转成允许重复定义的 \def；须先于 %/# 转义，定义体内的 #1 才会被当成 \def 宏参数而保留。
     static const std::regex kNewCommandBraced(R"(\\(?:re)?newcommand\s*\{([^}]*)\})");
     static const std::regex kNewCommandPlain(R"(\\(?:re)?newcommand\s+([A-Za-z@]+))");
     s = std::regex_replace(s, kNewCommandBraced, "\\def$1");
     s = std::regex_replace(s, kNewCommandPlain, "\\def$1");
 
-    // \newcommand 的 [N] 参数个数写法（\def\cases[1]{...}）对 \def 无效，
-    // 转成标准的参数形式 \def\cases#1{...}
+    // \newcommand 的 [N] 参数个数写法（\def\cases[1]{...}）对 \def 无效，转成标准的 \def\cases#1{...}
     {
         std::string t;
         size_t p = 0;
@@ -1611,16 +1530,13 @@ std::string sanitize_math_chunk(std::string s)
                         ++e;
                     if (e >= s.size())
                     {
-                        // 畸形/未闭合的 \def\foo[...：剩余内容原样输出，不再对
-                        // 每个 \def\ 前缀重新扫描到字符串末尾（O(n²) 的 CPU 停顿）
                         t += s.substr(p);
                         p = s.size();
                         continue;
                     }
                     if (e < s.size() && s[e] == ']' && e > w + 1)
                     {
-                        // 参数个数：安全解析并限制上限（TeX 宏参数最多 9 个）。
-                        // 畸形/超长数字（如 \def\foo[999999999999]）不再抛异常，
+                        // 参数个数：安全解析并限制上限（TeX 宏参数最多 9 个）；畸形/超长数字（\def\foo[999999999999]）不再抛异常，
                         // 超过上限时保持原样输出
                         size_t n = 0;
                         if (parse_nonneg_int(s.data() + w + 1, s.data() + e, n) &&
@@ -1642,8 +1558,7 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // 裸 % 和 # 在 LaTeX（含数学模式）里是特殊字符，需转义；
-    // 已转义的 \% / \# 先保护起来，避免二次转义
+    // 裸 % 和 # 在 LaTeX（含数学模式）里是特殊字符，需转义；已转义的 \% / \# 先占位保护，避免二次转义
     auto escape_special = [](std::string t, char c, const std::string &escaped) {
         const std::string esc_placeholder = "\x01P\x02";
         size_t pos = 0;
@@ -1657,8 +1572,7 @@ std::string sanitize_math_chunk(std::string s)
         for (size_t k = 0; k < t.size(); ++k)
         {
             const char ch = t[k];
-            // 宏参数（#1、#2...）不能转义，否则 \def\c#1{...} 会被破坏；
-            // \def\<名字>#1 的参数表，以及 \def 定义体内对参数的引用都要保留
+            // 宏参数（#1、#2...）不能转义，否则 \def\c#1{...} 会被破坏：\def 的参数表与定义体内对参数的引用都要保留
             if (ch == '#' && k + 1 < t.size() &&
                 std::isdigit(static_cast<unsigned char>(t[k + 1])))
             {
@@ -1670,7 +1584,6 @@ std::string sanitize_math_chunk(std::string s)
                 {
                     protected_hash = true;
                 }
-                // \def 的参数表（\def\foo#1#2{...}）和定义体内的参数引用：
                 // 往回找最近的 \def，若当前 # 位于其参数表或 {body} 内则保留
                 if (!protected_hash)
                 {
@@ -1685,7 +1598,6 @@ std::string sanitize_math_chunk(std::string s)
                                 break;
                             if (k < open)
                             {
-                                // 位于 \def\<名字> 与 body 之间的参数表
                                 protected_hash = true;
                             }
                             else
@@ -1723,9 +1635,8 @@ std::string sanitize_math_chunk(std::string s)
     s = escape_special(s, '%', "\\%");
     s = escape_special(s, '#', "\\#");
 
-    // 洛谷题面常用 \def\c#1{...} 这类单字母自定义宏，与 LaTeX 内部命令
-    // （\c \t \b \s \r 等重音命令）冲突；统一重命名为 \lgoX 前缀。
-    // 只在单遍内处理单字母宏，避免 \def\bg 等多字母宏被误改或重复改名
+    // 洛谷常用 \def\c#1{...} 这类单字母宏，与 LaTeX 内部的重音命令（\c \t \b \s \r 等）冲突，
+    // 统一改名为 \lgoX 前缀；只在单遍内处理单字母宏，避免 \def\bg 等多字母宏被误改或重复改名。
     {
         std::set<char> names;
         for (size_t q = 0; q + 6 <= s.size(); ++q)
@@ -1736,7 +1647,7 @@ std::string sanitize_math_chunk(std::string s)
                 const char x = s[q + 5];
                 const size_t after = q + 6;
                 if (after >= s.size() || !std::isalpha(static_cast<unsigned char>(s[after])))
-                    names.insert(x); // 单字母宏
+                    names.insert(x);
             }
         }
 
@@ -1759,7 +1670,7 @@ std::string sanitize_math_chunk(std::string s)
                         break;
                     }
                 }
-                // 用法 \X（后跟 { / 空格 / 标点 等非小写字母，避免误伤 \color 这类长命令）
+                // 用法 \X（后跟 { / 空格 / 标点等非小写字母；用 islower 避免误伤 \color 这类长命令）
                 if (s[p] == '\\' && p + 1 < s.size() && s[p + 1] == x &&
                     (p + 2 >= s.size() ||
                      !std::islower(static_cast<unsigned char>(s[p + 2]))))
@@ -1779,10 +1690,8 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(tmp);
     }
 
-    // 控制词后紧跟字母（含 CJK，XeTeX 里都是 catcode 11）时，会被并进
-    // 控制词（\qquad第 → 未定义命令 \qquad第；\leN → 未定义命令 \leN）；
-    // 按最长已知命令前缀拆开并补空组。放在单字母宏改名之后，
-    // 这样 \lgowN 这类改名产物也能被处理
+    // 控制词后紧跟字母（含 CJK，XeTeX 里都是 catcode 11）会被并进控制词（\qquad第、\leN 都成未定义命令）：
+    // 按最长已知命令前缀拆开并补空组。放在单字母宏改名之后，这样 \lgowN 这类改名产物也能被处理。
     {
         static const std::set<std::string> kKnownPrefixes = {
             // 关系符（最常被后面直接跟变量名吸收）
@@ -1796,7 +1705,6 @@ std::string sanitize_math_chunk(std::string s)
             "uparrow", "downarrow", "Uparrow", "Downarrow", "updownarrow",
             "dots", "cdots", "ldots", "vdots", "ddots", "quad", "qquad",
             "land", "lor", "wedge", "vee", "lnot", "neg",
-            // 常用算子/函数
             "max", "min", "log", "ln", "lg", "gcd", "lcm", "mod", "bmod",
             "pmod", "sum", "prod", "int", "iint", "iiint", "oint", "lim",
             "limsup", "liminf", "sup", "inf", "det", "dim", "exp", "deg",
@@ -1825,15 +1733,13 @@ std::string sanitize_math_chunk(std::string s)
             "lgroup", "rgroup", "Vert", "vert", "aleph", "hbar", "ell",
             "imath", "jmath", "Re", "Im", "partial", "nabla", "forall",
             "exists", "nexists", "infty", "emptyset", "varnothing",
-            // \in / \notin 开头、且是完整命令名的命令：不补进这里就会被
-            // 「最长已知前缀」拆开（\injlim → \in{}jlim，已实测）
+            // \in / \notin 开头、但本身是完整命令名的命令也要列入，否则会被「最长已知前缀」拆开（\injlim → \in{}jlim，已实测）
             "injlim", "projlim", "varinjlim", "varprojlim",
             "notindot", "notinva", "notinvb", "notinvc",
             "notniva", "notnivb", "notnivc", "notni",
             "triangle", "square", "Box", "Diamond", "clubsuit", "diamondsuit",
             "heartsuit", "spadesuit", "checkmark", "dagger", "ddagger",
             "star", "bullet", "degree", "copyright",
-            // 希腊字母
             "Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta",
             "Theta", "Iota", "Kappa", "Lambda", "Mu", "Nu", "Xi", "Omicron",
             "Pi", "Rho", "Sigma", "Tau", "Upsilon", "Phi", "Chi", "Psi",
@@ -1848,14 +1754,10 @@ std::string sanitize_math_chunk(std::string s)
             "lgom", "lgon", "lgop", "lgoq", "lgos", "lgot", "lgou", "lgov",
             "lgow", "lgox", "lgoy",
         };
-        // 以 kSafeSplit 中某个短命令开头、但本身是完整命令名的命令
-        // （如 \leqslant 以 \leq 开头）。整词匹配时必须原样保留，否则会
-        // 被拆成 \leq{}slant（P4381 的公式曾因此编译出错）；后跟变量时
-        // （如 \leqslantN）仍按“命令 + 后续字符”拆开。
-        // 名单取自 LaTeX 内核 / amsmath / amssymb / mathtools / unicode-math
-        // 中被引用的西文命令，新增命令时在此补充。
+        // 以短命令开头、但本身是完整命令名的命令（如 \leqslant 以 \leq 开头）：整词匹配时必须原样保留，
+        // 否则会被拆成 \leq{}slant（P4381 的公式曾因此编译出错）；后跟变量时（\leqslantN）仍按「命令 + 后续字符」拆开。
+        // 名单取自 LaTeX 内核 / amsmath / amssymb / mathtools / unicode-math 中出现的西文命令，新增命令时在此补充。
         static const std::set<std::string> kKnownFullCommands = {
-            // le / ge：小于等于、大于等于、大小关系
             "leq", "leqq", "leqqslant", "leqslant", "lescc", "lesdot", "lesdoto",
             "lesdotor", "lesges", "less", "lessapprox", "lessdot", "lesseqgtr",
             "lesseqqgtr", "lessgtr", "lesssim", "approxeq", "approxeqq",
@@ -1863,7 +1765,6 @@ std::string sanitize_math_chunk(std::string s)
             "gesdoto", "gesdotol", "gesles", "gneq", "gneqq", "gnsim", "gvertneqq",
             "gtrapprox", "gtrarr", "gtrdot", "gtreqless", "gtreqqless", "gtrless",
             "gtrsim", "gtcc", "gtcir", "gtlpar", "gtquest",
-            // le / ge：箭头与左向符号
             "leadsto", "leftarrowtail", "leftharpoonaccent", "leftharpoondown",
             "leftharpoondownbar", "leftharpoonsupdown", "leftharpoonup",
             "leftharpoonupbar", "leftharpoonupdash", "leftleftarrows", "leftmoon",
@@ -1880,11 +1781,9 @@ std::string sanitize_math_chunk(std::string s)
             "rightarrowx", "nearrow", "neovnwarrow", "neovsearrow", "nequiv",
             "neswarrow", "neuter", "uparrowbarred", "uparrowoncircle",
             "updownarrowbar", "updownarrows",
-            // lt / ln / lg、gt：大小关系与对数
             "ltimes", "ltcc", "ltcir", "ltlarr", "ltquest", "ltrivb", "lneq", "lneqq",
             "lnsim", "lnapprox", "lvertneqq", "lgE", "lgblkcircle", "lgblksquare",
             "lgwhtcircle", "lgwhtsquare",
-            // in / int / sup / sub / sum：积分与上下限
             "intercal", "interleave", "intextender", "intBar", "intbar", "intbottom",
             "intcap", "intclockwise", "intcup", "intlarhk", "intprod", "intprodr",
             "inttop", "intx", "intop", "intertext", "increment", "inversebullet",
@@ -1895,10 +1794,8 @@ std::string sanitize_math_chunk(std::string s)
             "supsetplus", "supsim", "supsub", "supsup", "supdsub", "supedot",
             "suphsol", "suphsub", "suplarr", "supmult", "sumbottom", "sumint",
             "sumtop", "niobar", "nis", "nisd",
-            // mid / parallel / not / mod
             "middle", "midbarvee", "midbarwedge", "midcir", "parallelogram",
             "parallelogramblack", "perps", "notag", "notni", "models", "modtwosum",
-            // cdot / circ / cup / cap / oplus 等算子
             "cdotp", "circeq", "circlearrowleft", "circlearrowright",
             "circlebottomhalfblack", "circledS", "circledast", "circledbullet",
             "circledcirc", "circleddash", "circledequal", "circledownarrow",
@@ -1911,12 +1808,10 @@ std::string sanitize_math_chunk(std::string s)
             "capovercup", "capwedge", "opluslhrim", "oplusrhrim", "otimeshat",
             "otimeslhrim", "otimesrhrim", "divideontimes", "divslash", "timesbar",
             "pmb", "asteq", "asteraccent", "astrosun",
-            // dots / wedge / vee 等
             "dotsb", "dotsc", "dotsi", "dotsm", "dotso", "dotsim", "dotsminusdots",
             "ddotseq", "wedgebar", "wedgedot", "wedgedoublebar", "wedgemidvert",
             "wedgeodot", "wedgeonwedge", "wedgeq", "veebar", "veedot", "veedoublebar",
             "veeeq", "veemidvert", "veeodot", "veeonvee", "veeonwedge", "vertoverlay",
-            // 文档命令与本项目预置的兼容命令（\providecommand）
             "newcommand", "renewcommand", "providecommand", "infin", "circledR",
         };
         auto is_known = [&](const std::string &w) {
@@ -1924,8 +1819,7 @@ std::string sanitize_math_chunk(std::string s)
                    kKnownFullCommands.count(w) != 0 ||
                    (w.size() > 3 && w.compare(0, 3, "lgo") == 0);
         };
-        // 只有这些“短命令”允许被拆开（\leN → \le{}N）。
-        // \textcolor 这类长命令即使含已知前缀也绝不拆，避免破坏命令
+        // 只有这些「短命令」允许被拆开（\leN → \le{}N）；\textcolor 这类长命令即使含已知前缀也绝不拆，避免破坏命令
         static const std::set<std::string> kSafeSplit = {
             "le", "leq", "ge", "geq", "ne", "neq", "sim", "simeq", "approx",
             "equiv", "propto", "lt", "gt", "times", "div", "pm", "mp",
@@ -1957,10 +1851,8 @@ std::string sanitize_math_chunk(std::string s)
                        std::isalpha(static_cast<unsigned char>(s[w])))
                     ++w;
                 const std::string word = s.substr(p + 1, w - p - 1);
-                // 整词不是已知命令时（\leN、\qquad第），按最长已知前缀拆开，
-                // 在命令后补空组，避免后续字母被并入命令名；
-                // 整词是已知命令（\operatornamewithlimits、\frac12、
-                // \leqslant 等）则不动
+                // 整词不是已知命令（\leN、\qquad第）时，按最长已知前缀拆开，并在命令后补空组，避免后续字母被并入命令名；
+                // 整词是已知命令（\operatornamewithlimits、\frac12、\leqslant 等）则不动。
                 if (!is_known(word))
                 {
                     size_t best = std::string::npos;
@@ -1977,8 +1869,7 @@ std::string sanitize_math_chunk(std::string s)
                         continue;
                     }
                 }
-                // CJK 等非 ASCII 字符不是 isalpha，单词扫描会停在它前面；
-                // 若上面没能拆开（如 \qquad第），在整词后补空组
+                // CJK 等非 ASCII 字符不是 isalpha，单词扫描会停在它前面；若上面没能拆开（如 \qquad第），在整词后补空组
                 if (w < s.size() &&
                     static_cast<unsigned char>(s[w]) >= 0x80)
                 {
@@ -1997,8 +1888,7 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // \def\or{...} 会重定义 LaTeX 数组前导里的内部命令 \or，
-    // 导致 "in array arg"；统一改名为 \lgooor
+    // \def\or{...} 会重定义 LaTeX 数组前导里的内部命令 \or，导致 "in array arg"；统一改名为 \lgooor
     {
         std::string t;
         size_t p = 0;
@@ -2018,10 +1908,8 @@ std::string sanitize_math_chunk(std::string s)
         s = std::move(t);
     }
 
-    // 洛谷题面常见的 $^$（表示“二进制异或”）没有底数，LaTeX 编译报错；
-    // 裸上/下标（$^1$、$^*$ 等脚注标记）补空底数 ${}^1$；
-    // 末尾悬空的 ^ / _（如“……则省略 ^”）直接输出 \wedge。
-    // 放在最后处理：前面 \texttt{...}\\ 等转换会改变 ^ / _ 的相邻字符
+    // 洛谷常见的 $^$（表示二进制异或）没有底数，编译报错：裸上/下标补空底数 ${}^1$，末尾悬空的 ^ / _ 直接输出 \wedge。
+    // 放在最后处理——前面 \texttt{...}\\ 等转换会改变 ^ / _ 的相邻字符。
     {
         static const std::regex kBareCaret(R"(\$[\^_]\$)");
         s = std::regex_replace(s, kBareCaret, "$\\wedge$");
@@ -2067,9 +1955,8 @@ std::string sanitize_math_chunk(std::string s)
             pos += esc.size();
         }
     }
-    // 最后一步：拆掉不可信内容里能读写文件/执行命令的 TeX 控制词
-    // （\write18、\openout、\input、\catcode、\csname、\end{document} 等）。
-    // 放在所有公式修复之后，避免修复逻辑把被拆开的控制词又重新拼回命令。
+    // 最后一步：拆掉不可信内容里能读写文件/执行命令的控制词（\write18、\openout、\input、\catcode、\end{document} 等），
+    // 必须在所有公式修复之后，避免修复逻辑把被拆开的控制词又重新拼回命令。
     return defuse_tex_commands(s);
 }
 
@@ -2110,11 +1997,8 @@ std::string escape_latex(std::string s)
         }
     }
 
-    // 部分 Unicode 标点在常用西文字体（Latin Modern 等）中没有字形，
-    // 而 xeCJK 也不会把它们交给中文字体，编译时会被静默丢弃：例如洛谷
-    // 题面里的中文破折号“――”用的是 U+2015 HORIZONTAL BAR，P1131 中
-    // 会整段消失（日志只报 "Missing character"）。这里在文本模式把这些
-    // 字符换成等价的 LaTeX 命令，任何字体方案下都能正常排版。
+    // 部分 Unicode 标点在常用西文字体（Latin Modern 等）里没有字形，xeCJK 也不会把它们交给中文字体，编译时
+    // 被静默丢弃（如 P1131 里的 U+2015 中文破折号整段消失，日志只报 Missing character）；这里换成等价的 LaTeX 命令。
     static const std::pair<const char *, const char *> kTextFallbacks[] = {
         {"\u2015", "\\textemdash{}"}, // ― 水平杠（中文破折号）
         {"\u2012", "\\textendash{}"}, // ‒ figure dash（数字宽的短横）
@@ -2132,8 +2016,7 @@ std::string escape_latex(std::string s)
     return out;
 }
 
-// 去掉 $...$ 与 $$...$$ 数学片段，生成适合 PDF 书签的纯文本标题：
-// hyperref 无法把 unicode-math 的数学符号（\Umathchar 定义）转成书签
+// 去掉 $...$ 与 $$...$$ 生成 PDF 书签用的纯文本标题：hyperref 无法把 unicode-math 的数学符号转成书签
 // 字符串，含数学的题目标题须经 \texorpdfstring 提供纯文本备用串。
 std::string strip_math_for_bookmark(std::string s)
 {
@@ -2159,15 +2042,10 @@ std::string strip_math_for_bookmark(std::string s)
     return out;
 }
 
-// \includegraphics / \IfFileExists 的路径归一化：
-// - '\' 归一化为 '/'（TeX 不认识 Windows 反斜杠路径；源路径已用 path_to_utf8
-//   转成 UTF-8）；
-// - 路径里的空格**必须原样保留**：这两个命令的文件名扫描不会展开控制序列，
-//   写成 "\ "（控制符号）会被当成文件名的一部分，导致图片永远找不到
-//   （已实测：`paths/space\ 1.png` 找不到，`paths/space 1.png` 正常）。
-//   LaTeX 的带引号文件名机制本来就支持空格，Windows 用户目录（如
-//   C:\Users\John Doe\...）因此能正常工作；
-// - 换行/制表符换成空格：它们写进 .tex 会截断路径。
+// \includegraphics / \IfFileExists 的路径归一化：\ 换成 /（TeX 不认 Windows 反斜杠；源路径已是 UTF-8）。
+// 路径里的空格必须原样保留：这两个命令的文件名扫描不展开控制序列，写成 "\ "（控制符号）会被当成文件名的一部分，
+// 图片永远找不到（已实测）——LaTeX 的带引号文件名机制本来就支持空格，Windows 用户目录因此能正常工作；
+// 换行/制表符换成空格，否则会截断路径。
 std::string escape_path(std::string s)
 {
     std::string out;
@@ -2184,16 +2062,13 @@ std::string escape_path(std::string s)
     return out;
 }
 
-// 路径能否安全写进 .tex：% 会在 TeX 里注释掉本行剩余内容（连 } 一起吞掉）、
-// # 是宏参数符、{ } 会破坏分组，这四种字符在文件名里无法原地转义
-// （\% \# 会展开成排版字符而不是文件名字符）。命中时调用方跳过该图片并提示，
-// 不写出必然编译失败的 LaTeX。
+// 路径能否安全写进 .tex：% 会注释掉本行剩余内容（连 } 一起吞掉）、# 是宏参数符、{ } 破坏分组，
+// 且这四种字符在文件名里无法原地转义（\% \# 会排成字符而不是文件名字符）；命中时调用方跳过该图片并提示。
 bool path_is_tex_safe(const std::string &s)
 {
     return s.find_first_of("%#{}") == std::string::npos;
 }
 
-// 图片路径含无法写进 .tex 的字符时提示一次（同一个原因不重复刷屏）
 void warn_unsafe_image_path(const std::string &path)
 {
     static std::once_flag warned;
@@ -2206,12 +2081,10 @@ void warn_unsafe_image_path(const std::string &path)
     });
 }
 
-// \url{} 的参数转义：% 与 # 在 TeX 中是特殊字符，未转义会破坏编译或吞掉
-// URL 剩余部分；\ { } 还会**提前闭合 \url 的参数**，让 URL 里的
-// \write18{...} / \input{...} 之类命令变成可执行的正文（题面、题解、文章里的
-// 链接目标都是不可信远程文本）。hyperref 的 \url 会把 \\ 当字面反斜杠排版，
-// 但 \{ \} 会把转义用的反斜杠一起排出来，因此花括号按 URL 规范写成百分号
-// 编码（{ } 本来就不允许直接出现在 URL 里），既安全又与原文等价（均已实测）。
+// \url{} 的参数转义：% 与 # 是 TeX 特殊字符，未转义会破坏编译或吞掉 URL 剩余部分；\ { } 还会提前闭合
+// \url 的参数，让 URL 里的 \write18{...} / \input{...} 之类命令变成可执行的正文（题面、题解、文章里的链接
+// 目标都是不可信远程文本）。hyperref 的 \url 会把 \\ 当字面反斜杠排版，但花括号要按 URL 规范写成百分号编码
+// （{ } 本来就不允许直接出现在 URL 里），既安全又与原文等价（均已实测）。
 std::string escape_url(std::string s)
 {
     std::string out;
@@ -2231,20 +2104,14 @@ std::string escape_url(std::string s)
     return out;
 }
 
-
-// listings 环境的结束标记是**字面字符串** \end{lstlisting}：它只要出现在代码
-// 行的任何位置（行首、行中、带前导空格均可，已实测）就会提前结束环境，其后的
-// 内容会被当成 LaTeX 正文编译。代码块与样例都来自不可信远程文本，因此把这些
-// 结束标记换成绝不会被 listings 识别的等价写法 \lx@end{lstlisting}，再配合下方
-// \lstset 里的 literate 选项把它排版回原文（已实测：输出与原文逐字一致，
-// 环境不再提前结束）。
+// listings 的结束标记是字面字符串 \end{lstlisting}：它出现在代码行的任何位置（行首、行中、带前导空格）
+// 都会提前结束环境，其后内容会被当成 LaTeX 正文编译。代码块与样例都来自不可信远程文本，故换成绝不会被
+// listings 识别的等价写法 \lx@end{lstlisting}，再由下方 \lstset 的 literate 选项排版回原文（已实测逐字一致）。
 const char *const kLstEndMarker = "\\lx@end{lstlisting}";
-// \lstset 用的 literate 选项：把等价写法排版回原文 \end{lstlisting}
 const char *const kLstLiterateOption =
     "    literate={\\\\lx@end\\{lstlisting\\}}{{\\textbackslash end\\{lstlisting\\}}}1,\n";
 
-// 把要写进 lstlisting 的文本安全化：替换掉所有结束标记（只替换这一个字面量，
-// 其它内容逐字节保留，代码显示不受影响）
+    // 把要写进 lstlisting 的文本安全化：只替换结束标记这一个字面量，其它内容逐字节保留，代码显示不受影响
 std::string lst_safe(std::string s)
 {
     static const std::string kEnd = "\\end{lstlisting}";
@@ -2292,18 +2159,16 @@ bool looks_like_url(const std::string &url)
            url.find("://") != std::string::npos;
 }
 
-// 输出用的视频链接目标：洛谷的 B 站视频伪链接（![](bilibili:BVxxx?page=1)）
-// 补全为 https://www.bilibili.com/video/... 的完整网页 URL，其余视频
-// （如 .mp4 直链）原样返回。
+// 输出用的视频链接目标：洛谷的 B 站视频伪链接（![](bilibili:BVxxx?page=1)）补全为
+// https://www.bilibili.com/video/... 的完整网页 URL，其余视频（如 .mp4 直链）原样返回。
 std::string video_link_target(const std::string &url)
 {
     const std::string full = luogu::bilibili_video_url(url);
     return full.empty() ? url : full;
 }
 
-// data:image/...;base64,... 这类内嵌数据 URI：xelatex 无法使用，
-// 而且 base64 内容是一整串无空格文本，会让 TeX 段落排版出问题
-// （甚至段错误/卡死），一律跳过
+// data:image/...;base64,... 这类内嵌数据 URI：xelatex 无法使用，而且 base64 是一整串无空格文本，
+// 会让 TeX 段落排版出问题（甚至段错误/卡死），一律跳过。
 bool is_data_uri(const std::string &url)
 {
     return url.rfind("data:", 0) == 0;
@@ -2344,9 +2209,8 @@ ImageKind detect_image_kind(const std::filesystem::path &path)
         return ImageKind::kWebp;
     if (n >= 2 && head[0] == 'B' && head[1] == 'M')
         return ImageKind::kBmp;
-    // SVG：先跳过 UTF-8 BOM 与前导空白，再认 <svg / XML 声明 / DOCTYPE / 注释。
-    // 此前要求文件开头正好是 "<svg" 或 "<?xm"，带 BOM、前面有空行或先写
-    // DOCTYPE/注释的 SVG 会被判成未知格式而静默丢弃。
+    // SVG：先跳过 UTF-8 BOM 与前导空白，再认 <svg / XML 声明 / DOCTYPE / 注释——只认文件开头正好是 "<svg"
+    // 或 "<?xm" 会漏掉带 BOM、前面有空行或先写 DOCTYPE/注释的 SVG（被判成未知格式而静默丢弃）。
     {
         size_t k = 0;
         if (n >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF)
@@ -2371,11 +2235,9 @@ ImageKind detect_image_kind(const std::filesystem::path &path)
     return ImageKind::kUnknown;
 }
 
-// 修正 JPEG 的 JFIF 像素密度。洛谷个别老图密度被写成 1 dpi，
-// XeTeX 会把 405×256px 的图片按 405×256 英寸排版，超过 TeX 的
-// 19 英尺上限而报 "Dimension too large"。密度明显异常（< 72 dpi）
-// 时就地改写为 72 dpi（幂等，可重复执行）。
-// 返回 true 表示无需修正或已修正；若需要修正但缓存不可写则返回 false。
+// 修正 JPEG 的 JFIF 像素密度：洛谷个别老图密度被写成 1 dpi，XeTeX 会把 405×256px 的图片按 405×256 英寸
+// 排版，超过 TeX 的 19 英尺上限而报 Dimension too large。密度 < 72 dpi 时就地改写为 72 dpi（幂等）。
+// 返回 true 表示无需修正或已修正；需要修正但缓存不可写时返回 false。
 bool fix_jpeg_density(const std::filesystem::path &path)
 {
     unsigned char head[24] = {0};
@@ -2397,11 +2259,10 @@ bool fix_jpeg_density(const std::filesystem::path &path)
     const unsigned xd = (head[14] << 8) | head[15];
     const unsigned yd = (head[16] << 8) | head[17];
     if (units != 1 || (xd >= 72 && yd >= 72))
-        return true; // 不需要修正
+        return true;
 
-    // 需要把密度改成 72dpi：不再原地改写缓存文件（写到一半被打断会让缓存
-    // JPEG 永久损坏），改为整份复制到同目录临时文件、只改副本的这 5 字节，
-    // 校验通过后原子替换（与下载图片的写入方式一致）
+    // 不原地改写缓存文件（写到一半被打断会让缓存 JPEG 永久损坏）：整份复制到同目录临时文件，只改副本的
+    // 这 5 字节，校验通过后原子替换（与下载图片的写入方式一致）。
     const std::filesystem::path tmp = luogu::compat::temp_sibling_path(path);
     {
         FILE *src = luogu::compat::fopen(path, "rb");
@@ -2471,12 +2332,9 @@ bool fix_jpeg_density(const std::filesystem::path &path)
     return true;
 }
 
-// 让缓存图片能被 xelatex 正常加载：
-// - GIF/WebP/BMP/SVG/ICO 以及无法识别的内容返回空路径（调用方跳过该图）；
-// - JPEG 密度异常时先就地修正；
-// - PNG/JPEG/PDF/EPS 内容若文件名没有与真实内容相符的扩展名（如无扩展名、
-//   扩展名是 URL 的残余、或扩展名与内容不符，如 .png 里存的是 JPEG），
-//   在缓存目录生成带正确扩展名的副本——XeTeX 按扩展名选择解码器。
+// 让缓存图片能被 xelatex 正常加载：GIF/WebP/BMP/SVG/ICO 以及无法识别的内容返回空路径（调用方跳过该图）；
+// JPEG 密度异常时先修正；PNG/JPEG/PDF/EPS 的文件名扩展名与真实内容不符（无扩展名、扩展名是 URL 的残余、
+// 或扩展名与内容不符）时，在缓存目录生成带正确扩展名的副本——XeTeX 按扩展名选择解码器。
 std::filesystem::path prepare_cached_image(const std::filesystem::path &cache_path)
 {
     std::error_code ec;
@@ -2508,8 +2366,6 @@ std::filesystem::path prepare_cached_image(const std::filesystem::path &cache_pa
         default: break;
     }
 
-    // 扩展名必须与真实内容相符才直接使用；不符时与无扩展名同样处理，
-    // 复制一份带正确扩展名的副本（避免 xelatex 按错误扩展名解码失败）
     const std::string name = to_lower_ascii(cache_path.filename().string());
     static const char *kPngExts[] = {".png"};
     static const char *kJpegExts[] = {".jpg", ".jpeg"};
@@ -2532,7 +2388,7 @@ std::filesystem::path prepare_cached_image(const std::filesystem::path &cache_pa
             return cache_path;
     }
 
-    // 生成带正确扩展名的副本，避免与已有缓存文件冲突
+    // 生成带正确扩展名的副本（i 递增，避免与已有缓存文件冲突）
     for (int i = 0; i < 128; ++i)
     {
         std::filesystem::path copy = cache_path;
@@ -2550,7 +2406,6 @@ std::filesystem::path prepare_cached_image(const std::filesystem::path &cache_pa
     return {};
 }
 
-// 用正则逐个替换，convert(match) 返回替换文本
 std::string regex_transform(const std::string &s, const std::regex &re,
                             const std::function<std::string(const std::smatch &)> &convert)
 {
@@ -2571,12 +2426,10 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                                  std::vector<bool> &is_math, int depth = 0);
 std::string inline_code_latex(const std::string &raw);
 
-// 当前导出过程的 LaTeX 显示选项。仅 export_latex 通过 OptionsGuard 设置；
-// 行内转换（如 bilibili 视频 URL 是否输出为超链接）据此判断。
-// 指针为空时按默认行为处理（与未传入任何新参数时一致）。
+// 当前导出过程的 LaTeX 显示选项：仅 export_latex 通过 OptionsGuard 设置，行内转换（如 bilibili 视频 URL
+// 是否输出为超链接）据此判断；指针为空时按默认行为处理。
 const latex::Options *g_options = nullptr;
 
-// RAII 守卫：进入 export_latex 时挂上选项，离开（含提前返回）时自动还原
 struct OptionsGuard
 {
     const latex::Options *previous;
@@ -2589,13 +2442,13 @@ struct OptionsGuard
     OptionsGuard &operator=(const OptionsGuard &) = delete;
 };
 
-// 占位符：\x01R<n>\x02（注意用字符串拼接构造，避免 \x01R 被当作十六进制转义）
+// 占位符 \x01R<n>\x02（用字符串拼接构造，避免 \x01R 被当成十六进制转义）
 std::string placeholder(size_t index)
 {
     return std::string(1, '\x01') + "R" + std::to_string(index) + std::string(1, '\x02');
 }
 
-// 恢复 \x01R<n>\x02 占位符（数字解析安全化：内容里的畸形/超长数字不再抛异常）
+// 恢复 \x01R<n>\x02 占位符（数字安全解析：内容里的畸形/超长数字不再抛异常）
 std::string restore_placeholders(const std::string &s, const std::vector<std::string> &raws)
 {
     std::string out;
@@ -2623,9 +2476,8 @@ std::string restore_placeholders(const std::string &s, const std::vector<std::st
     return out;
 }
 
-// 合并相邻的数学占位符：洛谷题面里 \$$ 等畸形写法会把一个公式拆成多段
-// （段间可能夹着多余的 $ 和空白），这里把它们拼成一个，避免输出残缺公式。
-// is_math 与 raws 必须保持下标一一对应（合并产生的新条目同样追加 is_math）
+// 合并相邻的数学占位符：洛谷的 \$$ 等畸形写法会把一个公式拆成多段（段间夹着多余的 $ 和空白），拼回一个。
+// is_math 与 raws 必须保持下标一一对应（合并产生的新条目同样追加 is_math）。
 void merge_adjacent_math(std::string &s,
                          std::vector<std::string> &raws,
                          std::vector<bool> &is_math)
@@ -2654,15 +2506,13 @@ void merge_adjacent_math(std::string &s,
             continue;
         }
 
-        // 块级公式 $$...$$ 不参与合并
         if (raws[idx].rfind("$$", 0) == 0)
         {
             out += s.substr(i, end - i);
             i = end;
             continue;
         }
-        // 收集相邻的数学片段并合并：仅当间隙里含多余的 $ 才合并
-        // （纯空白间隔的两个公式是独立的；如 $$...$$ 后跟 $...$ 不应合并）
+        // 收集相邻的数学片段：仅当间隙里含多余的 $ 才合并（纯空白间隔的两个公式是独立的；严格相邻也合并）
         std::string merged = raws[idx];
         size_t run_end = end;
         while (run_end < s.size())
@@ -2677,7 +2527,6 @@ void merge_adjacent_math(std::string &s,
                     gap_has_dollar = true;
                 ++gap_end;
             }
-            // 严格相邻（空间隙）也合并；只有非空且无 $ 的间隙（如 "$$...$$ 后跟 $...$"）才断开
             if (!gap_has_dollar && gap_end > gap_start)
                 break;
             size_t nidx = 0, nend = 0;
@@ -2698,7 +2547,6 @@ void merge_adjacent_math(std::string &s,
             run_end = nend;
         }
         raws.push_back(std::move(merged));
-        // 合并后的片段仍是数学片段：同步追加 is_math，保持两向量下标对应
         is_math.push_back(true);
         out += "\x01R" + std::to_string(raws.size() - 1) + "\x02";
         i = run_end;
@@ -2706,14 +2554,10 @@ void merge_adjacent_math(std::string &s,
     s = std::move(out);
 }
 
-// ---- 下划线形式的强调（Markdown 的 _斜体_ / __粗体__）----
-// 洛谷的 remark 渲染器按 CommonMark 处理下划线强调，但下划线也是标识符、
-// 文件名里最常见的字符，直接全局配对会把 foo_bar_baz、a_1_b 弄坏。这里按
-// CommonMark 对 _ 的 flanking 规则判断定界符：开定界符的前一个字符不能是
-// 「词字符」，收定界符的后一个字符不能是「词字符」，位于词内部的下划线
-// 因此保持原样（最终按普通下划线转义成 \_）。
+// 下划线强调（_斜体_ / __粗体__）按 CommonMark 的 flanking 规则判断定界符：开定界符前、收定界符后不能是
+// 词字符，因此 foo_bar_baz、a_1_b 里位于词内部的下划线保持原样（最后按普通下划线转义成 \_）。
 
-// 取 pos 处（必须是 UTF-8 字符的起始字节）的码点，len 返回其字节数
+// 取 pos 处（必须是 UTF-8 字符的起始字节）的码点，len 返回其字节数；非法/截断序列按单字节处理
 unsigned int utf8_codepoint_at(const std::string &s, size_t pos, size_t &len)
 {
     const unsigned char c = static_cast<unsigned char>(s[pos]);
@@ -2723,12 +2567,12 @@ unsigned int utf8_codepoint_at(const std::string &s, size_t pos, size_t &len)
     if ((c & 0xE0) == 0xC0) { cp = c & 0x1Fu; n = 2; }
     else if ((c & 0xF0) == 0xE0) { cp = c & 0x0Fu; n = 3; }
     else if ((c & 0xF8) == 0xF0) { cp = c & 0x07u; n = 4; }
-    else { len = 1; return c; } // 非法起始字节：按单字节处理
+    else { len = 1; return c; }
     if (pos + n > s.size()) { len = 1; return c; }
     for (size_t k = 1; k < n; ++k)
     {
         const unsigned char cc = static_cast<unsigned char>(s[pos + k]);
-        if ((cc & 0xC0) != 0x80) { len = 1; return c; } // 截断序列：按单字节处理
+        if ((cc & 0xC0) != 0x80) { len = 1; return c; }
         cp = (cp << 6) | (cc & 0x3Fu);
     }
     len = n;
@@ -2746,9 +2590,8 @@ size_t utf8_prev_pos(const std::string &s, size_t pos)
     return k;
 }
 
-// 码点是否算「词字符」：ASCII 字母/数字/下划线、汉字、假名、全角字母数字等。
-// 常见标点区（通用标点、CJK 标点、全角标点）不算，否则「（_斜体_）」这类
-// 写法会被误判成词内下划线而不转换。
+// 码点是否算「词字符」：ASCII 字母/数字/下划线、汉字、假名、全角字母数字等；
+// 常见标点区（通用标点、CJK 标点、全角标点）不算，否则「（_斜体_）」会被误判成词内下划线而不转换。
 bool is_word_codepoint(unsigned int cp)
 {
     if (cp < 0x80)
@@ -2758,9 +2601,9 @@ bool is_word_codepoint(unsigned int cp)
         (cp >= 0x3000 && cp <= 0x303F) ||  // CJK 标点（、。《》「」等）
         (cp >= 0xFE30 && cp <= 0xFE4F) ||  // CJK 兼容形式
         (cp >= 0xFF01 && cp <= 0xFF0F) ||  // 全角标点（！＂＃…）
-        (cp >= 0xFF1A && cp <= 0xFF20) ||  // ：；＜＝＞？＠
-        (cp >= 0xFF3B && cp <= 0xFF40) ||  // ［＼］＾＿｀
-        (cp >= 0xFF5B && cp <= 0xFF65))    // ｛｜｝～｟｠｡｢…
+        (cp >= 0xFF1A && cp <= 0xFF20) ||
+        (cp >= 0xFF3B && cp <= 0xFF40) ||
+        (cp >= 0xFF5B && cp <= 0xFF65))
         return false;
     return true;
 }
@@ -2772,7 +2615,7 @@ bool is_space_codepoint(unsigned int cp)
            (cp < 0x80 && std::isspace(static_cast<unsigned char>(cp)) != 0);
 }
 
-// 下划线强调定界符判断：s 中从 pos 开始的 run 个 '_' 能否作为开定界符
+// 下划线强调定界符判断：s 中从 pos 开始的 run 个 '_' 能否作为开定界符（后面不能是空白、前面不能是词字符）
 bool underscore_can_open(const std::string &s, size_t pos, size_t run)
 {
     if (pos + run >= s.size()) // 后面没有内容（不能以定界符结尾）
@@ -2786,7 +2629,7 @@ bool underscore_can_open(const std::string &s, size_t pos, size_t run)
     return !is_word_codepoint(utf8_codepoint_at(s, prev, len));
 }
 
-// s 中从 pos 开始的 run 个 '_' 能否作为收定界符
+// s 中从 pos 开始的 run 个 '_' 能否作为收定界符（前面不能是空白、后面不能是词字符）
 bool underscore_can_close(const std::string &s, size_t pos, size_t run)
 {
     if (pos == 0)
@@ -2803,14 +2646,12 @@ bool underscore_can_close(const std::string &s, size_t pos, size_t run)
 std::string inline_to_latex_impl(const std::string &text, std::vector<std::string> &raws,
                                  std::vector<bool> &is_math, int depth)
 {
-    // 嵌套粗体/链接等行内语法的最大递归深度：超深嵌套（恶意内容）直接
-    // 按普通文本转义，不再深入，避免栈溢出
+    // 嵌套粗体/链接等行内语法的最大递归深度：超深嵌套（恶意内容）直接按普通文本转义，避免栈溢出。
     static const int kMaxInlineDepth = 50;
     if (depth > kMaxInlineDepth)
         return escape_latex(text);
 
-    // 超长文本先切块再过正则管道（见 kMaxRegexChunk）：不切会让 libstdc++ 的
-    // std::regex 递归耗尽栈而崩溃；切块本身不改变 TeX 输出（换行=空格）
+    // 超长文本先切块再过正则管道（见 kMaxRegexChunk）：不切会让 std::regex 递归耗尽栈而崩溃；切块不改变 TeX 输出。
     if (text.size() > kMaxRegexChunk)
     {
         std::string out;
@@ -2827,7 +2668,7 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
 
     std::string s = text;
 
-    // 1. 把 \$（转义美元符）保护起来，避免数学提取时把它的 $ 当成公式分隔符
+    // 把 \$（转义美元符）保护起来，避免数学提取把它的 $ 当成公式分隔符
     {
         const std::string dollar_sentinel = "\x01D\x02";
         std::string t;
@@ -2847,7 +2688,6 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
         t += s.substr(last);
         s = std::move(t);
     }
-    // 2. 数学公式（原样保留）
     {
         static const std::regex re("(\\$\\$[^$]+\\$\\$|\\$[^$]+\\$)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
@@ -2856,29 +2696,27 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             return placeholder(raws.size() - 1);
         });
     }
-    // 2.5 合并相邻的数学片段（源数据畸形时一个公式可能被拆成多段）
+    // 合并相邻的数学片段（源数据畸形时一个公式可能被拆成多段）
     merge_adjacent_math(s, raws, is_math);
-    // 3. 行内代码（放在数学之后：数学里的反引号是字面量，不应被当成代码分隔符）
+    // 行内代码（放在数学之后：数学里的反引号是字面量，不应被当成代码分隔符）
     {
-        // 支持 1~N 个反引号包裹的代码段（CommonMark 规则），
-        // 避免 ``code`` 这类写法留下多余反引号
+        // 支持 1~N 个反引号包裹的代码段（CommonMark 规则），避免 ``code`` 这类写法留下多余反引号
         static const std::regex re("`+([^`]+?)`+");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             // 行内代码在任意字符之间可断行，长代码不会顶出右边距
             return protect(inline_code_latex(m[1].str()));
         });
     }
-    // 3.5 HTML 图片 <img src="..."> → Markdown 图片语法，交给下面的图片处理
-    //     （洛谷题面/题解里两种写法都有；此前 LaTeX 侧完全不认 <img>，图片
-    //     已经被收集下载却永远不会排版出来，只能看到转义后的 <img ...> 文本）
+    // HTML 图片 <img src="..."> → Markdown 图片语法，交给下面的图片处理
+    // （洛谷题面/题解里两种写法都有）
     {
         static const std::regex re(R"(<img[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             return "![](" + m[1].str() + ")";
         });
     }
-    // 4. 图片包在链接里：[![](img)](url) → \href{url}{图片}；
-    //     必须先于普通链接处理，否则内层 ] 会破坏链接解析
+    // 图片包在链接里：[![](img)](url) → \href{url}{图片}；必须先于普通链接处理，
+    // 否则内层 ] 会破坏链接解析
     {
         static const std::regex re(
             R"(\[!\[[^\]]*\]\s*\(\s*([^\s)]+)(?:\s+["'][^"']*["'])?\s*\)\s*\]\s*\(\s*([^\s)]+)(?:\s+["'][^"']*["'])?\s*\))");
@@ -2891,19 +2729,16 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 return m[0].str();
             if (is_video_url(link_url) || is_video_url(img_url))
             {
-                // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时
-                // 视频 URL 输出为普通文本而非超链接
+                // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时视频 URL 输出为普通文本而非超链接
                 const std::string target = video_link_target(link_url);
-                // --no-bilibili-link、以及识别不了的 bilibili: 伪链接（编号
-                // 非法时 video_link_target 原样返回）：只输出普通文本，
+                // 识别不了的 bilibili: 伪链接（编号非法时 video_link_target 原样返回）只输出普通文本，
                 // 不生成 \url{bilibili:...} 这种打不开的死链
                 if ((g_options && !g_options->bilibili_links) ||
                     target.rfind("bilibili:", 0) == 0)
                     return protect(escape_latex(target));
                 return protect("\\url{" + escape_url(target) + "}");
             }
-            // 按缓存文件真实内容判断能否加载，扩展名与内容不符的图片
-            // 先经 prepare_cached_image 归一化（修正密度/补扩展名）
+            // 按缓存文件真实内容判断能否加载；扩展名与内容不符的图片先经 prepare_cached_image 归一化
             const std::filesystem::path usable =
                 prepare_cached_image(crawler::image_cache_path(img_url));
             if (usable.empty())
@@ -2916,15 +2751,13 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 return std::string();
             }
             const std::string path = escape_path(raw_path);
-            // \noindent：图片单独成段时去掉段首缩进（约 2 个中文字宽），
-            // 否则宽度恰为 \linewidth 的图片会连同缩进一起超出右边界
+            // \noindent：图片单独成段时去掉段首缩进（约 2 个中文字宽），否则宽度恰为 \linewidth 的图片会超出右边界
             return protect("\\noindent\\href{" + escape_latex(link_url) + "}{"
                            "\\IfFileExists{" + path + "}"
                            "{\\luogoincludegraphics{" + path + "}}"
                            "{\\mbox{}}}");
         });
     }
-    // 4.5 图片 → 缓存文件；视频 → 仅链接
     {
         static const std::regex re("!\\[([^\\]]*)\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
@@ -2934,9 +2767,8 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 return std::string(); // data URI 直接丢弃
             if (!looks_like_url(url))
             {
-                // 不是真正的图片地址（如题面里的 ![](一段文字)）：按 Markdown
-                // 语义，替代文字为空的图片加载失败时不显示任何内容（也不能留下
-                // 空行，整段内容为空时由段落层自动跳过）；有替代文字时保留原文，
+                // 不是真正的图片地址（如题面里的 ![](一段文字)）：按 Markdown 语义，替代文字为空的图片加载失败时
+                // 不显示任何内容（也不能留下空行，整段内容为空时由段落层自动跳过）；有替代文字时保留原文，
                 // 交由转义阶段原样输出
                 if (alt.empty())
                     return std::string();
@@ -2944,18 +2776,15 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             }
             if (is_video_url(url))
             {
-                // B 站视频伪链接补全为完整网页 URL；--no-bilibili-link 时
-                // 视频 URL 输出为普通文本而非超链接
+                // 视频链接：同上，补全 B 站伪链接，并按 --no-bilibili-link 决定是否输出超链接
                 const std::string target = video_link_target(url);
-                // 同 4：识别不了的 bilibili: 伪链接不生成死链
                 if ((g_options && !g_options->bilibili_links) ||
                     target.rfind("bilibili:", 0) == 0)
                     return protect(escape_latex(target));
                 return protect("\\url{" + escape_url(target) + "}");
             }
-            // 按缓存文件真实内容判断能否加载：GIF/WebP/SVG/BMP/ICO 等
-            // xelatex 无法加载的格式直接跳过；扩展名与内容不符的图片
-            // 先经 prepare_cached_image 归一化（修正密度/补扩展名）
+            // 按缓存文件真实内容判断能否加载：GIF/WebP/SVG/BMP/ICO 等 xelatex 无法加载的格式直接跳过；
+            // 扩展名与内容不符的图片先经 prepare_cached_image 归一化
             const std::filesystem::path usable =
                 prepare_cached_image(crawler::image_cache_path(url));
             if (usable.empty())
@@ -2963,27 +2792,21 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             const std::string raw_path = luogu::compat::path_to_utf8(usable);
             if (!path_is_tex_safe(raw_path))
             {
-                // 同上：无法表示的路径只跳过，不写出编译不过的 LaTeX
                 warn_unsafe_image_path(raw_path);
                 return std::string();
             }
             const std::string path = escape_path(raw_path);
-            // \noindent：图片单独成段时去掉段首缩进（约 2 个中文字宽），
-            // 否则宽度恰为 \linewidth 的图片会连同缩进一起超出右边界
             return protect("\\noindent\\IfFileExists{" + path + "}"
                            "{\\luogoincludegraphics{" + path + "}}"
                            "{\\mbox{}}");
         });
     }
-    // 5. 链接
     {
         static const std::regex re("\\[([^\\]]*)\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             const std::string label = m[1].str();
-            // 链接文字为空（如题面里的 [](一段文字)）：Markdown 渲染后是
-            // 一个没有内容的超链接，什么都看不见。这里直接输出空内容，既不会
-            // 打印出 `[](…)` 原文，也不会因为整段只剩空内容而多出空行
-            // （段落层对空段落直接跳过）。
+            // 链接文字为空（如题面里的 [](一段文字)）：Markdown 渲染后是一个看不见内容的超链接；直接输出空内容，
+            // 既不会打印出 `[](…)` 原文，也不会因为整段只剩空内容而多出空行（段落层对空段落直接跳过）。
             if (label.empty())
                 return std::string();
             if (is_data_uri(m[2].str()))
@@ -2993,42 +2816,34 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             // --no-bilibili-link：链接目标是 bilibili 视频 URL 时只保留链接文字
             if (g_options && !g_options->bilibili_links && is_video_url(m[2].str()))
                 return protect(inline_to_latex_impl(label, raws, is_math, depth + 1));
-            // B 站视频伪链接补全为完整网页 URL 后作为链接目标
             return protect("\\href{" + escape_latex(video_link_target(m[2].str())) + "}{" +
                            inline_to_latex_impl(label, raws, is_math, depth + 1) + "}");
         });
     }
-    // 6. 自动链接 <https://...> / <bilibili:...>
     {
         static const std::regex re("<((?:https?://|bilibili:)[^>]+)>");
         s = regex_transform(s, re, [&](const std::smatch &m) {
-            // B 站视频伪链接补全为完整网页 URL
             const std::string target = video_link_target(m[1].str());
-            // --no-bilibili-link、以及识别不了的 bilibili: 伪链接：输出普通文本
             if (((g_options && !g_options->bilibili_links) || target.rfind("bilibili:", 0) == 0) &&
                 is_video_url(target))
                 return protect(escape_latex(target));
             return protect("\\url{" + escape_url(target) + "}");
         });
     }
-    // 7. 粗体
     {
         static const std::regex re("\\*\\*([^*]+)\\*\\*");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             return protect("\\textbf{" + inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1) + "}");
         });
     }
-    // 8. 斜体
     {
         static const std::regex re("\\*([^*]+)\\*");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             return protect("\\textit{" + inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1) + "}");
         });
     }
-    // 8.5 下划线形式的粗体/斜体（__粗体__ / _斜体_）
-    //     只在成对下划线位于词边界时转换（见 underscore_can_open/close），
-    //     标识符里的下划线保持原样；内层内容递归转换，因此 _a **b** c_、
-    //     _含 $x$ 的公式_ 都能正确嵌套
+    // 下划线形式的粗体/斜体：只在成对下划线位于词边界时转换（见 underscore_can_open/close），标识符里的
+    // 下划线保持原样；内层递归转换，因此 _a **b** a_、_含 $x$ 的公式_ 都能正确嵌套
     {
         std::string t;
         size_t i = 0;
@@ -3080,19 +2895,15 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
         }
         s = std::move(t);
     }
-    // 9. 删除线
     {
         static const std::regex re("~~([^~]+)~~");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             return protect("\\sout{" + inline_to_latex_impl(m[1].str(), raws, is_math, depth + 1) + "}");
         });
     }
-    // 10. 转义剩余特殊字符
     s = escape_latex(s);
-    // 11. 恢复占位符。链接/粗体等递归生成的片段内部可能还嵌着占位符，
-    //     需要迭代还原直到不再出现 \x01。
-    //     迭代次数加上限：若还原结果仍含 \x01（例如内容本身含占位符形态的
-    //     控制字符形成自指），不再无限循环，剩余控制字符会被视为普通内容
+    // 恢复占位符：链接/粗体等递归生成的片段内部可能还嵌着占位符，需迭代还原直到不再出现 \x01；
+    // 迭代次数加上限，防止内容自指（含占位符形态的控制字符）时无限循环
     std::string result = restore_placeholders(s, raws);
     const size_t kMaxRestoreRounds = raws.size() + 2;
     for (size_t round = 0; round < kMaxRestoreRounds &&
@@ -3115,20 +2926,15 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
 
 std::string inline_to_latex(const std::string &text)
 {
-    // 占位符池只建一次；粗体/链接等递归调用共用同一池，
-    // 否则嵌套占位符在递归中无法还原会死循环
+    // 占位符池只建一次：粗体/链接等递归调用共用同一池，否则嵌套占位符在递归中无法还原会死循环
     std::vector<std::string> raws;
     std::vector<bool> is_math;
     return inline_to_latex_impl(text, raws, is_math);
 }
 
-// 行内代码（Markdown 的 `code`）的 LaTeX 形式：\texttt{...}，并在任意两个
-// 字符之间插入 \allowbreak。行内代码里通常没有空格可以断行，长代码（如
-// 解压密码 `!noip@Nov29,2025:dream`、长文件名）会整段顶出右边距；插入断点
-// 后 TeX 可以在行末任意两个字符之间断开、代码在下一行接着排（不显示连字符）。
-// 断点只能是“字符与字符之间”，不能落在 \& 、\_ 这类转义序列或
-// \textbackslash{} 这类命令中间，因此这里按 UTF-8 字符逐个转义后再拼接：
-// 先整体转义再插断点会切断这些命令。
+// 行内代码（Markdown 的 `code`）→ \texttt{...}：逐 UTF-8 字符转义后在字符间插 \allowbreak。
+// 行内代码里没有空格可断行，长代码会整段顶出右边距，插断点后可在行末任意两字符间断开；
+// 断点不能落在 \&、\_ 或 \textbackslash{} 这类命令中间，故必须逐字符转义后再拼接
 std::string inline_code_latex(const std::string &raw)
 {
     std::string out = "\\texttt{";
@@ -3137,8 +2943,7 @@ std::string inline_code_latex(const std::string &raw)
         size_t len = 1;
         utf8_codepoint_at(raw, i, len);
         out += escape_latex(raw.substr(i, len));
-        // \allowbreak 后面固定跟一个空组而不是空格：控制词后的空格会被 TeX
-        // 全部跳过，代码里的空格（如 `int main()`）会因此消失
+        // \allowbreak 后跟空组而非空格：控制词后的空格会被 TeX 全部跳过，代码里的空格会消失
         out += "\\allowbreak{}";
         i += len;
     }
@@ -3158,8 +2963,7 @@ bool is_block_start(const std::string &t)
     if (t.rfind("$$", 0) == 0 || t.rfind("::", 0) == 0)
         return true;
     static const std::regex kHr(R"(^([-*_])(\s*\1){2,}\s*$)");
-    // 两个分支都必须锚定在行首：t 已经 trim 过，行中出现“版本 2. 0”这类文字
-    // 不是列表项（此前第二分支漏了 ^ 且用 regex_search，会把段落拆断）
+    // 两个分支都必须锚定在行首：t 已经 trim 过，行中如「版本 2. 0」不算列表项，否则会拆断段落
     static const std::regex kItem(R"(^[-+*]\s+|^\d+\.\s+)");
     return std::regex_match(t, kHr) || std::regex_search(t, kItem);
 }
@@ -3198,16 +3002,13 @@ bool is_table_separator_row(const std::string &line)
     return cell_ok(trim(cell));
 }
 
-// 一行是否可能是表格行（包含 |）
 bool is_table_row(const std::string &line)
 {
     return trim(line).find('|') != std::string::npos;
 }
 
-// ---- 折叠框（洛谷 :::info / :::success / :::warning / :::error）----
-// 折叠框样式：洛谷的类型名（小写）、框线与标题行底色（与洛谷网页一致）、
-// 未指定标题时的默认标题，以及生成的 .tex 中使用的颜色名
-// （导言区用 \definecolor 定义，见 export_latex）。
+// 折叠框样式：洛谷的类型名、框线与标题条底色（与洛谷网页一致）、未指定标题时的默认标题；
+// color 是生成的 .tex 中 \definecolor 定义的颜色名（见 export_latex）
 struct FoldStyle
 {
     const char *type;
@@ -3235,10 +3036,8 @@ const FoldStyle *find_fold_style(const std::string &type)
     return nullptr;
 }
 
-// 解析折叠框起始行：冒号不少于 3 个（::::info 表示嵌套在另一折叠框内），
-// 类型为 info / success / warning / error（大小写不敏感），可选的 [标题]，
-// 以及尾部可选的 {选项}（如 {open}，表示默认展开，PDF 里无意义直接忽略）。
-// 匹配成功时返回 true 并给出样式与标题（标题可能为空，调用方用默认标题补上）。
+// 解析折叠框起始行：冒号不少于 3 个表示嵌套在别的折叠框内，类型大小写不敏感，可带
+// [标题] 与尾部 {选项}（如 {open}，PDF 里无意义）。成功时给出样式；标题可能为空，需补默认标题
 bool parse_fold_opener(const std::string &line, const FoldStyle *&style,
                        std::string &title)
 {
@@ -3261,13 +3060,8 @@ bool is_colon_closer(const std::string &t)
     return t.size() >= 3 && t.find_first_not_of(':') == std::string::npos;
 }
 
-// 洛谷的 ::cute-table 指令（「更像 Tuack 的表格」），整行形如：
-//   ::cute-table{tuack}      样式写在花括号里（官方写法）
-//   ::cute-table[]{tuack}    旧写法，花括号挂在空的方括号后
-//   ::cute-table             未写样式
-// 该指令声明紧随其后的表格按 Tuack 风格渲染（指令本身不是内容）；
-// 洛谷网页对 {tuack} / {tuack=N} / {three} 等样式名的渲染结果一致，这里
-// 不做区分，一律按 Tuack 风格处理。不是该指令时返回 false。
+// 洛谷的 ::cute-table 指令（::cute-table{tuack} / ::cute-table[]{tuack} / 无样式）：
+// 声明紧随其后的表格按 Tuack 风格渲染，指令本身不是内容；各样式名渲染一致，这里不做区分
 bool is_cute_table_opener(const std::string &t)
 {
     static const std::regex kCute(
@@ -3276,9 +3070,8 @@ bool is_cute_table_opener(const std::string &t)
     return std::regex_match(t, kCute);
 }
 
-// 是否为 ::: 风格块的起始行（:::info / ::::epigraph / :::align{center} 等）：
-// 至少 2 个冒号，且冒号后还有其他内容。::cute-table 这类没有收尾行的指令
-// 同样算（它也会打断普通段落），是否为容器请另用 is_cute_table_opener 判断。
+// 是否为 ::: 风格块的起始行（至少 2 个冒号且冒号后还有其他内容）；::cute-table 这类没有
+// 收尾行的指令同样算（它也会打断普通段落），是否为容器请另用 is_cute_table_opener 判断
 bool is_colon_opener(const std::string &t)
 {
     size_t n = 0;
@@ -3287,19 +3080,15 @@ bool is_colon_opener(const std::string &t)
     return n >= 2 && n < t.size();
 }
 
-// 洛谷的 remark-directive 指令：
-//   :::name[label]{attrs}   容器 Directive（冒号至少 3 个，有配对的收尾行）
-//   ::name[label]{attrs}    叶子 Directive（冒号恰好 2 个，没有收尾行）
-// name 为字母开头的标识符，[label] 与 {attrs} 都可省略、顺序不限。
-// 已知的容器类型有折叠框（info/success/warning/error）、epigraph、align{...}；
-// 未知类型的容器同样要按容器处理（丢掉指令行本身、内容照常渲染），
-// 否则 :::name 会原样显示在文档里、配对的收尾行还会吃掉后面的环境。
+// 洛谷的 remark-directive 指令：:::name[label]{attrs}（冒号不少于 3 个）是有配对收尾行的
+// 容器，::name（冒号恰好 2 个）是没有收尾行的叶子；未知类型的容器同样按容器处理，否则
+// 指令行会原样显示在文档里、配对的收尾行还会吃掉后面的环境
 struct ColonDirective
 {
-    size_t colons = 0; // 冒号个数（>=2）
-    std::string name;  // 指令名（小写）
-    std::string label; // [label] 的内容（可空）
-    std::string attrs; // {attrs} 的内容（可空）
+    size_t colons = 0;
+    std::string name;
+    std::string label;
+    std::string attrs;
 };
 
 bool parse_colon_directive(const std::string &line, ColonDirective &out)
@@ -3313,8 +3102,8 @@ bool parse_colon_directive(const std::string &line, ColonDirective &out)
     out.colons = m[1].str().size();
     out.name = to_lower_ascii(m[2].str());
 
-    // 指令名之后只允许出现 [label] 与 {attrs}（各至多一个，顺序不限）；
-    // 出现别的内容说明这一行不是指令（例如正文里的「:: 注意」），保持原样
+    // 指令名之后只允许出现 [label] 与 {attrs}（各至多一个，顺序不限）；出现别的内容说明
+    // 这一行不是指令（例如正文里的「:: 注意」），保持原样
     std::string rest = trim(m[3].str());
     while (!rest.empty())
     {
@@ -3333,20 +3122,16 @@ bool parse_colon_directive(const std::string &line, ColonDirective &out)
     return true;
 }
 
-// 是否为容器指令（:::name，有配对的收尾行）。叶子指令（::name）没有收尾行，
-// 不能计入嵌套层数，否则会找不到配对的收尾行。
+// 是否为容器指令（:::name，有配对的收尾行）：叶子指令（::name）没有收尾行，不能计入嵌套层数
 bool is_container_directive(const std::string &line)
 {
     ColonDirective dir;
     return parse_colon_directive(line, dir) && dir.colons >= 3;
 }
 
-// 自定义块环境栈的一层：
-// - env 为空：该容器不输出 LaTeX 环境（未知指令，epigraph 的 list 自己给全
-//   开合标签）；
-// - close_extra：收尾时先于 \end{env} 输出的内容（epigraph 的横线与署名行）；
-// - quote_like：容器内的小标题按普通粗体排版，不生成 \section（引文区只有
-//   2/5 版心宽，套一个真正的大标题会很难看）。
+// 自定义块环境栈的一层：env 为空表示不输出 LaTeX 环境（未知指令、epigraph 的 list 自己给全
+// 开合标签）；close_extra 在 \end{env} 之前输出（epigraph 的横线与署名行）；quote_like 表示
+// 容器内的小标题按普通粗体排版（引文区只有 2/5 版心宽，套一个真正的大标题会很难看）
 struct EnvFrame
 {
     std::string env;
@@ -3354,13 +3139,9 @@ struct EnvFrame
     bool quote_like = false;
 };
 
-// 从起始行 open_idx 之后找到与之配对的收尾行（整行冒号行）并返回其下标。
-// 洛谷的嵌套写法有两种（内层冒号更多，如 :::info 套 ::::info；或内外层都用
-// :::info），收尾行与起始行的冒号数一一对应，因此按“开块 +1 / 收尾 -1”
-// 计数即可正确配对。代码围栏（``` / ~~~）内的 ::: 不是块标记，需要跳过。
-// ::cute-table{tuack} 不是容器（没有配对的收尾行），不能计入嵌套层数，
-// 否则折叠框会找不到自己的收尾行而把后面的内容全部吞进框里。
-// 找不到收尾行（数据残缺）时返回 lines.size()，调用方据此把剩余内容都当块内容。
+// 从 open_idx 之后找到与之配对的收尾行（整行冒号行）并返回其下标：按「开块 +1 / 收尾 -1」
+// 计数即可正确配对（洛谷内外层冒号数可同可不同）；代码围栏（``` / ~~~）内的 ::: 要跳过，
+// ::cute-table 不是容器不能计入层数。找不到收尾行（数据残缺）时返回 lines.size()
 size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
 {
     int depth = 1;
@@ -3402,21 +3183,14 @@ size_t find_block_closer(const std::vector<std::string> &lines, size_t open_idx)
     return lines.size();
 }
 
-// ---- 嵌套折叠框的切块 ----
-// mdframed 有一条已知限制（文档「Known Problems」）：嵌套的 mdframed 不能
-// 跨页。顶层折叠框可以自然跨页，但嵌在里面的折叠框一旦超过一页就会丢内容，
-// 因此这里把嵌套折叠框的内容按顶层块切成若干矮块，每块渲染成一个同色的嵌套
-// 折叠框（首尾相接，见 fold_piece_latex，视觉上仍是一个完整的框）：分页只
-// 发生在块与块之间，既不会截断内容，也不会在一页底部留下大片空白。
-// 估算只用于切块，宁可偏大：一页正文约 35 行，这里每块按 8 行估算（块越矮
-// 页底浪费越少，块之间没有可见接缝，多切几块不影响观感）；
-// 折叠框内图片高度上限为 0.4\textheight（见 fold_box_latex），按 18 行计；
-// 代码、表格行按 1 行，公式行按 2 行，普通行按 44 个半角字符宽折算。
+// 嵌套的 mdframed 不能跨页（上游文档 Known Problems）：嵌在里面的折叠框一旦超过一页就会
+// 丢内容，因此把嵌套折叠框的内容按顶层块切成若干矮块、首尾相接（见 fold_piece_latex），
+// 分页只发生在块与块之间。估算只用于切块、宁可偏大：每块按 8 行估算（一页正文约 35 行），
+// 折叠框内图片高度上限 0.4\textheight 按 18 行计，公式行按 2 行
 constexpr int kFoldBoxMaxRows = 8;
 
-// 与 prepare_cached_image 相同的「xelatex 能否加载」判断，但不产生任何副作用
-// （不改写 JPEG 密度、不复制带正确扩展名的副本）。折叠框分页的行高估算只需要
-// 「这里有没有一张真实可用的图片」，估算过程不应改动缓存文件。
+// 与 prepare_cached_image 相同的「xelatex 能否加载」判断，但不产生任何副作用（不改写 JPEG
+// 密度、不复制带正确扩展名的副本）：折叠框分页的行高估算不应改动缓存文件
 bool cached_image_loadable(const std::filesystem::path &cache_path)
 {
     std::error_code ec;
@@ -3427,8 +3201,7 @@ bool cached_image_loadable(const std::filesystem::path &cache_path)
            kind == ImageKind::kPdf || kind == ImageKind::kEps;
 }
 
-// 一行里的图片在缓存中是否可用（可用的图片才有实际高度；xelatex 无法加载
-// 的格式与未下载的图片都会渲染成空盒）
+// 一行里的图片在缓存中是否可用（xelatex 无法加载的格式与未下载的图片都会渲染成空盒）
 bool line_has_usable_image(const std::string &line)
 {
     static const std::regex kImg("!\\[[^\\]]*\\]\\s*\\(\\s*([^\\s)]+)");
@@ -3463,8 +3236,7 @@ bool line_starts_with_image(const std::string &line)
     return line.find_first_not_of(" \t") >= p;
 }
 
-// 整个段落是否只有图片（且至少有一张图片确实可用），用于给独立成段的
-// 图片前后留出间距
+// 整个段落是否只有图片（且至少有一张确实可用），用于给独立成段的图片前后留出间距
 bool paragraph_is_image_only(
     const std::vector<std::pair<std::string, bool>> &parts)
 {
@@ -3505,21 +3277,19 @@ int estimate_text_line_rows(const std::string &line)
     return rows < 1 ? 1 : rows;
 }
 
-// 折叠框内容里的一个顶层块（段落 / 代码块 / 表格 / 公式 / 嵌套块）：
-// 块内部不允许切分（切开会破坏 markdown 结构）
+// 折叠框内容里的一个顶层块（段落 / 代码块 / 表格 / 公式 / 嵌套块），行区间 [begin, end)，块内不允许切分
 struct MarkdownBlock
 {
-    size_t begin = 0; // 起始行（含）
-    size_t end = 0;   // 结束行（不含）
-    int rows = 1;     // 估算渲染行数
+    size_t begin = 0;
+    size_t end = 0;
+    int rows = 1;
 };
 
 // 扫描 [begin, end) 内的顶层块并估算各块的行数
 std::vector<MarkdownBlock> scan_markdown_blocks(
     const std::vector<std::string> &lines, size_t begin, size_t end);
 
-// 某个位置是否是一个“特殊块”的起始（代码围栏 / ::: 块 / 块级公式 / 表格），
-// 用于结束普通段落
+    // 该位置是否是一个「特殊块」的起始（代码围栏 / ::: 块 / 块级公式 / 表格），用于结束普通段落
 bool starts_special_block(const std::vector<std::string> &lines, size_t k,
                           size_t end)
 {
@@ -3596,8 +3366,8 @@ std::vector<MarkdownBlock> scan_markdown_blocks(
             continue;
         }
 
-        // ::cute-table 指令 + 紧随其后的表格：整段作为一个表格块（指令与表格
-        // 必须留在同一个块里，否则切块后表格会丢掉 Tuack 样式）
+        // ::cute-table 指令 + 紧随其后的表格：整段作为一个表格块（指令与表格分开会让表格
+        // 丢掉 Tuack 样式）
         if (is_cute_table_opener(t))
         {
             size_t j = i + 1;
@@ -3624,8 +3394,7 @@ std::vector<MarkdownBlock> scan_markdown_blocks(
             // 指令后面不是表格：按普通段落处理（渲染时指令会被丢弃）
         }
 
-        // ::: 块（折叠框 / epigraph / align 等）：整段作为一个块，
-        // 块内是嵌套折叠框时把它的估算高度一并计入
+        // ::: 块（折叠框 / epigraph / align 等）：整段作为一个块，块内的嵌套折叠框高度一并计入
         if (is_container_directive(t))
         {
             const size_t closer = find_block_closer(lines, i);
@@ -3640,7 +3409,6 @@ std::vector<MarkdownBlock> scan_markdown_blocks(
             continue;
         }
 
-        // 块级公式 $$...$$
         if (t.rfind("$$", 0) == 0)
         {
             ++i;
@@ -3670,7 +3438,7 @@ std::vector<MarkdownBlock> scan_markdown_blocks(
                 int rows = 2;
                 while (i < end && !trim(lines[i]).empty() && is_table_row(lines[i]))
                 {
-                    rows += 2; // 每个表格行按 2 行估算（含行距）
+                    rows += 2;
                     ++i;
                 }
                 b.end = i;
@@ -3720,14 +3488,10 @@ std::vector<std::pair<size_t, size_t>> group_blocks_into_chunks(
     return chunks;
 }
 
-// 折叠框渲染（mdframed 环境，样式在导言区的 \mdfdefinestyle{luogofoldbox}）：
-// - 第一行是标题条：底色为折叠框颜色、白色粗体字；
-// - 下面是框内内容：白底黑字，字体与正文一致（除标题外不切换任何字体）；
-// - 框线用对应折叠框的颜色（linecolor）；
-// - 顶层折叠框左右外边距为 0，占满整行宽度，并可以自然跨页。
-// 说明：这里不用 tabular 模拟——LaTeX 的表格是整体不可分割的盒子，
-// 内容超过一页的折叠框会被截断；mdframed 可以自然跨页，外观一致。
-// 嵌套折叠框见 fold_piece_latex。
+// 折叠框渲染（mdframed 环境，样式见导言区的 \mdfdefinestyle{luogofoldbox}）：第一行是标题条
+// （底色为折叠框颜色、白色粗体字），下面是框内内容（白底黑字，字体与正文一致）。不用 tabular
+// 模拟：LaTeX 的表格是整体不可分割的盒子，超过一页的折叠框会被截断；mdframed 可以自然跨页。
+// 顶层折叠框左右外边距为 0，占满整行宽度并可以自然跨页；嵌套折叠框见 fold_piece_latex
 std::string fold_box_latex(const FoldStyle &style, const std::string &title,
                            const std::string &content)
 {
@@ -3737,10 +3501,8 @@ std::string fold_box_latex(const FoldStyle &style, const std::string &title,
     out += ", frametitlebackgroundcolor=" + std::string(style.color);
     // frametitle 用花括号包住：标题里的逗号/等号/右方括号不会被当成键值
     out += ", frametitle={" + title + "}]\n";
-    // 框内图片的高度上限（\luogoimagemaxheight 的默认值是 \textheight）：
-    // 图片（\hbox）无法被拆开，太高的话一页只能放下一张、页底留下大片空白，
-    // 因此折叠框内统一限制为 0.4\textheight——一页能放下两张图，或一张图加
-    // 一段文字。mdframed 环境是一个分组，设置只在本框内生效。
+    // 框内图片的高度上限收紧到 0.4\textheight（默认是 \textheight）：图片（\hbox）无法被
+    // 拆开，太高时一页只能放下一张、页底留下大片空白。mdframed 是分组，设置只在本框内生效
     out += "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
     out += content;
     if (!content.empty() && content.back() != '\n')
@@ -3749,10 +3511,8 @@ std::string fold_box_latex(const FoldStyle &style, const std::string &title,
     return out;
 }
 
-// 区块引用（Markdown 的 >）的渲染：mdframed 环境，样式见导言区的
-// \mdfdefinestyle{luogoquote}——只在左侧画一条浅灰竖条（颜色与洛谷网页
-// 一致），其余三条边线不画，竖条随内容跨页延续（顶层的 mdframed 可以
-// 自然跨页，嵌套的引用见 quote_piece_latex）。
+// 区块引用（Markdown 的 >）的渲染：mdframed 环境，样式见导言区的 luogoquote——只在左侧画
+// 一条浅灰竖条（颜色与洛谷网页一致），竖条随内容跨页延续；嵌套引用见 quote_piece_latex
 std::string quote_box_latex(const std::string &content)
 {
     std::string out;
@@ -3764,10 +3524,8 @@ std::string quote_box_latex(const std::string &content)
     return out;
 }
 
-// 嵌套区块引用的一块（引用里的引用，或折叠框里的引用）：与嵌套折叠框
-// 同理，mdframed 的嵌套盒子不能跨页，内容按顶层块切成若干矮块后首尾相接，
-// 竖条看起来仍是连续的一条（切块与间距处理见 fold_piece_latex 的注释）。
-// 只有第一块留上内边距、最后一块留下内边距，中间的块紧贴在一起。
+// 嵌套区块引用的一块（引用里的引用，或折叠框里的引用）：与嵌套折叠框同理，mdframed 的嵌套
+// 盒子不能跨页，内容按顶层块切成若干矮块后首尾相接，竖条看起来仍是连续的一条
 std::string quote_piece_latex(const std::string &content, bool first, bool last)
 {
     std::string out;
@@ -3786,21 +3544,10 @@ std::string quote_piece_latex(const std::string &content, bool first, bool last)
     return out;
 }
 
-// 嵌套折叠框的一块。mdframed 的嵌套盒子不能跨页，所以嵌套框的内容会按块
-// 切成若干小块；这些小块按“相连”的方式排版，视觉上仍是一个完整的框：
-// - 只有第一块有标题条与上框线（topline），只有最后一块有下框线（bottomline）；
-// - 块与块之间没有任何竖直间距，左右框线首尾相接：mdframed 的环境结束时
-//   \endtrivlist 会把环境前的竖直间距重新补回来（又加出一个 \topsep 左右的
-//   空隙），小块之间就会出现缝隙、框线断开。块内容末尾调用
-//   \luogofoldnoparlist 把 LaTeX 的 \@noparlist 开关置真后，\endtrivlist
-//   会整段跳过这段间距（环境结束后再用 \luogofoldparlist 还原）。
-//   不能改用固定负间距（如 \vspace{-\topsep}）抵消：那段间距有时是 0、
-//   有时约 8pt，负间距会把小块上移、压住上一块的内容；
-// - frametitle 必须显式给出：mdframed 的选项会被嵌套的环境继承，续块不写
-//   空标题就会重复显示上一级的标题；
-// - 小块宽度比上一级窄 1em（左右各缩进 1em，\linewidth 此时已是上一级内宽）。
-// 这样每一块都很矮，分页时只会在块之间断页，既不会截断内容，也不会在一页
-// 底部留下大片空白（若每块都画标题条并留间距，一页只能放下一两块）。
+// 嵌套折叠框的一块：mdframed 的嵌套盒子不能跨页，内容按块切成矮块首尾相接，视觉上仍是一个
+// 完整的框——只有第一块有标题条与上框线（topline）、只有最后一块有下框线，块与块之间没有
+// 任何竖直间距（块内容末尾置 \@noparlist 让 \endtrivlist 跳过它会补回的竖直间距，环境结束
+// 后再还原）。frametitle 必须显式给出，否则会继承上一级的标题；小块左右各缩进 1em
 std::string fold_piece_latex(const FoldStyle &style, const std::string &title,
                              const std::string &content, bool first, bool last)
 {
@@ -3820,9 +3567,9 @@ std::string fold_piece_latex(const FoldStyle &style, const std::string &title,
     out += content;
     if (!content.empty() && content.back() != '\n')
         out += '\n';
-    out += "\\luogofoldnoparlist\n"; // 让本块结束后不再补竖直间距
+    out += "\\luogofoldnoparlist\n";
     out += "\\end{mdframed}\n";
-    out += "\\luogofoldparlist\n"; // 还原开关，避免影响后面的列表/盒子
+    out += "\\luogofoldparlist\n";
     return out;
 }
 
@@ -3882,16 +3629,12 @@ bool has_unclosed_paren_or_bracket(const std::string &s)
     return paren > 0 || brack > 0;
 }
 
-// 表格：rows[0] 表头，rows[1] 对齐行，其余为内容行。
-// 支持洛谷表格合并语法：单元格内容恰为 "^" 时向上合并单元格（行合并），
-// 恰为 "<" 时向左合并单元格（列合并）；合并标记必须是单元格内唯一的纯文本内容。
-// 合并解析保证每个合并区域都是矩形（\multicolumn/\multirow 可表达），
-// 无法表达的交叉/ L 形合并会安全退化为空单元格，保证输出可编译。
-// tuack = true 时按洛谷「更像 Tuack 的表格」（::cute-table{tuack}）渲染：
-// 表格整体居中、去掉最左与最右两条竖线（列间竖线保留）、表头不加粗，
-// 最上/最下框线加粗，表头下方的框线加粗一档（细于上下框线）；列对齐、
-// 合并语法、单元格空白处理与普通表格一致。
-// tuack = false 时保持原来的默认样式（四周边框、表头加粗、每行 \hline）。
+// 表格：rows[0] 表头，rows[1] 对齐行，其余为内容行。支持洛谷表格合并语法：单元格内容恰为
+// "^" 时向上合并（行合并），恰为 "<" 时向左合并（列合并），合并标记必须是单元格内唯一的
+// 纯文本内容。合并解析保证每个合并区域都是矩形（\multicolumn/\multirow 可表达），无法表达
+// 的交叉 / L 形合并会安全退化为空单元格，保证输出可编译。tuack = true 时按洛谷
+// 「更像 Tuack 的表格」（::cute-table{tuack}）渲染：表格整体居中、去掉最左与最右两条竖线、
+// 表头不加粗、最上/最下框线加粗、表头下方框线加粗一档；tuack = false 保持默认样式
 void emit_table(const std::vector<std::string> &rows, std::string &out,
                 bool tuack)
 {
@@ -3927,9 +3670,8 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
     if (col_count == 0)
         return; // 防御：无列时不再输出（正常数据至少 1 列）
 
-    // 列规格：默认样式带左右外框线（首尾的 '|'）与列间竖线；Tuack 样式只去掉
-    // 表格最左与最右那两条竖线——开头的 '|' 即最左框线，末列的 '|' 即最右框线，
-    // 两者去掉、列间竖线全部保留
+    // 列规格：默认样式带左右外框线（首尾的 '|'）与列间竖线；Tuack 样式只去掉表格最左与
+    // 最右那两条竖线——开头的 '|' 即最左框线，末列的 '|' 即最右框线，列间竖线全部保留
     std::string spec;
     if (!tuack)
         spec += '|';
@@ -3948,8 +3690,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
         else
             type = 'l';
         spec += type;
-        // 每列后面的 '|'：默认样式一律保留（末列的是最右框线）；
-        // Tuack 样式只在后面还有列时保留（即只留列间竖线）
+        // 每列后面的 '|'：默认样式一律保留（末列的是最右框线）；Tuack 样式只在后面还有列时保留
         if (!tuack || c + 1 < col_count)
             spec += '|';
         col_types.push_back(type);
@@ -3973,7 +3714,6 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
         return; // 防御：没有任何行时不输出
     const size_t row_count = grid.size();
 
-    // ---- 合并解析 ----
     // vtop[r][c]：单元格所属纵向合并的起始行；-1 表示不属于任何纵向合并
     // vend[r][c]：纵向合并的结束行（仅起始行单元格有效）
     // hsrc[r][c]：单元格所属横向合并的起始列；-1 表示不属于任何横向合并
@@ -4004,10 +3744,8 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
         }
     }
 
-    // 2) 横向合并（< 向左合并）：与左侧单元格合并；左侧是 < 时继续向左（链式）。
-    //    左侧是 ^ 或合并失败的 < 时无法表达，按空单元格处理；
-    //    左侧内容单元格带有向下延伸的纵向合并时，仅当合并区域仍是矩形
-    //    （下方对应位置全是 ^ / < 标记）才合并，否则退化为空单元格
+    // 2) 横向合并（< 向左合并，链式）：左侧是 ^ 或合并失败的 < 时无法表达，按空单元格处理；
+    //    左侧内容单元格带有向下延伸的纵向合并时，仅当合并区域仍是矩形才合并，否则退化为空格
     for (size_t r = 0; r < row_count; ++r)
     {
         for (size_t c = 1; c < col_count; ++c)
@@ -4049,10 +3787,8 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
         }
     }
 
-    // 3) 标记“组合矩形”（\multicolumn 与 \multirow 叠加）覆盖的单元格：
-    //    其内部的横向分隔线也必须跳过，否则会穿过合并单元格；
-    //    同时记录每个单元格所属矩形的左右列边界（渲染时用于去掉矩形
-    //    内部的列间竖线，只保留矩形外边界处的竖线）
+    // 3) 标记「组合矩形」（\multicolumn 与 \multirow 叠加）覆盖的单元格：它们内部的横向
+    //    分隔线必须跳过，否则会穿过合并单元格；同时记录矩形左右列边界，渲染时去掉内部竖线
     std::vector<std::vector<bool>> in_rect(row_count,
                                            std::vector<bool>(col_count, false));
     std::vector<std::vector<long>> rect_left(row_count,
@@ -4093,7 +3829,6 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
         return in_rect[r][c] && r + 1 < row_count && in_rect[r + 1][c];
     };
 
-    // ---- 渲染 ----
     // Tuack 风格的表格整体居中；默认样式不加 center，保持原有排版
     if (tuack)
         out += "\\begin{center}\n";
@@ -4112,16 +3847,10 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
                 out += " & ";
             if (cell == "^" || cell == "<")
             {
-                // 组合矩形内部（非起始单元格）：上方 \multirow 会覆盖该单元格，
-                // 但 tabular 的列间竖线仍会穿过合并区域；用 \multicolumn{1}
-                // 重写本格的列规格，去掉矩形内部的竖线，只保留矩形左右
-                // 边界处的竖线，避免竖线出现在合并单元格中间。
-                // 注意 \multicolumn{1} 会删除本格列规格自带的竖线：首列删除
-                // 表格左侧外框，其余列删除右侧列间竖线。左侧竖线只由表格
-                // 第一列（无左邻列）自己补上；其余位置左侧竖线由左邻列右侧
-                // 的竖线负责绘制，补上会把同一条线画成双线。右侧竖线只在
-                // 右邻列不属于同一合并矩形（或本列已是末列）时补上。
-                // Tuack 样式没有最左/最右框线，这两处竖线同样不补。
+                // 组合矩形内部（非起始单元格）：上方 \multirow 会覆盖该单元格，但 tabular
+                // 的列间竖线仍会穿过合并区域；用 \multicolumn{1} 重写本格的列规格，去掉矩形
+                // 内部的竖线、只保留矩形左右边界处的竖线（首列补表格左侧外框，其余列左侧竖线
+                // 由左邻列右侧的竖线负责，补上会把同一条线画成双线；Tuack 无最左右框线，不补）
                 if (in_rect[r][c] &&
                     !(vend[r][c] > static_cast<long>(r) &&
                       hend[r][c] > static_cast<long>(c)) &&
@@ -4151,8 +3880,7 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
             if (hend[r][c] >= 0)
                 hlen = static_cast<size_t>(hend[r][c]) - c + 1;
             std::string content = inline_to_latex(cell);
-            // 表头（表格第一行）加粗：\luogotablehead 同时加粗文字与公式。
-            // Tuack 样式的表头不加粗（与洛谷「更像 Tuack 的表格」一致）
+            // 表头（表格第一行）加粗：\luogotablehead 同时加粗文字与公式；Tuack 样式不加粗
             if (r == 0 && !tuack && !content.empty())
                 content = "\\luogotablehead{" + content + "}";
             if (vlen > 1)
@@ -4160,11 +3888,8 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
                           content + "}";
             if (hlen > 1)
             {
-                // \multicolumn 的对齐规格只允许一个列类型：取被合并范围内
-                // 第一列的对齐方式；默认样式保留首列左侧竖线（表格首列时）
-                // 与合并区域右侧的竖线，列间竖线按 LaTeX 惯例省略；
-                // Tuack 样式没有最左/最右框线，只在合并区域右侧还有列时
-                // 保留右侧的列间竖线
+                // \multicolumn 的对齐规格只允许一个列类型：取被合并范围内第一列的对齐方式；
+                // 默认样式保留首列左侧竖线与合并区域右侧的竖线，Tuack 只在右侧还有列时保留
                 std::string mspec;
                 if (!tuack && c == 0)
                     mspec += '|';
@@ -4177,11 +3902,9 @@ void emit_table(const std::vector<std::string> &rows, std::string &out,
             out += content;
         }
 
-        // 行分隔线：跳过合并单元格内部（合并单元格不应被横线穿过）。
-        // 无合并的表格保持原来的 \hline 输出；Tuack 样式的最上、最下框线
-        // 加粗，表头下方那条加粗一档（细于上下框线），其余行仍是普通 \hline。
-        // 分隔线被合并单元格挡住时（如 ^ 把表头与下面的行合并）只能退化为
-        // \cline 分段，此时保持默认粗细。
+        // 行分隔线：跳过合并单元格内部（合并单元格不应被横线穿过）。默认样式保持原来的 \hline；
+        // Tuack 样式的最上、最下框线加粗，表头下方那条加粗一档，其余行仍是普通 \hline；
+        // 分隔线被合并单元格挡住时（如 ^ 把表头与下面的行合并）只能退化为 \cline 分段
         bool any_blocked = false;
         for (size_t c = 0; c < col_count && !any_blocked; ++c)
         {
@@ -4241,8 +3964,8 @@ std::string safe_string(const nlohmann::json &j, const char *key)
 std::string fence_to_listings_lang(std::string tag)
 {
     tag = to_lower_ascii(trim(tag));
-    // 围栏信息串可能带洛谷的附加选项（```cpp line-numbers、```python title=...），
-    // 语言标记是其中的第一个词，其余选项忽略（行号由 lstset 统一开启）
+    // 围栏信息串可能带洛谷的附加选项（```cpp line-numbers、```python title=...），语言标记
+    // 是其中的第一个词，其余选项忽略
     const size_t space = tag.find_first_of(" \t");
     if (space != std::string::npos)
         tag = tag.substr(0, space);
@@ -4318,9 +4041,8 @@ std::string fence_to_listings_lang(std::string tag)
         return "C";
     if (tag == "erlang" || tag == "erl")
         return "Erlang";
-    // 注：此前这里还有一条 tag == "delphi" / "pascal" → "Delphi"，永远不会
-    // 命中（pascal 在前面已映射到 listings 自带的 Pascal，且导言区没有定义
-    // Delphi 语言，真映射过去会报 Couldn't load requested language）
+    // delphi 不映射到 Delphi：导言区没有定义该 listings 语言，映射过去会报
+    // Couldn't load requested language
     if (tag == "prolog")
         return "Prolog";
     if (tag == "verilog" || tag == "v")
@@ -4338,12 +4060,9 @@ std::string fence_to_listings_lang(std::string tag)
     return "";
 }
 
-// 把超过 limit 字符的行拆成多行：listings 的 breaklines 会先测量整行宽度，
-// 超长行（如几千位数字）总宽会超过 TeX 的 \maxdimen（~16383pt），
-// 报 "Dimension too large"；插入空格也没用（测量发生在断行之前），
-// 只能物理拆行。仅影响极少数病态长行，正常代码/样例不受影响。
-// 拆行时沿 UTF-8 字符边界切断：若切点落在多字节字符的续字节上则向后顺延，
-// 避免生成非法 UTF-8 字节序列导致 xelatex 编译报错
+// 把超过 limit 字符的行拆成多行：listings 的 breaklines 会先测量整行宽度，超长行（如几千位
+// 数字）总宽会超过 TeX 的 \maxdimen（~16383pt），报 "Dimension too large"；插入空格也没用
+// （测量发生在断行之前），只能物理拆行，仅影响极少数病态长行。拆行时沿 UTF-8 字符边界切断
 std::string split_long_line(std::string line,
                             size_t limit = 2500,
                             size_t chunk = 1000)
@@ -4423,21 +4142,16 @@ std::string split_long_lines(const std::string &content)
 }
 
 // 块级递归的深度上限：折叠框（:::info 等）与区块引用（>）会按嵌套层递归调用
-// render_markdown，而嵌套层数完全由不可信输入决定——一行 `>>>>>>…`（十万个 >）
-// 就能让递归深度等于输入长度，栈耗尽即 SIGSEGV（Windows 默认 1MB 栈更早崩溃）。
-// 行内递归有 kMaxInlineDepth、对齐环境有 kMaxEnvDepth，这里给块级补上同等的
-// 上限：超限时不再递归，整段按普通文本转义输出（转义后不可能执行任何命令）。
+// render_markdown，而嵌套层数完全由不可信输入决定——一行 `>>>>>>…`（十万个 >）就能让递归
+// 深度等于输入长度，栈耗尽即 SIGSEGV（Windows 默认 1MB 栈更早崩溃）。超限时不再递归，
+// 整段按普通文本转义输出（转义后不可能执行任何命令）
 const int kMaxBlockDepth = 32;
 
-// 把一段 markdown / HTML 文本转换为 LaTeX（块级处理）。
-// 折叠框 / 区块引用需要把框内内容整体放进盒子里，因此按嵌套层递归调用自身：
-// @param fold_depth 当前所在的折叠框嵌套层数（0 = 不在任何折叠框内）
-// @param quote_depth 当前所在的区块引用嵌套层数（0 = 不在任何引用内）
-// @param box_para_indent 本层内容的第一个段落是否需要手动补首行缩进：
-//        mdframed 的内容从水平模式开始排，盒子里的第一段不会自动缩进，
-//        要自己补 \hspace{\parindent}（见文件下方的段落处理）；嵌套盒子被
-//        切成多块时只有第一块需要补，续块的首段接着上一块排（见
-//        quote_piece_latex / fold_piece_latex）。
+// 把一段 markdown / HTML 文本转换为 LaTeX（块级处理）。折叠框 / 区块引用需要把框内内容整体
+// 放进盒子里，因此按嵌套层递归调用自身：fold_depth / quote_depth 为当前所在的折叠框、
+// 区块引用嵌套层数（0 = 不在其中）；box_para_indent 表示本层内容的第一个段落是否需要手动补
+// 首行缩进——mdframed 的内容从水平模式开始排，盒子里的第一段不会自动缩进，嵌套盒子被切成
+// 多块时只有第一块需要补（见 quote_piece_latex / fold_piece_latex）
 std::string render_markdown(const std::string &markdown, int fold_depth,
                             int quote_depth = 0, bool box_para_indent = true)
 {
@@ -4450,8 +4164,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
 
     std::string out;
     std::vector<EnvFrame> env_stack; // 自定义块环境栈（center/flushright/未知容器）
-    // 上一行是 ::cute-table 指令：紧随其后的表格按 Tuack 样式渲染
-    // （指令与表格之间允许空行；被其他内容“消费”后即失效）
+    // 上一行是 ::cute-table 指令：紧随其后的表格按 Tuack 样式渲染（中间允许空行）
     bool cute_table_pending = false;
 
     char fence = 0;        // 当前代码围栏字符（` 或 ~），0 表示不在代码块内
@@ -4465,7 +4178,6 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
         const std::string raw = lines[i];
         const std::string line = trim(raw);
 
-        // ---- 代码块内部 ----
         if (fence)
         {
             if (is_fence_closer(line, fence, fence_len))
@@ -4490,12 +4202,10 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             continue;
         }
 
-        // 本行生效的表格样式：::cute-table 指令只作用于紧随其后的那个表格，
-        // 中间允许空行；这里先取走标记，其他内容自然把它作废
+        // 本行生效的表格样式：标记先取走，其他内容自然把它作废
         const bool cute_table = cute_table_pending;
         cute_table_pending = false;
 
-        // ---- 打开代码块（``` 或 ~~~）----
         if (line.size() >= 3 && (line[0] == '`' || line[0] == '~'))
         {
             size_t n = 0;
@@ -4512,7 +4222,6 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             }
         }
 
-        // ---- 块级数学 $$...$$ ----
         if (line.rfind("$$", 0) == 0)
         {
             std::string math = line.substr(2);
@@ -4521,10 +4230,9 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             const size_t close = math.find("$$");
             if (close != std::string::npos)
             {
-                // 闭合 $$ 之后同一行还有文字时，把剩余部分放回待处理行，
-                // 交给下面的普通行逻辑（此前会把这段文字整段丢掉）。
-                // 剩余部分本身以 $$ 开头（畸形写法，如 $$a$$$$b）时不回填：
-                // 否则会新开一个块级公式，把后面的段落全吞进 \[...\]。
+                // 闭合 $$ 之后同一行还有文字时，把剩余部分放回待处理行、交给普通行逻辑；
+                // 剩余部分本身以 $$ 开头（畸形写法，如 $$a$$$$b）时不回填，否则会新开一个
+                // 块级公式把后面的段落全吞进 \[...\]
                 const std::string rest = math.substr(close + 2);
                 math = math.substr(0, close);
                 if (!trim(rest).empty() && trim(rest).rfind("$$", 0) != 0)
@@ -4538,8 +4246,8 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                 while (i < lines.size())
                 {
                     const std::string l = trim(lines[i]);
-                    // % 开头的行是 LaTeX 注释（常用来注释掉 \def 等），直接丢弃；
-                    // 否则 \% 转义会让注释内容真正执行
+                    // % 开头的行是 LaTeX 注释（常用来注释掉 \def 等），直接丢弃；否则 \%
+                    // 转义会让注释内容真正执行
                     if (!l.empty() && l[0] == '%')
                     {
                         ++i;
@@ -4549,7 +4257,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                     if (lc != std::string::npos)
                     {
                         math += "\n" + l.substr(0, lc);
-                        // 闭合 $$ 之后同一行还有文字时同样放回队列（此前直接丢弃）
+                        // 闭合 $$ 之后同一行还有文字时同样放回队列，下一轮按普通行处理
                         const std::string rest = l.substr(lc + 2);
                         if (!trim(rest).empty() && trim(rest).rfind("$$", 0) != 0)
                             lines[i] = rest; // 不前进：下一轮按普通行处理
@@ -4571,7 +4279,6 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             continue;
         }
 
-        // ---- Luogu 扩展块：折叠框 / cute-table / align / epigraph 等 ----
         // ::cute-table{tuack}：不是内容，只声明后面的表格用 Tuack 风格
         if (is_cute_table_opener(line))
         {
@@ -4583,12 +4290,9 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
         {
             static const std::regex kCloser(R"(^\s*:+$)", std::regex::icase);
 
-            // 折叠框：找出配对的收尾行，把框内内容整段递归转换后放进
-            // mdframed 盒子（标题条 + 白底黑字内容），嵌套的折叠框因此可以
-            // 一层层套进上一级框内。
-            // 除了 ::info[标题] 这种标准写法，属性写在标题前面
-            // （:::info{open}[标题]）也按折叠框处理：先按通用指令解析，
-            // 名字命中折叠框类型即可。
+            // 折叠框：找出配对的收尾行，把框内内容整段递归转换后放进 mdframed 盒子（标题条 +
+            // 白底黑字内容），嵌套的折叠框因此可以一层层套进上一级框内。除 ::info[标题] 这种
+            // 标准写法外，属性写在标题前面（:::info{open}[标题]）也按折叠框处理
             ColonDirective dir;
             const bool is_directive = parse_colon_directive(line, dir);
             const FoldStyle *fold = nullptr;
@@ -4596,9 +4300,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             if (!parse_fold_opener(line, fold, fold_title) && is_directive &&
                 dir.colons >= 3)
             {
-                // 标准写法 ::info[标题]{属性} 由 parse_fold_opener 处理；
-                // 属性写在标题前面的写法（:::info{open}[标题]）按通用指令
-                // 解析：名字命中折叠框类型时同样按折叠框渲染
+                // 属性写在标题前面的写法按通用指令解析：名字命中折叠框类型时同样按折叠框渲染
                 fold = find_fold_style(dir.name);
                 if (fold)
                     fold_title = dir.label;
@@ -4627,8 +4329,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                 }
                 else
                 {
-                    // 嵌套折叠框不能跨页：按顶层块切成若干矮块，首尾相接
-                    // 渲染成同色的嵌套折叠框，避免内容被截断或留大片空白
+                    // 嵌套折叠框不能跨页：按顶层块切成若干矮块首尾相接，避免内容被截断或留空白
                     const auto blocks =
                         scan_markdown_blocks(lines, inner_begin, inner_end);
                     const auto chunks =
@@ -4649,9 +4350,8 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                                 piece += '\n';
                             piece += lines[k];
                         }
-                        // 各块首尾相接：只有第一块画标题条与上框线、
-                        // 最后一块画下框线，视觉上仍是一个完整的框；
-                        // 首行缩进同样只有第一块的第一段要补
+                        // 各块首尾相接：只有第一块画标题条与上框线、最后一块画下框线，视觉上仍是
+                        // 一个完整的框；首行缩进同样只有第一块的第一段要补
                         out += fold_piece_latex(
                             *fold, inline_to_latex(fold_title),
                             render_markdown(piece, fold_depth + 1,
@@ -4669,8 +4369,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             {
                 if (!env_stack.empty())
                 {
-                    // 收尾前先输出挂在这一层上的内容（epigraph 的署名行），
-                    // 未知指令对应的层没有环境也不输出任何东西
+                    // 收尾前先输出挂在这一层上的内容（epigraph 的署名行），未知指令的层无环境
                     out += env_stack.back().close_extra;
                     if (!env_stack.back().env.empty())
                         out += "\\end{" + env_stack.back().env + "}\n\n";
@@ -4687,29 +4386,21 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                     ++i;
                     continue;
                 }
-                // epigraph（题记，洛谷模仿 Codeforces 的 :::epigraph[署名]）：
-                // - 引文区整体占页面总宽的 2/5，并整体靠右；
-                // - 引文在区内左对齐；一行写不下时在区内换行，不会超出 2/5；
-                // - 引文与署名之间有一条贯穿引文区的横线，署名在区内右对齐、
-                //   正体（署名里的破折号由作者写在 [..] 里，这里不再补）。
-                // 引文默认用正体：只有作者自己写了 _斜体_ / *斜体* 的片段才斜体
-                // （洛谷网页把整个 epigraph 显示成斜体，但导出成文档时默认斜体
-                // 会让整段引文难以阅读，因此这里只跟随行内标记）。
-                // 用 list（leftmargin = 0.6\textwidth）而不是 minipage：
-                // list 会把 \linewidth 设成区宽，区内的图片、表格、代码块、
-                // 嵌套列表同样不会超出 2/5；而且内容超长时可以跨页——
-                // minipage 是一整块不可分割的盒子，放不下一页时会直接溢出。
+                // epigraph（题记，洛谷模仿 Codeforces 的 :::epigraph[署名]）：引文区整体占页面
+                // 总宽的 2/5 并整体靠右，区内左对齐；引文与署名之间有一条贯穿引文区的横线，
+                // 署名在区内右对齐、正体。引文默认用正体，只有作者自己写了 _斜体_ 的片段才斜体。
+                // 用 list（leftmargin = 0.6\textwidth）而不是 minipage：list 会把 \linewidth
+                // 设成区宽，区内的图片、表格、代码块同样不会超出 2/5，而且内容超长时可以跨页
                 if (dir.name == "epigraph")
                 {
                     EnvFrame frame; // env 为空：开合标签由 open/close_extra 给全
                     frame.quote_like = true; // 区内的小标题按普通粗体排版
                     if (!dir.label.empty())
                     {
-                        // 横线与署名的间距：段落之间本来会插入一个 \baselineskip
-                        // 的行距，这里用负 \vspace 抵掉大部分，只留一点空隙
-                        // （否则引文与署名之间会空出将近一整行）。\par 保证横线
-                        // 另起一行：正文最后一行常用硬换行结束，若改用换行命令
-                        // 会触发 "There's no line here to end"。
+                        // 横线与署名的间距：段落之间本来会插入一个 \baselineskip 的行距，这里用
+                        // 负 \vspace 抵掉大部分只留一点空隙（否则会空出将近一整行）。\par 保证
+                        // 横线另起一行：正文最后一行常用硬换行结束，改用换行命令会报
+                        // "There's no line here to end"
                         frame.close_extra =
                             "\\par\\vspace{-0.45\\baselineskip}\\vspace{0.15\\baselineskip}\n"
                             "\\noindent\\rule{\\linewidth}{0.4pt}\n"
@@ -4729,8 +4420,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                            "  \\setlength{\\parsep}{0pt}%\n"
                            "  \\setlength{\\itemsep}{0pt}%\n"
                            "}\n\\item\\relax\n"
-                           // 区内的图片按区宽缩放，高度上限收紧到 0.4 版心高，
-                           // 否则竖长图片（按 2/5 宽缩放后仍然很高）会顶出页面
+                            // 区内的图片按区宽缩放，高度上限收紧到 0.4 版心高，否则竖长图片会顶出页面
                            "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
                     ++i;
                     continue;
@@ -4748,17 +4438,14 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                     ++i;
                     continue;
                 }
-                // 其余容器指令（洛谷将来新增的类型、其它 remark-directive
-                // 写法）：只丢掉指令行本身，内容照常渲染——洛谷不会把
-                // :::name 显示成正文，我们也不应该；入栈是为了让配对的收尾行
-                // 被正确吃掉（env 为空表示不输出环境）
+                // 其余容器指令（洛谷将来新增的类型、其它 remark-directive 写法）：只丢掉指令行
+                // 本身，内容照常渲染；入栈是为了让配对的收尾行被正确吃掉（env 为空 = 不输出环境）
                 env_stack.push_back(EnvFrame());
                 ++i;
                 continue;
             }
         }
 
-        // ---- 标题 ----
         if (line[0] == '#')
         {
             size_t n = 0;
@@ -4778,38 +4465,30 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                                               "paragraph*", "subparagraph*"};
                 if (in_quote_like || n > 5)
                 {
-                    // 这些 # 标题同样按“正文黑体部分”处理：中文黑体、西文
-                    // 与代码块同字体（\luogomarkdownheading）
+                    // 这些 # 标题同样按「正文黑体部分」处理：中文黑体、西文与代码块同字体
                     out += "\\textbf{{\\luogomarkdownheading " + title + "}}\n\n";
                 }
                 else if (n >= 2 && n <= 5)
                 {
-                    // Markdown 的 ## / ### / #### / ##### 对应 LaTeX 的
-                    // subsection / subsubsection / paragraph / subparagraph：
-                    // 默认使用 ctex fontset 预设的黑体；\luogomarkdownheading
-                    // 在用户指定 --set-font-title-* 时优先切换为用户标题字体，
-                    // 保证该系列参数优先级最高。
-                    // \paragraph / \subparagraph 在 LaTeX 里默认是“接排标题”
-                    // （标题与后面的正文排在同一行），导言区用 titlesec 把它们
-                    // 改成独占一行的悬挂标题，与洛谷网页的 h4 / h5 一致。
+                    // Markdown 的 ## / ### / #### / ##### 对应 LaTeX 的 subsection /
+                    // subsubsection / paragraph / subparagraph，使用 \luogomarkdownheading
+                    // （用户指定 --set-font-title-* 时优先切换为用户标题字体）。\paragraph /
+                    // \subparagraph 在 LaTeX 里默认是「接排标题」，导言区用 titlesec 把它们改成
+                    // 独占一行的悬挂标题，与洛谷网页的 h4 / h5 一致
                     out += "\\" + std::string(kCmds[n - 1]) +
                            "{{\\luogomarkdownheading " + title + "}}\n\n";
                 }
                 else
                 {
-                    // 一级标题（#）：--local 转写本地 Markdown 时用 \section
-                    // （进目录、写页眉，目录条目与页眉标题都由它决定）；
-                    // 其余场合保持 \section*（题面 / 题解 / 文章正文里的一级标题
-                    // 只是大标题，不进目录、不改页眉）
+                    // 一级标题（#）：--local 转写本地 Markdown 时用 \section（进目录、写页眉）；
+                    // 其余场合保持 \section*（题面 / 题解 / 文章正文里的一级标题不进目录、不改页眉）
                     const bool h1_section =
                         (n == 1) && g_options && g_options->h1_as_section;
                     if (h1_section)
                     {
-                        // \section 会写目录并生成 PDF 书签：标题含公式时书签
-                        // 无法直接使用数学符号（会报 Token not allowed in a PDF
-                        // string 且书签乱码），需要 \texorpdfstring 提供去掉
-                        // 数学后的纯文本备用串。不含公式的标题保持原样输出，
-                        // 不改变既有产物格式。
+                        // \section 会写目录并生成 PDF 书签：标题含公式时书签必须用
+                        // \texorpdfstring 提供去掉数学后的纯文本备用串，否则会报 Token not
+                        // allowed in a PDF string 且书签乱码；不含公式的标题保持原样输出
                         const std::string bookmark_text =
                             strip_math_for_bookmark(raw_title);
                         if (bookmark_text != raw_title)
@@ -4828,7 +4507,6 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             }
         }
 
-        // ---- 分隔线 ----
         {
             static const std::regex kHr(R"(^([-*_])(\s*\1){2,}\s*$)");
             if (std::regex_match(line, kHr))
@@ -4839,15 +4517,10 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             }
         }
 
-        // ---- 区块引用 ----
-        // Markdown 的 >（可嵌套：> > 表示引用里的引用）。这里只剥掉一层
-        // “>”标记，剩下的内容交给递归调用按普通块级语法渲染：引用里的
-        // 标题、列表、代码块、表格与 :::info / :::align 等指令因此都能正常
-        // 处理，而不是被当成一行普通文字（旧实现只把引用行当行内片段拼接，
-        // 引用里的 # 标题还会被二次转义成字面量）。
-        // > 后的一个空格属于标记的一部分，其余空白原样保留——行尾的两个
-        // 空格是 Markdown 的硬换行标记，交给递归转换去识别（不能用 trim，
-        // 否则硬换行会退化成普通空格）。
+        // 区块引用（Markdown 的 >，可嵌套：> > 表示引用里的引用）：只剥掉一层「>」标记，
+        // 剩下的内容交给递归调用按普通块级语法渲染——引用里的标题、列表、代码块、表格与
+        // :::info / :::align 等指令因此都能正常处理。">" 后的一个空格属于标记的一部分，其余
+        // 空白原样保留：行尾的两个空格是 Markdown 的硬换行标记，不能用 trim，否则会退化
         if (line[0] == '>')
         {
             std::vector<std::string> quoted;
@@ -4882,9 +4555,8 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             }
             else
             {
-                // 嵌套引用（引用里的引用 / 折叠框里的引用）不能跨页：
-                // 与嵌套折叠框同样按顶层块切成矮块，竖条首尾相接。
-                // 引用里没有内容时 blocks 为空，不输出空框。
+                // 嵌套引用（引用里的引用 / 折叠框里的引用）不能跨页：与嵌套折叠框同样按顶层块
+                // 切成矮块、竖条首尾相接；引用里没有内容时 blocks 为空，不输出空框
                 const auto blocks =
                     scan_markdown_blocks(quoted, 0, quoted.size());
                 const auto chunks =
@@ -4908,7 +4580,6 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             continue;
         }
 
-        // ---- 列表 ----
         {
             static const std::regex kItem(R"(^(\s*)([-+*]|\d+\.)\s+(.*)$)");
             std::smatch m;
@@ -4945,8 +4616,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                     }
                     else if (indent > stack.back().indent)
                     {
-                        // LaTeX 的 itemize/enumerate 最多嵌套 4 层，
-                        // 更深的层级归入最内层列表，避免 "Too deeply nested"
+                        // LaTeX 的 itemize/enumerate 最多嵌套 4 层，更深的层级归入最内层列表
                         if (stack.size() < 4)
                         {
                             open_env(ordered);
@@ -4986,12 +4656,10 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                     out += "\\item " + item + "\n";
                     ++i;
 
-                    // 松散列表（loose list）：条目之间允许有空行。CommonMark
-                    // 与洛谷的渲染都把它当作**同一个**列表，编号连续；这里
-                    // 向后跳过空行，若下一非空行仍是列表条目就继续当前列表
-                    // （不跳过则每个条目各自成一个 enumerate，全部显示 1.）。
-                    // 空行后面不是条目时保持 i 不变，空行交给外层按段落处理，
-                    // 列表到此结束。
+                    // 松散列表（loose list）：条目之间允许有空行，CommonMark 与洛谷的渲染都把它
+                    // 当作同一个列表，编号连续；这里向后跳过空行，若下一非空行仍是列表条目就继续
+                    // 当前列表（不跳过则每个条目各自成一个 enumerate，全部显示 1.）。空行后面
+                    // 不是条目时列表结束，空行交给外层按段落处理
                     size_t next = i;
                     while (next < lines.size() && trim(lines[next]).empty())
                         ++next;
@@ -5006,7 +4674,6 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             }
         }
 
-        // ---- 表格（支持有无首尾竖线两种写法）----
         if (is_table_row(line))
         {
             // 下一行是分隔行才按表格处理，避免误判普通含 | 的文本
@@ -5034,15 +4701,14 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             // 不是表格，落入普通段落处理
         }
 
-        // ---- 普通段落 ----
         std::vector<std::pair<std::string, bool>> parts; // (文本, 是否硬换行)
         size_t collected = 0;
         while (i < lines.size())
         {
             const std::string r = lines[i];
             const std::string t = trim(r);
-            // 首行即使像“块语法”也照常当段落收集，保证外层循环总能前进，
-            // 避免单反引号、无空格标题等未被块处理器识别的行造成死循环
+            // 首行即使像「块语法」也照常当段落收集，保证外层循环总能前进，避免单反引号、
+            // 无空格标题等未被块处理器识别的行造成死循环
             if (t.empty() || (collected > 0 && is_block_start(t)))
                 break;
             bool hard = false;
@@ -5085,13 +4751,10 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
                          box_para_indent && out.empty() &&
                          !line_starts_with_image(parts.front().first))
                 {
-                    // 折叠框 / 区块引用内的第一段的首行缩进要自己补：mdframed
-                    // 的内容从水平模式开始排，LaTeX 不会给它加首行缩进，
-                    // \indent 此时也无效，只能用 \hspace 手动缩进两格。
-                    // 只补这一处：其他位置的段落 LaTeX 会自己缩进（补了会缩进
-                    // 两次）；嵌套盒子切成多块时只有第一块补（box_para_indent），
-                    // 续块的首段接着上一块排。以图片开头的段落不缩进：图片按
-                    // \linewidth 缩放，再加缩进会超出右边界。
+                    // 折叠框 / 区块引用内的第一段的首行缩进要自己补：mdframed 的内容从水平模式
+                    // 开始排，LaTeX 不会给它加首行缩进，\indent 此时也无效，只能用 \hspace。只补
+                    // 这一处（其他位置的段落 LaTeX 会自己缩进，补了会缩两次）；嵌套盒子切成多块
+                    // 时只有第一块补（box_para_indent）；以图片开头的段落不缩进（会超出右边界）
                     para = "\\hspace{\\parindent}" + para;
                 }
                 out += para + "\n\n";
@@ -5102,22 +4765,10 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
         ++i;
     }
 
-    // ---- 收尾：依次闭合所有未闭合的块 ----
-    // 题面与题解都按「一个字段一次转换」调用本函数（背景/描述/提示各一次，
-    // 每篇题解正文各一次），所以这里的收尾就是「一段题面/题解写完时的收尾」：
-    // 作者漏写、上游把正文截断、或者内容正好在块中间结束时，未闭合的内容一律
-    // 按嵌套次序从内到外自动补齐，绝不因为缺少收尾标记而丢内容。
-    // 各类块的闭合方式：
-    // - 折叠框 / 嵌套折叠框：渲染时就整段包进 mdframed，开合标签在
-    //   fold_box_latex / fold_piece_latex 里成对生成，本身不会不闭合；
-    // - 显示公式（$$...$$）：扫描到内容结尾时把已收集的公式照常输出成
-    //   \[...\]（公式开合由这一处统一生成）；
-    // - 代码围栏（``` / ~~~）：已收集的代码行照常输出成 lstlisting
-    //   （洛谷的渲染器同样把「到结尾都没闭合」的围栏当代码块渲染）；
-    // - 引言（:::epigraph）：先输出横线与署名，再 \end{list}\endgroup；
-    // - 居中/居右（:::align{...}）：输出 \end{center} / \end{flushright}；
-    // - 未知容器：本身不输出环境，只把指令行与收尾行吃掉。
-    // env_stack 从栈顶弹出即「最内层先闭合」，与嵌套次序一致。
+    // 收尾：依次闭合所有未闭合的块。题面与题解都按「一个字段一次转换」调用本函数，所以作者
+    // 漏写、上游把正文截断、或内容正好在块中间结束时，未闭合的内容一律按嵌套次序从内到外
+    // 自动补齐，绝不因为缺少收尾标记而丢内容。折叠框的开合标签成对生成，显示公式与代码围栏
+    // 在扫描到结尾时统一输出，epigraph 先补横线与署名；env_stack 从栈顶弹出即最内层先闭合
     if (fence)
         out += code_block_latex(fence_lang, code_lines);
 
@@ -5158,13 +4809,10 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
                                             inline_to_latex(section_title) + "}{" +
                                             escape_latex(strip_math_for_bookmark(section_title)) +
                                             "}";
-    // 题解导出的锚点与「查看题解」按钮（设计 §10.2）：
-    // - 锚点 sol-problem-<PID> 由 common.cpp 的 problem_anchor 白名单化生成，
-    //   供「返回题目」跳转；
-    // - 按钮绝不能放进 \section 的参数里，否则目录条目与 PDF 书签会被按钮
-    //   污染；正确写法是「锚点 + \section[短标题]{标题 + \hfill + 按钮}」，
-    //   方括号里的短标题只用于目录与书签（与原本 \texorpdfstring 的
-    //   书签备用串一致），按钮只出现在正文标题行右侧。
+    // 题解导出的锚点与「查看题解」按钮：锚点 sol-problem-<PID> 由 problem_anchor 白名单化生成，
+    // 供「返回题目」跳转；按钮绝不能放进 \section 的参数里，否则目录条目与 PDF 书签会被按钮
+    // 污染——正确写法是「锚点 + \section[短标题]{标题 + \hfill + 按钮}」，方括号里的短标题
+    // 只用于目录与书签，按钮只出现在正文标题行右侧
     const bool solutions_enabled = opt.solution_export.enabled &&
                                    !opt.solution_export.articles_only;
     const bool with_button = solutions_enabled &&
@@ -5180,13 +4828,10 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     if (solutions_enabled)
         out += "\\hypertarget{" + luogu::problem_anchor(p.pid) + "}{}%\n";
 
-    // --show-contents-difficulty-tags：目录中的题目标题按难度着色
-    // （\luogotocsection 只给写进目录的标题文字上色，正文标题、页眉、
-    //   PDF 书签与目录中的引导点/页码都保持黑色）
-    // 注意：可选参数必须写成 [{...}]。题目名里常有 ']'（如
-    // 「P3953 [NOIP 2017 提高组] 逛公园」），不加花括号时 LaTeX 会在第一个
-    // ']' 处提前结束可选参数，导致标题被截断、剩余文字漏进正文，目录与
-    // 页眉也跟着出错。
+    // --show-contents-difficulty-tags：目录中的题目标题按难度着色（\luogotocsection 只给写进
+    // 目录的标题文字上色，正文标题、页眉、PDF 书签与目录中的引导点/页码都保持黑色）。
+    // 可选参数必须写成 [{...}]：题目名里常有 ']'（如「P3953 [NOIP 2017 提高组] 逛公园」），
+    // 不加花括号时 LaTeX 会在第一个 ']' 处提前结束可选参数，标题被截断、剩余文字漏进正文
     if (opt.toc_difficulty)
         out += "\\luogotocsection{" +
                std::string(luogu::difficulty_color(p.difficulty)) + "}{" +
@@ -5202,16 +4847,15 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     const auto limits = luogu::format_limits(p.time, p.memory);
     out += "时间限制: " + limits.first + " & 内存限制: " + limits.second + " \\\\\n";
     out += "\\end{tabularx}\n\\end{center}\n";
-    // 难度：位于时间/内存限制之下、标签之上（--show-difficulty-tags）。
-    // 难度文字的颜色与洛谷网页一致。\noindent 与 5.78pt 缩进和上面的
-    // 时间/内存限制（\tabcolsep = 6pt）对齐；下面的标签行同样用 \noindent，
-    // 否则它会作为新段落额外获得首行缩进，与难度行错开
+    // 难度：位于时间/内存限制之下、标签之上（--show-difficulty-tags）。\noindent 与 5.78pt
+    // 缩进和上面的限制行（\tabcolsep = 6pt）对齐；下面的标签行同样用 \noindent，否则它会作为
+    // 新段落额外获得首行缩进，与难度行错开
     if (opt.display.difficulty)
         out += "\\noindent\\hspace{5.78pt}难度：\\textcolor[HTML]{" +
                std::string(luogu::difficulty_color(p.difficulty)) + "}{" +
                escape_latex(luogu::difficulty_label(p.difficulty)) + "}\n\n";
-    // 算法（type 2）标签默认隐藏，--show-algorithm-tags 时显示，使用蓝色背景
-    // rgb(41,73,180)，并排在其他标签之前
+    // 算法（type 2）标签默认隐藏，--show-algorithm-tags 时显示，使用蓝色背景 rgb(41,73,180)，
+    // 并排在其他标签之前
     const bool show_algorithm = opt.display.algorithm_tags;
     const bool show_source = opt.display.source_tags;
     auto tagsalgo = show_algorithm ? luogu::filter_tags_by_type(p.tags, 2)
@@ -5224,14 +4868,11 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
                                 : std::vector<std::string>();
     auto tagsspec = show_source ? luogu::filter_tags_by_type(p.tags, 5)
                                 : std::vector<std::string>();
-    // 算法与来源/时间/区域/特殊标签都不显示时，不输出「标签」一栏。
-    // \noindent：与难度行（以及没有难度时紧跟在上方居中表格之后的情况）
-    // 保持同一缩进，避免作为新段落被额外缩进首行
+    // 算法与来源/时间/区域/特殊标签都不显示时，不输出「标签」一栏。\noindent：与难度行（以及
+    // 没有难度时紧跟在上方居中表格之后的情况）保持同一缩进，避免作为新段落被额外缩进首行
     if(!tagsalgo.empty() || !tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\noindent\\hspace{5.78pt}标签：";
-    // 标签名来自 tags.json / 缓存，可能含 LaTeX 特殊字符（如 %、#、_），
-    // 必须转义后才能放进 \luogotag 参数，否则编译失败或注入宏。
-    // 徽章统一由 \luogotag 渲染：高度/深度在宏内固定，各标签框完全等高
-    // （背景色与洛谷网页一致：算法蓝、来源青、时间浅蓝、区域绿、特殊橙）
+    // 标签名来自 tags.json / 缓存，可能含 LaTeX 特殊字符（如 %、#、_），必须转义后才能放进
+    // \luogotag 参数，否则编译失败或注入宏。徽章统一由 \luogotag 渲染，各标签框完全等高
     auto decorate_tags = [](std::vector<std::string> &tags, const char *color) {
         for (auto &tag : tags)
             tag = "\\luogotag{" + std::string(color) + "}{" + escape_latex(tag) + "}";
@@ -5297,13 +4938,10 @@ std::string latex::article_to_latex(const article::Article &a)
 
 namespace
 {
-// 一篇题解 / 文章共用的 LaTeX 正文渲染（设计 §10.1 / §10.2 / §10.3）：
-// 题解是与题目一一绑定的特殊文章，两者除「返回题目」按钮与目录中注明
-// 所属题目外完全一致。
-// - \luogotocsolution 负责锚点、目录条目与正文标题；
-// - heading_plain 为纯文本标题（页眉用），heading_latex 为正文标题；
-// - toc_text 为目录与 PDF 书签文字（空串表示不进目录）；
-// - button 为标题行右侧的跳转按钮（没有可跳转的题目时为空）。
+// 一篇题解 / 文章共用的 LaTeX 正文渲染：题解是与题目一一绑定的特殊文章，两者除「返回题目」
+// 按钮与目录中注明所属题目外完全一致。\luogotocsolution 负责锚点、目录条目与正文标题；
+// heading_plain 为纯文本标题（页眉用）；toc_text 为目录与 PDF 书签文字（空串表示不进目录）；
+// button 为标题行右侧的跳转按钮
 std::string article_body_to_latex(const std::string &heading_plain,
                                   const std::string &heading_latex,
                                   const std::string &toc_text,
@@ -5315,13 +4953,9 @@ std::string article_body_to_latex(const std::string &heading_plain,
     std::string out;
     out += "\\luogotocsolution{" + toc_text + "}{" + heading_latex + "}{" + anchor +
            "}{" + button + "}\n\n";
-    // 页眉：每篇题解 / 文章都把自己的标题写进 \rightmark，逻辑与题目页一致
-    // （题目由 \section 设置页眉）。页眉取「本页第一个 \markright」并在
-    // 无标记的续页沿用，因此文章页显示的是这一篇的标题，而不是前面题面
-    // 最后一道题或所属题目的题目名；同一页上开始多篇时显示最先开始的那篇。
-    // \rightmark 是纯文本页眉：标题与题目页眉一样做「转义 + 去数学」处理
-    // （页眉里不放公式）；\markright 不写 \addcontentsline、也不生成书签，
-    // 目录与 PDF 书签不受影响。
+    // 页眉：每篇题解 / 文章都把自己的标题写进 \rightmark，逻辑与题目页一致（题目由 \section
+    // 设置页眉），因此文章页显示的是这一篇的标题，而不是前面题面的题目名。\rightmark 是纯文本
+    // 页眉：标题与题目页眉一样做「转义 + 去数学」处理；\markright 不写目录、也不生成书签
     out += "\\markright{" + escape_latex(strip_math_for_bookmark(heading_plain)) + "}\n";
 
     // 元信息（--no-article-meta 关闭原文链接）
@@ -5353,17 +4987,15 @@ std::string article_body_to_latex(const std::string &heading_plain,
     return out;
 }
 
-// 把一篇题解渲染为 LaTeX（设计 §10.1 / §10.2 / §10.3）：
-// - 标题统一格式「题解：<题解标题>」（超过 60 字符截断，避免撑爆目录与书签）；
-// - \luogotocsolution 负责锚点、目录条目（注明所属题目）与正文标题；
-// - 「返回题目」按钮放在标题行右侧（\hfill），不进入目录与书签。
+// 把一篇题解渲染为 LaTeX：标题统一格式「题解：<题解标题>」（超过 60 字符截断，避免撑爆目录与
+// 书签）；\luogotocsolution 负责锚点、目录条目（注明所属题目）与正文标题；「返回题目」按钮
+// 放在标题行右侧（\hfill），不进入目录与书签
 std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
                               const luogu::SolutionView &view,
                               const luogu::SolutionExportOptions &sol_opt)
 {
-    // 标题统一格式「题解：<题解标题>」（自带前缀去掉、换行换成空格、60 字符
-    // 截断）。复用 Markdown 导出同一个 luogu::solution_heading：此前这里自己
-    // 拼标题，标题里的 \n\r\t 会漏进 \addcontentsline / \markright / PDF 书签。
+    // 标题统一格式「题解：<题解标题>」（自带前缀去掉、换行换成空格、60 字符截断），复用
+    // Markdown 导出的同一个 luogu::solution_heading，避免 \n\r\t 漏进目录 / 页眉 / PDF 书签
     const std::string heading_plain = luogu::solution_heading(view.title);
     const std::string kSolutionPrefix = "题解：";
     const std::string heading_latex =
@@ -5389,14 +5021,12 @@ std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
                                  button, view, sol_opt);
 }
 
-// 把一篇按文章编号下载的文章（--article）渲染为 LaTeX：
-// 级别与题解正文完全相同（目录层级、页眉、元信息、正文渲染），
-// 只是没有题目跳转按钮，目录条目里也不注明所属题目
+// 把一篇按文章编号下载的文章（--article）渲染为 LaTeX：级别与题解正文完全相同（目录层级、
+// 页眉、元信息、正文渲染），只是没有题目跳转按钮，目录条目里也不注明所属题目
 std::string standalone_article_to_latex(const luogu::SolutionView &view,
                                         const luogu::SolutionExportOptions &sol_opt)
 {
-    // 同 solution_to_latex：复用 Markdown 导出的 luogu::article_heading，
-    // 保证标题清洗（去前缀、换行换空格、截断）两处完全一致
+    // 同 solution_to_latex：复用 Markdown 导出的 luogu::article_heading，保证标题清洗两处一致
     const std::string heading_plain = luogu::article_heading(view.title);
     const std::string kArticlePrefix = "文章：";
     const std::string heading_latex =
@@ -5428,19 +5058,16 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     const bool export_articles =
         opt.articles != nullptr && !opt.articles->items.empty();
 
-    // openany：章节可在任意页开始，避免封面后的空页（book 默认章节
-    // 从奇数页开始，\maketitle 之后紧跟 \chapter* 会留出一张空白页）
+    // openany：章节可在任意页开始，避免封面后的空页（book 默认章节从奇数页开始）
     std::fputs("\\documentclass[openany]{book}\n", out);
     // ctex fontset：Windows/macOS 在编译本程序时确定；Linux 在运行
     // 阶段解析 /etc/os-release，Ubuntu 系列用 ubuntu，其他发行版用 fandol。
     const std::string ctex_options = latex::ctex_package_options();
     std::fprintf(out, "\\usepackage%s{ctex}\n", ctex_options.c_str());
     std::fputs("\\usepackage{graphicx}\n", out);
-    // 图片统一缩放：测量自然宽高，只在超过行宽/版心高时按比例缩小；
-    // 小图片保持原始尺寸，不放大。max width 与 max height 同时给出并由
-    // keepaspectratio 保证宽高比不变，避免超高或超宽图片溢出页面。
-    // 高度上限用 \luogoimagemaxheight 而不是直接写 \textheight：折叠框内
-    // 会把该长度改小（见 fold_box_latex），保证框装得下一页。
+    // 图片统一缩放：测量自然宽高，只在超过行宽/版心高时按比例缩小（keepaspectratio 保证宽高比
+    // 不变），小图片保持原始尺寸。高度上限用 \luogoimagemaxheight 而不是 \textheight：折叠框内
+    // 会把该长度改小（见 fold_box_latex），保证框装得下一页
     std::fputs("\\newlength{\\luogoimagemaxheight}\n", out);
     std::fputs("\\setlength{\\luogoimagemaxheight}{\\textheight}\n", out);
     std::fputs("\\newcommand{\\luogoincludegraphics}[1]{%\n", out);
@@ -5465,37 +5092,28 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     // bookmark 宏包在单次 xelatex 编译中也能写入 PDF 书签，确保「目录」
     // 和每个题目的书签不依赖 .out 的多遍重跑；必须在 hyperref 之后加载。
     std::fputs("\\usepackage{bookmark}\n", out);
-    // 行内代码（inline_code_latex）会在任意两个字符之间插入 \allowbreak，
-    // 使长代码能在行末断开。标题里出现行内代码时，hyperref 会把标题展开成
-    // PDF 书签字符串，遇到 \allowbreak 会刷出 "Token not allowed in a PDF
-    // string" 警告（书签里它也没有意义），这里在 PDF 字符串中把它定义为空。
+    // 行内代码会在任意两个字符之间插入 \allowbreak；标题里出现行内代码时 hyperref 会把标题
+    // 展开成 PDF 书签字符串，遇到 \allowbreak 会刷 "Token not allowed in a PDF string"
+    // 警告（书签里它也没有意义），这里在 PDF 字符串中把它定义为空
     std::fputs("\\pdfstringdefDisableCommands{\\def\\allowbreak{}}\n", out);
     std::fputs("\\usepackage[normalem]{ulem}\n", out);
     std::fputs("\\usepackage{amsmath}\n", out);
     std::fputs("\\usepackage{mathtools}\n", out);
-    // unicode-math：数学字体全部改为可无限缩放的 OpenType 数学字体，
-    // 修复 mathrsfs（RSFS 字体只有固定字号）导致 \mathscr 字号被替换的问题。
-    // 兼容性：必须加载在 amsmath / mathtools 之后；不再加载 amssymb、
-    // mathrsfs（其符号与 \mathscr 由 unicode-math 提供）与 bm（bm 与
-    // unicode-math 不兼容，会报 Extended mathchar）；\bm / \boldsymbol
-    // 用 unicode-math 的粗斜体数学字母表 \symbfit 兼容替代。
+    // unicode-math：数学字体全部改为可无限缩放的 OpenType 数学字体，修复 mathrsfs（只有固定
+    // 字号）导致 \mathscr 字号被替换的问题。必须加载在 amsmath / mathtools 之后；不再加载
+    // amssymb、mathrsfs（符号与 \mathscr 由 unicode-math 提供）与 bm（与 unicode-math 不兼容，
+    // 会报 Extended mathchar），\bm / \boldsymbol 用 unicode-math 的 \symbfit 兼容替代
     std::fputs("\\usepackage{unicode-math}\n", out);
-    // 显式选择随 TeX Live / MacTeX / MiKTeX 分发的 OpenType 数学字体，
-    // 避免不同平台上 unicode-math 默认数学字体不一致。
+    // 显式选择随 TeX Live / MacTeX / MiKTeX 分发的 OpenType 数学字体，避免各平台默认字体不一致
     std::fputs("\\setmathfont{Latin Modern Math}\n", out);
-    // 表头加粗用的粗体数学版本：Latin Modern Math 本身没有粗体字形，
-    // 用 fontspec 的 FakeBold（XeTeX 的 embolden）合成粗体，
-    // 使表头里的公式（如 $n\\leq$）与文字一并加粗。
+    // 表头加粗用的粗体数学版本：Latin Modern Math 本身没有粗体字形，用 fontspec 的 FakeBold
+    // （XeTeX 的 embolden）合成粗体，使表头里的公式（如 $n\leq$）与文字一并加粗
     std::fputs("\\setmathfont[version=bold, FakeBold=2]{Latin Modern Math}\n", out);
     // 表格表头：\textbf 加粗文字，\boldmath 切换上面定义的粗体数学版本
     std::fputs("\\newcommand{\\luogotablehead}[1]{\\textbf{\\boldmath #1}}\n", out);
-    // ::cute-table{tuack}（洛谷「更像 Tuack 的表格」）的框线：去掉表格最左、
-    // 最右两条竖线（列间竖线保留），最上、最下框线加粗
-    // （\luogotuackheavyrule），表头下方那条加粗一档但细于上下框线
-    // （\luogotuackmidrule），其余行仍用普通 \hline。
-    // 直接改 \arrayrulewidth 会让所有框线一起变粗，因此用 \noalign{\hrule
-    // height ...} 单独指定：不必引入 booktabs，也不会像 booktabs 那样在
-    // 框线上下额外留出竖直间距。
+    // ::cute-table{tuack} 的框线：去掉表格最左、最右两条竖线（列间竖线保留），最上、最下框线
+    // 加粗（\luogotuackheavyrule），表头下方那条加粗一档（\luogotuackmidrule）。直接改
+    // \arrayrulewidth 会让所有框线一起变粗，故用 \noalign{\hrule height ...} 单独指定
     std::fputs("\\newcommand{\\luogotuackheavyrule}{\\noalign{\\hrule height 1.8pt}}\n", out);
     std::fputs("\\newcommand{\\luogotuackmidrule}{\\noalign{\\hrule height 1.0pt}}\n", out);
     std::fputs("\\newcommand{\\bm}{\\symbfit}\n", out);
@@ -5507,23 +5125,20 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("\\usepackage{tabularx}\n", out);
     // 表格合并（洛谷的 ^ 向上合并 / < 向左合并）需要 \multirow
     std::fputs("\\usepackage{multirow}\n", out);
-    // 折叠框（洛谷 :::info / :::success / :::warning / :::error）用 mdframed
-    // 绘制：彩色框线 + 彩色标题条 + 白底黑字。不用 tabular 模拟是因为
-    // LaTeX 表格无法跨页，内容长的折叠框会被截断；mdframed 可以自然跨页。
+    // 折叠框（洛谷 :::info 等）用 mdframed 绘制：彩色框线 + 彩色标题条 + 白底黑字。不用 tabular
+    // 模拟是因为 LaTeX 表格无法跨页、内容长的折叠框会被截断，mdframed 可以自然跨页
     std::fputs("\\usepackage{mdframed}\n", out);
-    // 嵌套折叠框的相连小块要求“块与块之间没有竖直间距”，否则框线会在接缝处
-    // 断开。mdframed 的环境结束时 \endtrivlist 会把环境前的竖直间距重新补回来
-    // （又加出一个 \topsep 左右的空隙），把 LaTeX 的 \@noparlist 开关置真即可
-    // 让 \endtrivlist 跳过这段间距。
-    // 开关是全局的（小块内容被收集在 mdframed 自己的盒子里，局部赋值传不出来），
-    // 因此小块内容末尾置真、环境结束后立刻还原，避免影响后面的列表与盒子。
+    // 嵌套折叠框的相连小块要求「块与块之间没有竖直间距」，否则框线会在接缝处断开。mdframed 的
+    // 环境结束时 \endtrivlist 会把环境前的竖直间距重新补回来（多出一个 \topsep 左右的空隙），
+    // 把 LaTeX 的 \@noparlist 开关置真即可让它跳过这段间距。开关是全局的（小块内容被收集在
+    // mdframed 自己的盒子里，局部赋值传不出来），因此小块内容末尾置真、环境结束后立刻还原
     std::fputs("\\makeatletter\n", out);
     std::fputs("\\newcommand{\\luogofoldnoparlist}{\\global\\@noparlisttrue}\n", out);
     std::fputs("\\newcommand{\\luogofoldparlist}{\\global\\@noparlistfalse}\n", out);
     std::fputs("\\makeatother\n", out);
     std::fputs("\\geometry{margin=2cm}\n", out);
-    // book 默认 \headheight=12pt 略小于 ctex/unicode-math 标题所需的
-    // 12.03pt；显式给到 13pt，消除每一页的 fancyhdr 警告，正文版心基本不变。
+    // book 默认 \headheight=12pt 略小于 ctex/unicode-math 标题所需的 12.03pt；显式给到 13pt
+    // 消除每页的 fancyhdr 警告，正文版心基本不变
     std::fputs("\\setlength{\\headheight}{13pt}\n", out);
     // 去掉所有章节序号（\section 等）：目录和正文都不显示数字
     std::fputs("\\setcounter{secnumdepth}{-1}\n", out);
@@ -5531,8 +5146,8 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     // 页眉：--toc-backlinks 时页码为跳回目录页的超链接（默认页码为普通文本）
     const std::string page_in_head =
         opt.toc_backlinks ? "\\hyperlink{luogotoc}{\\thepage}" : "\\thepage";
-    // 标题字体（--set-font-title-zh-CN / --set-font-title-en-US）同样作用于
-    // 页眉处的题目标题；未指定时保持普通正文样式。
+    // 标题字体（--set-font-title-zh-CN / --set-font-title-en-US）同样作用于页眉处的题目标题；
+    // 未指定时保持普通正文样式
     std::string head_fonts = "\\normalfont";
     if (!opt.font_title_zh.empty())
         head_fonts += " \\luogotitlezh";
@@ -5555,15 +5170,11 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
         std::fprintf(out, "\\fancyhead[RO]{%s}\n", page_in_head.c_str());
     }
 
-    // 标题字体分两套：
-    // 1) 题目大标题（\section）：中文跟随 --set-font-title-zh-CN；未指定时
-    //    保持普通正文 CJK 字体。西文直接跟随正文主字体，因此
-    //    --set-font-body-en-US 通过 \setmainfont 自动生效；不使用黑体。
-    // 2) 小节标题（\subsection / \subsubsection，对应固定小节和 Markdown
-    //    的 ## / ###）：中文默认使用 ctex 预设黑体 \heiti；西文默认使用
-    //    代码块字体 \luogoheadinglatin（--set-font-body-codes 或
-    //    Consolas -> Menlo -> DejaVu Sans Mono 回退链）。用户指定标题
-    //    中西文字体时优先使用 --set-font-title-zh-CN / -en-US。
+    // 标题字体分两套：1) 题目大标题（\section）中文跟随 --set-font-title-zh-CN，未指定时保持
+    // 普通正文 CJK 字体；西文直接跟随正文主字体，因此 --set-font-body-en-US 通过 \setmainfont
+    // 自动生效，不使用黑体。2) 小节标题（\subsection / \subsubsection，对应固定小节和 Markdown
+    // 的 ## / ###）：中文默认 ctex 预设黑体 \heiti，西文默认代码块字体 \luogoheadinglatin；
+    // 用户指定标题中西文字体时优先使用 --set-font-title-zh-CN / -en-US
     const std::string section_title_font_zh =
         opt.font_title_zh.empty() ? "" : "\\luogotitlezh";
     const std::string subsection_title_font_zh =
@@ -5577,27 +5188,21 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
                  subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
     std::fprintf(out, "\\titleformat{\\subsubsection}\n{%s%s\\color{gray}}\n{}\n{1em}{}\n",
                  subsection_title_font_zh.c_str(), subsection_title_font_en.c_str());
-    // Markdown 的 #### / ##### 用 \paragraph / \subparagraph 渲染，而这两级在
-    // LaTeX 里默认是“接排标题”：标题与后面的正文排在同一行（正文紧接着标题
-    // 出现、既不另起一行也不换段），洛谷网页则把 h4 / h5 渲染成独占一行的
-    // 块级标题。这里用 titlesec 把它们改成悬挂标题（标题独占一行，正文另起
-    // 一段），字体沿用类默认的 \normalfont\normalsize\bfseries，与改动前一致；
-    // 上下间距与原“接排标题”的间距保持同一量级（3.25ex plus 1ex minus .2ex）。
+    // Markdown 的 #### / ##### 用 \paragraph / \subparagraph 渲染，而这两级在 LaTeX 里默认是
+    // 「接排标题」（标题与后面的正文排在同一行），洛谷网页则把 h4 / h5 渲染成独占一行的块级
+    // 标题：这里用 titlesec 改成悬挂标题（正文另起一段），字体沿用类默认值
     std::fputs("\\titleformat{\\paragraph}[hang]{\\normalfont\\normalsize\\bfseries}{}{0em}{}\n", out);
     std::fputs("\\titlespacing*{\\paragraph}{0pt}{3.25ex plus 1ex minus .2ex}{0.75ex}\n", out);
     std::fputs("\\titleformat{\\subparagraph}[hang]{\\normalfont\\normalsize\\bfseries}{}{0em}{}\n", out);
     std::fputs("\\titlespacing*{\\subparagraph}{0pt}{3.25ex plus 1ex minus .2ex}{0.5ex}\n", out);
 
-    // --show-contents-difficulty-tags 用的 \luogotocsection{<HTML 颜色>}{<标题>}：
-    // 相当于 \section，但把写进 .toc 的目录项文字包进 \textcolor，使目录里的
-    // 题目标题按难度着色。只替换本次调用中的 \addcontentsline（hyperref 写入
-    // 的目录超链接锚点因此照常保留），且只影响目录项中的标题文字：引导点、页码、
-    // 正文标题、页眉与 PDF 书签都保持原样。未启用该参数时不写入这段定义，
-    // 生成的文档与启用前完全一致。
+    // --show-contents-difficulty-tags 用的 \luogotocsection{<HTML 颜色>}{<标题>}：相当于
+    // \section，但把写进 .toc 的目录项文字包进 \textcolor，使目录里的题目标题按难度着色。
+    // 只替换本次调用中的 \addcontentsline（hyperref 写入的目录超链接锚点照常保留），且只影响
+    // 目录项中的标题文字：引导点、页码、正文标题、页眉与 PDF 书签都保持原样
     if (opt.toc_difficulty)
     {
-        // #1 = HTML 颜色；#2 = 目录/书签用的纯文本短标题；#3 = 正文标题
-        // （可含 \hfill 与「查看题解」按钮，按钮不会进入目录与书签）
+        // #1 = HTML 颜色；#2 = 目录/书签用的纯文本短标题；#3 = 正文标题（可含 \hfill 与按钮）
         std::fputs("\\newcommand{\\luogotocsection}[3]{%\n", out);
         std::fputs("  \\begingroup\n", out);
         std::fputs("    \\let\\luogotocaddcontentsline\\addcontentsline\n", out);
@@ -5607,31 +5212,17 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
         std::fputs("  \\endgroup}\n", out);
     }
 
-    // ---- 题解与文章导出用的宏（设计 §10.2 / §10.3）----
-    // \luogosolutionlink{<锚点>}{<文字>}：蓝底白字的跳转按钮，外观与
-    // \luogotag 完全一致（白字 + \colorbox[HTML]，\vphantom{涵} 与 \smash
-    // 固定高度与深度，多个按钮完全等高）。文字是编译期常量（查看题解 /
-    // 返回题目），不涉及用户输入。
-    // 按钮字体统一跟随正文：\normalfont 把西文字族与 CJK 字体族一起复位到
-    // 文档默认值（\setmainfont 指定的正文西文、\setCJKmainfont /
-    // ctex fontset 指定的正文中文；xeCJK 给 \normalfont 挂了钩子，会把
-    // CJK 字体族切回 \CJKfamilydefault）。「查看题解」嵌在 \section 标题里、
-    // 「返回题目」嵌在 \subsection* 标题里，都会继承标题字体
-    // （--set-font-title-* / 黑体 + 代码块西文），必须在宏内部显式复位，
-    // 否则两个按钮会各自跟着所在标题的字体走。
-    //
-    // \luogotocsolution{#1}{#2}{#3}{#4}：
-    //   #1 = 目录与 PDF 书签的文字（纯文本，已转义；空串表示不进目录）
-    //   #2 = 正文标题（题解：<标题> / 文章：<标题>，已做行内转换）
-    //   #3 = 锚点名（题解 sol-<PID>-<lid>，文章 sol-art-<lid>）
-    //   #4 = 标题行右侧的按钮（可为空；文章没有可跳转的题目，恒为空）
-    // 说明：这里只用 \addcontentsline 而不额外调用 \pdfbookmark ——
-    // hyperref 会为 \addcontentsline 的条目自动补一个同层级书签，
-    // 两者同时使用会产生重复书签（已实测）。
+    // \luogosolutionlink{<锚点>}{<文字>}：蓝底白字的跳转按钮，外观与 \luogotag 完全一致
+    // （白字 + \colorbox[HTML]，\vphantom{涵} 与 \smash 固定高度与深度）。按钮字体统一跟随
+    // 正文：\normalfont 把西文字族与 CJK 字体族一起复位到文档默认值（xeCJK 给 \normalfont 挂了
+    // 钩子），而两个按钮分别嵌在 \section / \subsection* 标题里会继承标题字体，必须显式复位
+    // \luogotocsolution{#1}{#2}{#3}{#4}：#1 = 目录与 PDF 书签的文字（纯文本，空串表示不进目录）；
+    // #2 = 正文标题；#3 = 锚点名（题解 sol-<PID>-<lid>，文章 sol-art-<lid>）；#4 = 标题行右侧的
+    // 按钮（可为空）。只用 \addcontentsline 而不额外调用 \pdfbookmark：hyperref 会为
+    // \addcontentsline 的条目自动补一个同层级书签，两者同时使用会产生重复书签
     if (export_solutions || export_articles)
     {
         // --article 单独使用时没有题解，但文章与题解共用这一套宏
-        // （文章正是「不与题目绑定的文章」）
         std::fputs("\\newcommand{\\luogosolutionlink}[2]{%\n", out);
         std::fputs("  \\hyperlink{#1}{\\textcolor{white}{\\colorbox[HTML]{3498db}{"
                    "\\normalfont\\tagsfonts\\small\\vphantom{涵}\\smash{#2}}}}\n", out);
@@ -5642,11 +5233,8 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
         std::fputs("  \\ifx\\relax#1\\relax\\else\\addcontentsline{toc}{luogosolution}{#1}\\fi\n", out);
         std::fputs("  \\subsection*{#2#4}%\n", out);
         std::fputs("}\n", out);
-        // 目录条目类型 luogosolution：
-        // - \l@luogosolution 直接取 \l@section，条目缩进与题目完全对齐
-        //   （此前用 subsection，题解会比题目多缩进 2.3em，看起来没有对齐）；
-        // - \toclevel@luogosolution 固定为 2，PDF 书签层级仍是 subsection
-        //   层级（书签不参与目录排版，两者互不影响）。
+        // 目录条目类型 luogosolution：\l@luogosolution 直接取 \l@section，条目缩进与题目完全
+        // 对齐；\toclevel@luogosolution 固定为 2，PDF 书签层级仍是 subsection 层级
         std::fputs("\\makeatletter\n", out);
         std::fputs("\\def\\toclevel@luogosolution{2}\n", out);
         std::fputs("\\let\\l@luogosolution\\l@section\n", out);
@@ -5668,13 +5256,12 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("    numberstyle=\\footnotesize\\ttfamily\\color{gray},\n", out);
     std::fputs("    basicstyle=\\small\\ttfamily,\n", out);
     std::fputs("    rulecolor=\\color{blue},\n", out);
-    // 代码块/样例里的 \end{lstlisting} 已由 lst_safe 换成等价写法，
-    // 这里用 literate 把它排版回原文（见 kLstEndMarker 处的说明）
+    // 代码块/样例里的 \end{lstlisting} 已由 lst_safe 换成等价写法，这里用 literate 排版回原文
     std::fputs(kLstLiterateOption, out);
     std::fputs("}\n", out);
 
-        // 当前 TeX Live 的 listings 没有这些语言，手动补上，否则
-        // \begin{lstlisting}[language=Rust] 会报 "Couldn't load requested language"
+        // 当前 TeX Live 的 listings 没有这些语言，手动补上，否则 \begin{lstlisting}[language=Rust]
+        // 会报 "Couldn't load requested language"
     std::fputs("\\lstdefinelanguage{Rust}{\n", out);
     std::fputs("    morekeywords={as,async,await,break,const,continue,crate,dyn,else,enum,", out);
     std::fputs("extern,false,fn,for,if,impl,in,let,loop,match,mod,move,mut,pub,ref,return,", out);
@@ -5740,32 +5327,25 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("\\colorlet{transparent}{white}\n", out);
     std::fputs("\\definecolor{Aquamarine}{RGB}{127,255,212}\n", out);
     std::fputs("\\definecolor{gold}{RGB}{255,215,0}\n", out);
-    // 折叠框颜色（与洛谷网页一致）：info 蓝 / success 绿 / warning 黄 / error 红，
-    // 用作框线颜色与标题条底色（见文件上方的 kFoldStyles）
+    // 折叠框颜色（与洛谷网页一致）：info 蓝 / success 绿 / warning 黄 / error 红，用作框线颜色
+    // 与标题条底色
     for (const auto &fold : kFoldStyles)
     {
         std::fprintf(out, "\\definecolor{%s}{RGB}{%s}\n", fold.color, fold.rgb);
     }
-    // 折叠框样式：框线 1pt、白底黑字（字体与正文一致，不额外指定），
-    // 标题条为白色粗体、底色与框线同色（每次使用时用 linecolor /
-    // frametitlebackgroundcolor 指定具体颜色）。
-    // 左右外边距为 0 时占满整行宽度；嵌套的折叠框在 \begin{mdframed} 处
-    // 单独给出 leftmargin/rightmargin=1em，宽度略小于上一级。
-    // 标题文字左端对齐：mdframed 生成标题盒子时会用 \mdf@par@local 把
-    // \begin{mdframed} 时捕获的 \parindent（ctex 下为 2 个汉字的首行缩进）
-    // 还原进标题盒子里，标题段落因此会像正文一样自动缩进两格、比框内正文
-    // 的左边界还靠右。frametitlealignment 里的内容在标题段落开始之前执行，
-    // 把 \parindent 置零后标题即从框的左内边距（innerleftmargin=6pt）处起排，
-    // 与框内正文的左边界对齐。这只作用于标题盒子，框内正文的首行缩进仍由
-    // fold_box_latex 手动补的 \hspace{\parindent} 负责，不受影响。
+    // 折叠框样式：框线 1pt、白底黑字（字体与正文一致），标题条为白色粗体、底色与框线同色
+    // （每次使用时用 linecolor / frametitlebackgroundcolor 指定具体颜色）。左右外边距为 0 时
+    // 占满整行宽度；嵌套的折叠框在 \begin{mdframed} 处单独给出 leftmargin/rightmargin=1em。
+    // 标题文字左端对齐：mdframed 生成标题盒子时会用 \mdf@par@local 把 \begin{mdframed} 时捕获的
+    // \parindent（ctex 下为 2 个汉字的首行缩进）还原进去，标题会比框内正文更靠右；
+    // frametitlealignment 在标题段落开始之前把 \parindent 置零即可对齐左内边距，只作用于标题盒子
     std::fputs("\\mdfdefinestyle{luogofoldbox}{%\n", out);
     std::fputs("  linewidth=1pt,\n", out);
     std::fputs("  linecolor=black,\n", out);
     std::fputs("  backgroundcolor=white,\n", out);
     std::fputs("  fontcolor=black,\n", out);
-    // 四条边线必须逐条显式写出：mdframed 的框线开关会被嵌套的盒子继承，
-    // 而区块引用（luogoquote）只画左边线，折叠框若依赖默认值就会出现
-    // “引用里的折叠框只剩标题条、四周没有框线”（见 quote_box_latex）。
+    // 四条边线必须逐条显式写出：mdframed 的框线开关会被嵌套的盒子继承，而区块引用
+    // （luogoquote）只画左边线，折叠框若依赖默认值就会出现「引用里的折叠框四周没有框线」
     std::fputs("  topline=true,\n", out);
     std::fputs("  bottomline=true,\n", out);
     std::fputs("  leftline=true,\n", out);
@@ -5779,9 +5359,8 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("  frametitlefont=\\bfseries,\n", out);
     std::fputs("  frametitlefontcolor=white,\n", out);
     std::fputs("  frametitlebackgroundcolor=black,\n", out);
-    // 标题与左端对齐：抵消 mdframed 还原进来的 \parindent（见上方注释）。
-    // 这里只能写 0pt 不能写 \z@：这段样式在 \makeatother 之后写出，
-    // 此时 @ 不是字母，\z@ 会被拆成 \z 与 @ 而报错。
+    // 标题与左端对齐：抵消 mdframed 还原进来的 \parindent（见上方注释）。这里只能写 0pt 不能写
+    // \z@：这段样式在 \makeatother 之后写出，此时 @ 不是字母，\z@ 会被拆成 \z 与 @ 而报错
     std::fputs("  frametitlealignment={\\setlength{\\parindent}{0pt}\\relax},\n", out);
     std::fputs("  frametitlerule=false,\n", out);
     std::fputs("  frametitleaboveskip=4pt,\n", out);
@@ -5790,15 +5369,11 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("  skipbelow=6pt,\n", out);
     std::fputs("  nobreak=false,\n", out);
     std::fputs("}\n", out);
-    // 区块引用（Markdown 的 >）左侧的浅灰竖条：颜色与洛谷网页一致
-    // （rgb(238,238,238)）；只画左边一条线，其余三边不画。
+    // 区块引用左侧竖条的颜色（与洛谷网页一致，rgb(238,238,238)），只画左边一条线
     std::fputs("\\definecolor{luogoquotebar}{RGB}{238,238,238}\n", out);
-    // 区块引用样式：左侧 4pt 浅灰竖条 + 右侧与上下都不留边线，
-    // 左内边距 8pt（正文与竖条之间留一点距离），右内边距 0（引用文字与
-    // 正文一样占满版心宽度）；顶层的引用可以自然跨页，竖条随内容延续；
-    // 嵌套的引用（引用里的引用 / 折叠框里的引用）会被切成若干矮块，
-    // 每块只留一条左边线、块间不留间距，视觉上仍是连续的一条（见
-    // quote_piece_latex）。背景不设颜色：引用处在什么底色上就保持什么底色。
+    // 区块引用样式：左侧 4pt 浅灰竖条 + 左内边距 8pt、右内边距 0（引用文字与正文一样占满版心
+    // 宽度）；顶层的引用可以自然跨页，竖条随内容延续；嵌套的引用会被切成若干矮块，每块只留
+    // 一条左边线、块间不留间距，视觉上仍是连续的一条（见 quote_piece_latex）。背景不设颜色
     std::fputs("\\mdfdefinestyle{luogoquote}{%\n", out);
     std::fputs("  topline=false,\n", out);
     std::fputs("  bottomline=false,\n", out);
@@ -5813,8 +5388,8 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("  innerrightmargin=0pt,\n", out);
     std::fputs("  innertopmargin=2pt,\n", out);
     std::fputs("  innerbottommargin=2pt,\n", out);
-    // 标题必须显式清空：mdframed 的选项会被嵌套的盒子继承，折叠框里的引用
-    // 若不写这一项就会把上一级的标题条重复画在每一小块上（同 fold_piece_latex）
+    // 标题必须显式清空：mdframed 的选项会被嵌套的盒子继承，折叠框里的引用不写这一项就会把
+    // 上一级的标题条重复画在每一小块上
     std::fputs("  frametitle={},\n", out);
     std::fputs("  skipabove=6pt,\n", out);
     std::fputs("  skipbelow=6pt,\n", out);
@@ -5836,17 +5411,15 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("\\providecommand{\\argmax}{\\operatorname*{arg\\,max}}\n", out);
     std::fputs("\\providecommand{\\argmin}{\\operatorname*{arg\\,min}}\n", out);
     std::fputs("\\providecommand{\\ctg}{\\cot}\n", out);
-    // 任务列表用的 \square（未勾选方框）由 amssymb 提供，而本模板不加载
-    // amssymb；unicode-math 收录的是 \mdlgwhtsquare，这里补齐别名，
-    // 避免任务列表渲染成 Undefined control sequence。
+    // 任务列表用的 \square（未勾选方框）由 amssymb 提供，而本模板不加载 amssymb；unicode-math
+    // 收录的是 \mdlgwhtsquare，这里补齐别名，避免任务列表渲染成 Undefined control sequence
     std::fputs("\\providecommand{\\square}{\\mdlgwhtsquare}\n", out);
-    // amssymb 的 \circledR / \circledS 未被 unicode-math 收录，而本模板不加载
-    // amssymb；洛谷题面（KaTeX 支持这两个命令）用到时补齐为等价符号，
-    // 避免 Undefined control sequence。
+    // amssymb 的 \circledR / \circledS 未被 unicode-math 收录，而本模板不加载 amssymb；洛谷题面
+    // （KaTeX 支持这两个命令）用到时补齐为等价符号，避免 Undefined control sequence
     std::fputs("\\providecommand{\\circledR}{\\text{\\textregistered}}\n", out);
     std::fputs("\\providecommand{\\circledS}{\\text{\\textcircled{S}}}\n", out);
-    // 部分洛谷题面使用 \bold2 / \bold{x} 表示粗体数学字符；LaTeX 标准
-    // 没有 \bold，补齐为 \mathbf 别名，避免编译时 Undefined control sequence。
+    // 部分洛谷题面使用 \bold2 / \bold{x} 表示粗体数学字符，LaTeX 标准没有 \bold，补齐为 \mathbf
+    // 别名，避免编译时 Undefined control sequence
     std::fputs("\\providecommand{\\bold}[1]{\\ifmmode\\mathbf{#1}\\else\\textbf{#1}\\fi}\n", out);
     std::fputs("\\providecommand{\\lt}{<}\n", out);
     std::fputs("\\providecommand{\\gt}{>}\n", out);
@@ -5882,9 +5455,8 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("\\providecommand{\\magenta}[1]{\\textcolor{magenta}{#1}}\n", out);
     std::fputs("\\providecommand{\\yellow}[1]{\\textcolor{yellow}{#1}}\n", out);
     std::fputs("\\providecommand{\\violet}[1]{\\textcolor{violet}{#1}}\n", out);
-    // JavaScript：只在这里定义一次。此前在语言补丁区还定义过一次，而
-    // keywords= 会覆盖先前累积的 morekeywords，等于前者白写（无衬线下的
-    // JS 保留字与模板字符串反引号高亮都因此丢失），这里合并为一份
+    // JavaScript 只在这里定义一次：keywords= 会覆盖先前累积的 morekeywords，另写一份等于白写
+    // （JS 保留字与模板字符串反引号的高亮都会丢失）
     std::fputs("\\lstdefinelanguage{JavaScript}{\n", out);
     std::fputs("keywords={abstract, arguments, as, async, await, boolean, break, byte, case, catch, char, class, const, continue, debugger, default, delete, do, double, else, enum, eval, export, extends, false, final, finally, float, for, from, function, goto, if, implements, import, in, instanceof, int, interface, let, long, native, new, null, of, package, private, protected, public, return, short, static, super, switch, synchronized, this, throw, throws, transient, true, try, typeof, var, void, volatile, while, with, yield},", out);
     std::fputs("keywordstyle=\\color{blue}\\bfseries,\n", out);
@@ -5900,9 +5472,8 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("morestring=[b]\",\n", out);
     std::fputs("morestring=[b]`\n", out);
     std::fputs("}\n", out);
-    // 封面标题：--set-cover-title 指定文字，--set-font-cover-page 指定字体
-    // （未设置字体时保持原代码行为：不额外指定字体族）；
-    // 作者处的项目名带指向项目仓库的超链接（hyperref 已在上方加载）
+    // 封面标题：--set-cover-title 指定文字，--set-font-cover-page 指定字体（未设置字体时保持原
+    // 行为：不额外指定字体族）；作者处的项目名带指向项目仓库的超链接
     {
         const std::string cover = opt.cover_title.empty() ? "luogu extract" : opt.cover_title;
         std::string cover_latex = escape_latex(cover);
@@ -5915,18 +5486,16 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
                      LUOGU_EXTRACT_PROJECT_NAME);
     }
 
-    // 字体设置已集中到 latex_fonts.cpp：ctex fontset 预设负责默认中西文
-    // 正文/标题/代码 CJK 字体；本函数只负责在用户指定 --set-font-* 时覆盖，
-    // 以及为代码块西文设置 Consolas -> Menlo -> DejaVu Sans Mono 回退链。
+    // 字体设置已集中到 latex_fonts.cpp：ctex fontset 预设负责默认中西文正文/标题/代码 CJK
+    // 字体；本函数只负责在用户指定 --set-font-* 时覆盖，并设置代码块西文回退链
     latex::write_font_setup(out, opt);
 }
 } // namespace
 
 namespace
 {
-// 写出目录页：章标题（\contentsname）+ \@starttoc；目录条目是否带超链接
-// 由 hyperref 的 linktoc 选项控制（对应 --no-toc-links）。
-// \hypertarget{luogotoc} 是页眉页码（--toc-backlinks）跳回目录页的目标锚点。
+// 写出目录页：章标题（\contentsname）+ \@starttoc，目录条目是否带超链接由 hyperref 的 linktoc
+// 选项控制（对应 --no-toc-links）；\hypertarget{luogotoc} 是页眉页码跳回目录页的目标锚点
 void write_toc(FILE *out, const latex::Options &opt)
 {
     // 目录：设置标题字体时，目录页中的题目标题同样使用对应字体
@@ -5941,15 +5510,11 @@ void write_toc(FILE *out, const latex::Options &opt)
         toc_close = "}";
     }
 
-    // 目录统一写成“章标题 + \@starttoc”（与 \tableofcontents 等价，
-    // 目录条目是否带超链接由 hyperref 的 linktoc 选项控制，对应
-    // --no-toc-links），并在目录标题处放置：
-    // - \hypertarget{luogotoc}：页眉页码（--toc-backlinks）跳回目录页的
-    //   目标锚点。\hypertarget 直接生成命名目标，不依赖 .aux 中的 label
-    //   记录，点击即可跳到目录页顶端；
-    // - \pdfbookmark：PDF 书签中始终保留“目录”条目（book 类经 ctex 的
-    //   \tableofcontents 不会自动写目录书签），与题目的 \section 自动生成
-    //   的书签并存，两种导出模式（有无 --toc-backlinks）行为一致。
+    // 目录统一写成「章标题 + \@starttoc」（与 \tableofcontents 等价），并在目录标题处放置：
+    // - \hypertarget{luogotoc}：页眉页码（--toc-backlinks）跳回目录页的目标锚点，直接生成命名
+    //   目标，不依赖 .aux 中的 label 记录；
+    // - \pdfbookmark：PDF 书签中始终保留「目录」条目（book 类经 ctex 的 \tableofcontents 不会
+    //   自动写目录书签），与题目的 \section 自动生成的书签并存
     std::fputs((toc_open + "\n").c_str(), out);
     std::fputs("\\chapter*{\\contentsname}\n", out);
     std::fputs("\\hypertarget{luogotoc}{}\n", out);
@@ -5964,10 +5529,8 @@ void write_toc(FILE *out, const latex::Options &opt)
 
 namespace
 {
-// 检查文档引用的图片是否都在缓存中；缺失时在终端用中文询问是否下载。
-// 同一 URL 去重，避免重复下载与并发写同一缓存文件。
-// new_download（-RD, --new-download）时全部重新下载（原子替换缓存中的同名文件）。
-// subject 为中文提示里的主语（如「筛选出的题目」「本地 Markdown 文件」）。
+// 检查文档引用的图片是否都在缓存中，缺失时在终端用中文询问是否下载；同一 URL 去重，避免重复
+// 下载与并发写同一缓存文件。new_download（-RD, --new-download）时全部重新下载（原子替换）
 void offer_missing_images(const std::vector<std::string> &candidate_urls,
                           bool new_download, const std::string &subject)
 {
@@ -5991,9 +5554,8 @@ void offer_missing_images(const std::vector<std::string> &candidate_urls,
     if (missing.empty())
         return;
 
-    // 确认走 prompt::confirm（唯一的输入注入点，且读不到输入时失败闭合）。
-    // 此前直接 fgets(stdin) 会绕过注入点、也不判断 TTY：管道输入（yes |）
-    // 会被当成用户同意而自动下载，测试也无法控制这一处确认。
+    // 确认走 prompt::confirm（唯一的输入注入点，读不到输入时失败闭合）：直接 fgets(stdin) 会
+    // 绕过注入点、也不判断 TTY，管道输入（yes |）会被当成用户同意而自动下载
     std::string prompt_text;
     if (new_download)
         prompt_text = subject + "共引用了 " + std::to_string(missing.size()) +
@@ -6044,12 +5606,11 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 {
     error.clear();
 
-    // 挂上本次导出的显示选项：行内转换（如 bilibili 链接）据此判断，
-    // 函数返回（含提前返回）时自动还原
+    // 挂上本次导出的显示选项：行内转换（如 bilibili 链接）据此判断，函数返回时自动还原
     OptionsGuard options_guard(&opt);
 
-    // 筛选（-M / -L 共用），结果已按题号排序。
-    // 题解流程已筛选过一次时直接复用（preselected），避免重复解析题目列表缓存
+    // 筛选（-M / -L 共用），结果已按题号排序；题解流程已筛选过一次时直接复用 preselected，
+    // 避免重复解析题目列表缓存
     std::vector<problem::Problem> local_problems;
     std::vector<std::string> resolved_tags;
     if (preselected)
@@ -6063,7 +5624,6 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     }
     const std::vector<problem::Problem> &problems = local_problems;
 
-    // ---- 题解与文章导出（设计 §十）----
     const bool export_solutions = opt.solutions != nullptr && opt.solution_export.enabled;
     // --article 的文章：与题解同文件、同级别，统一放在文档最后
     const bool export_articles = opt.articles != nullptr && !opt.articles->items.empty();
@@ -6073,15 +5633,13 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         (opt.solution_export.problem_to_article_link ||
          opt.solution_export.article_to_problem_link))
     {
-        // --solutions-only 不导出题面，双向跳转按钮会指向不存在的锚点：
-        // 自动关闭以避免死链（只提示一次）
+        // --solutions-only 不导出题面，双向跳转按钮会指向不存在的锚点：自动关闭以避免死链
         std::printf("提示：--solutions-only 模式下不导出题面，"
                     "已关闭题目与题解之间的双向跳转按钮（避免死链）。\n");
     }
 
-    // 检查图片是否都已下载到缓存；缺失时在终端用中文询问是否下载。
-    // 题面、题解正文与文章正文中引用的图片一并处理（题解与文章的图片同样走
-    // 现有的图片下载通道：洛谷图床串行 + 0.5~3 秒随机间隔，不受 --request-delay 影响）
+    // 检查图片是否都已下载到缓存，缺失时询问是否下载。题面、题解正文与文章正文中引用的图片
+    // 一并处理（题解与文章的图片同样走现有的图片下载通道：洛谷图床串行 + 随机间隔）
     {
         std::vector<std::string> candidate_urls;
         for (const auto &p : problems)
@@ -6102,8 +5660,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         }
         offer_missing_images(candidate_urls, opt.new_download, "筛选出的题目");
     }
-    // 逐题渲染用的显示选项：语言以筛选参数为准，其余（标签/难度/目录着色
-    // 等显示开关）沿用本次导出的设置
+    // 逐题渲染用的显示选项：语言以筛选参数为准，其余显示开关沿用本次导出的设置
     Options opt_lang = opt;
     opt_lang.lang = filter.lang;
 
@@ -6120,7 +5677,6 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 
     write_preamble(out, opt, /*doc_only=*/false);
 
-
     std::fputs("\\begin{document}\n\n", out);
     std::fputs("\\maketitle\n", out);
 
@@ -6130,8 +5686,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 
     // 写入助手：失败时统一清理临时文件（题解与题面共用）
     auto write_body = [&](const std::string &body) -> bool {
-        // 内容按字节数写出：含控制字符（缓存被篡改时）也不会被
-        // C 字符串终止符静默截断
+        // 内容按字节数写出：含控制字符（缓存被篡改时）也不会被 C 字符串终止符静默截断
         if (std::fwrite(body.data(), 1, body.size(), out) != body.size())
         {
             std::fclose(out);
@@ -6144,13 +5699,10 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         return true;
     };
 
-    // --paginate：题目与文章（题解）分页——每道题、每篇文章都从新的一页开始，
-    // 即在两次写入之间插入 \newpage（正文第一个元素之前不插：目录末尾已经
-    // \newpage 换页了，题解区之前也已经 \clearpage）。
-    // \newpage 只结束当前页：不写 \addcontentsline、也不生成书签，因此目录
-    // 条目与 PDF 书签与不分页时完全一致（这是本参数「不影响目录与书签」的
-    // 实现方式）。未开启 --paginate 时 body_started 只是记录状态，
-    // 生成的文档与启用前逐字节相同。
+    // --paginate：题目与文章（题解）分页——每道题、每篇文章都从新的一页开始，即在两次写入
+    // 之间插入 \newpage（正文第一个元素之前不插：目录末尾已 \newpage 换页，题解区之前也已经
+    // \clearpage）。\newpage 只结束当前页，不写 \addcontentsline、也不生成书签，因此目录条目
+    // 与 PDF 书签与不分页时完全一致
     bool body_started = false;
     auto page_break = [&]() {
         if (opt.paginate && body_started)
@@ -6164,8 +5716,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         const luogu::ProblemSolutionSet *set =
             export_solutions ? opt.solutions->find(p.pid) : nullptr;
 
-        // 题目标题行右侧的「查看题解」按钮：固定指向该题第一篇题解
-        // （同题题解连续排列，这是按钮指向可靠的前提）
+        // 题目标题行右侧的「查看题解」按钮固定指向该题第一篇题解（同题题解连续排列）
         std::string first_lid;
         if (export_solutions && !articles_only &&
             opt.solution_export.problem_to_article_link && set &&
@@ -6202,12 +5753,11 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         }
     }
 
-    // --solution-placement document-end（默认）：题解统一置于文档最后，
-    // 每题一组、同题题解连续排列
+    // --solution-placement document-end（默认）：题解统一置于文档最后，每题一组、同题连续排列
     if (export_solutions && !per_problem)
     {
-        // 题解区不再另起一个与目录同级的一级标题：直接从新的一页开始，
-        // 每题一组，组标题与普通题目同为 \section 级（\section* 不进目录）
+        // 题解区不另起一个与目录同级的一级标题：直接从新的一页开始，每题一组，组标题与普通
+        // 题目同为 \section 级（\section* 不进目录）
         std::fputs("\\clearpage\n", out);
         // \clearpage 之后已经是一张新页：分组标题不必再换一次页
         body_started = false;
@@ -6216,20 +5766,19 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
             if (item.solutions.empty())
                 continue; // 该题无可用题解：不生成小节（也就不产生死链）
             const std::string group_title = item.pid + " " + item.problem_title;
-            // 分页时：上一组题解结束后另起一页；组标题与其下第一篇题解同页，
-            // 组内其余篇目各自另起一页（组标题单独占一页没有意义）
+            // 分页时：上一组题解结束后另起一页；组标题与其下第一篇题解同页（组标题单独占一页
+            // 没有意义），组内其余篇目各自另起一页
             page_break();
             if (!write_body("\\section*{" + escape_latex(group_title) + "}\n"))
                 return false;
-            // \section* 不会自动生成书签：补一个顶层（第 0 层）书签，
-            // 各篇题解的书签仍以第 2 层级挂在它下面
+            // \section* 不会自动生成书签：补一个顶层（第 0 层）书签，各篇题解的书签仍以第 2
+            // 层级挂在它下面
             if (!write_body("\\pdfbookmark[0]{" + escape_latex(group_title) +
                             "}{solgroup-" +
                                 luogu::anchor_segment(item.pid) + "}\n"))
                 return false;
-            // 页眉不在这里设置：每篇题解自己用 \markright 写页眉
-            // （见 solution_to_latex），组标题只是分组用的 \section*，
-            // 和题解页页眉显示的「这一篇题解的标题」互不干扰。
+            // 页眉不在这里设置：每篇题解自己用 \markright 写页眉（见 solution_to_latex），组标题
+            // 只是分组用的 \section*，和题解页页眉显示的标题互不干扰
             body_started = true;
             bool first_article = true;
             for (const auto &view : item.solutions)
@@ -6245,16 +5794,14 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         std::fputs("\n", out);
     }
 
-    // ---- --article：文章统一置于文档最后（题解之后）----
-    // 级别与题解正文完全相同（目录层级、页眉、元信息、正文渲染），
-    // 只是没有题目跳转按钮，目录条目里也不注明所属题目
+    // --article：文章统一置于文档最后（题解之后）。级别与题解正文完全相同（目录层级、页眉、
+    // 元信息、正文渲染），只是没有题目跳转按钮，目录条目里也不注明所属题目
     if (export_articles)
     {
         if (body_started)
             std::fputs("\\clearpage\n", out); // 前面写过题面 / 题解：另起一页
-        // \clearpage 之后已经是一张新页：第一篇不必再换一次页；
-        // 文档里原本什么都没有时（--article 单独使用）目录末尾已经
-        // \newpage 换过页，同样不必再插入换页
+        // \clearpage 之后已经是一张新页：第一篇不必再换一次页；文档里原本什么都没有时
+        // （--article 单独使用）目录末尾已经 \newpage 换过页，同样不必再插入换页
         body_started = false;
         for (const auto &view : opt.articles->items)
         {
@@ -6282,9 +5829,8 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
         return false;
     }
-    // 落盘并 fsync 后原子替换目标文件；失败时清理临时文件
-    // 先 fsync 再关闭：flush 失败时也必须走 fclose，否则流一直占着临时文件
-    // （Windows 上随后删不掉 *.tex.tmp.*，磁盘上会留下垃圾）
+    // 落盘并 fsync 后原子替换目标文件；失败时清理临时文件。先 fsync 再关闭：flush 失败时也
+    // 必须走 fclose，否则流一直占着临时文件（Windows 上随后删不掉 *.tex.tmp.*，留下垃圾）
     const bool flushed = luogu::compat::flush_and_sync(out);
     const bool closed = (std::fclose(out) == 0);
     if (!flushed || !closed)
@@ -6294,9 +5840,8 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
         return false;
     }
-    // 原子替换目标文件：MinGW-w64 的 std::filesystem::rename 在目标已存在时
-    // 会失败（第二次导出同名文件必失败），必须用 compat::atomic_replace
-    // （Windows 走 MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)）
+    // 原子替换目标文件：MinGW-w64 的 std::filesystem::rename 在目标已存在时会失败（第二次
+    // 导出同名文件必失败），必须用 compat::atomic_replace（Windows 走 MoveFileExW）
     std::string replace_error;
     if (!luogu::compat::atomic_replace(tmp_path, output_path, replace_error))
     {
@@ -6311,9 +5856,9 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 
 namespace
 {
-// 按一级标题（Markdown 的 #）把内容切成若干段：每段从下一个一级标题开始，
-// 供 --paginate 在「每处一级标题」之前换页。代码围栏（``` / ~~~）内部的 #
-// 不是标题（与渲染器的判定保持一致），不参与切分。
+// 按一级标题（Markdown 的 #）把内容切成若干段：每段从下一个一级标题开始，供 --paginate 在
+// 「每处一级标题」之前换页。代码围栏（``` / ~~~）内部的 # 不是标题（与渲染器的判定保持一致），
+// 不参与切分
 std::vector<std::string> split_by_h1(const std::string &markdown)
 {
     std::vector<std::string> sections;
@@ -6388,28 +5933,23 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
 {
     error.clear();
 
-    // 本地 Markdown 的一级标题（#）就是本文档的章节标题：渲染成 \section，
-    // 从而进目录、写页眉（题面 / 题解正文里的 # 不受影响）
+    // 本地 Markdown 的一级标题（#）就是本文档的章节标题：渲染成 \section，从而进目录、写页眉
     Options local_opt = opt;
     local_opt.h1_as_section = true;
     const Options &effective_opt = local_opt;
     OptionsGuard options_guard(&local_opt);
 
-    // ---- 1. 读取本地文件 ----
-    // 编码自适应：BOM（UTF-8 / UTF-16 LE、BE / UTF-32 LE、BE）→ 严格 UTF-8
-    // 校验 → GB18030（GBK / GB2312）转码；统一成 UTF-8 并归一化换行，
-    // 生成的 .tex 才能被 xelatex + ctex 正确排版
+    // 编码自适应：BOM（UTF-8 / UTF-16 LE、BE / UTF-32 LE、BE）→ 严格 UTF-8 校验 → GB18030
+    // （GBK / GB2312）转码；统一成 UTF-8 并归一化换行，生成的 .tex 才能被 xelatex + ctex 排版
     std::string markdown;
     if (!textenc::read_text_file_utf8(input_path, markdown, error))
         return false;
 
-    // ---- 2. 文中引用的图片 ----
-    // 与题面、题解、文章走同一条通道：已在缓存中的直接引用，缺失时询问是否
-    // 下载（-RD, --new-download 时全部重新下载）
+    // 与题面、题解、文章走同一条通道：已在缓存中的直接引用，缺失时询问是否下载
+    // （-RD, --new-download 时全部重新下载）
     offer_missing_images(image_util::extract_urls(markdown), effective_opt.new_download,
                          "本地 Markdown 文件");
 
-    // ---- 3. 输出：临时文件 + fsync + 原子替换 ----
     const std::filesystem::path tmp_path =
         luogu::compat::temp_sibling_path(output_path);
     FILE *out = luogu::compat::fopen(tmp_path, "w");
@@ -6433,13 +5973,12 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
         return true;
     };
 
-    // ---- 4. 封面与目录 ----
     write_preamble(out, effective_opt, doc_only);
     std::fputs("\\begin{document}\n\n", out);
     if (doc_only)
     {
-        // --doc-only：没有封面与目录页；页眉页码（--toc-backlinks）改为跳回
-        // 文档首页——在正文最前面放一个与目录页同名的锚点即可
+        // --doc-only：没有封面与目录页；页眉页码（--toc-backlinks）改为跳回文档首页——在正文
+        // 最前面放一个与目录页同名的锚点即可
         std::fputs("\\hypertarget{luogotoc}{}\n", out);
     }
     else
@@ -6448,10 +5987,8 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
         write_toc(out, effective_opt);
     }
 
-    // ---- 5. 正文 ----
-    // 一级标题（#）由 markdown_to_latex 渲染成 \section：进目录，同时把标题
-    // 写进 \rightmark（页眉）。--paginate 时每处一级标题另起一页；--doc-only
-    // 不换页，整篇连贯输出。
+    // 一级标题（#）由 markdown_to_latex 渲染成 \section：进目录，同时把标题写进 \rightmark
+    // （页眉）。--paginate 时每处一级标题另起一页；--doc-only 不换页，整篇连贯输出
     const bool paginate = effective_opt.paginate && !doc_only;
     const std::vector<std::string> sections =
         paginate ? split_by_h1(markdown) : std::vector<std::string>{markdown};
@@ -6467,7 +6004,6 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
             wrote_any = true;
     }
 
-    // ---- 6. 收尾 ----
     // 缺少 \end{document} 时 LaTeX 不会正常结束文档（目录 .toc 也写不出来）
     std::fputs("\\end{document}\n", out);
     if (std::ferror(out))
@@ -6478,8 +6014,7 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
         error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
         return false;
     }
-    // 先 fsync 再关闭：flush 失败时也必须走 fclose，否则流一直占着临时文件
-    // （Windows 上随后删不掉 *.tex.tmp.*，磁盘上会留下垃圾）
+    // 先 fsync 再关闭：flush 失败时也必须走 fclose，否则流一直占着临时文件（Windows 上删不掉）
     const bool flushed = luogu::compat::flush_and_sync(out);
     const bool closed = (std::fclose(out) == 0);
     if (!flushed || !closed)
@@ -6489,9 +6024,8 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
         error = "写入输出文件 '" + luogu::compat::path_to_utf8(output_path) + "' 失败";
         return false;
     }
-    // 原子替换目标文件：MinGW-w64 的 std::filesystem::rename 在目标已存在时
-    // 会失败（第二次导出同名文件必失败），必须用 compat::atomic_replace
-    // （Windows 走 MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)）
+    // MinGW-w64 的 std::filesystem::rename 在目标已存在时会失败，必须用
+    // compat::atomic_replace（Windows 走 MoveFileExW(..., MOVEFILE_REPLACE_EXISTING)）
     std::string replace_error;
     if (!luogu::compat::atomic_replace(tmp_path, output_path, replace_error))
     {

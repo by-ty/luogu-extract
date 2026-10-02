@@ -20,14 +20,11 @@
 
 // include/luogu-extract/util/version.h.in
 //
-// 版本号配置模板：由 CMake 在配置阶段根据 CMakeLists.txt 中
-// project(luogu-extract VERSION ...) 的版本号生成
-// <构建目录>/generated/luogu-extract/version_config.h。
-// 程序通过 luogu-extract/util/version.h 引用生成的头文件，
-// 在编译期即可拿到版本号（无需运行时解析任何文件）。
+// 版本号模板：CMake 配置阶段替换 @...@ 生成
+// generated/luogu-extract/version_config.h（由 util/version.h 引用）。
 #pragma once
 
-// 项目版本号（取自 CMakeLists.txt 的 project(... VERSION x.y.z)）
+// 取自 CMakeLists.txt 的 project(... VERSION x.y.z)
 #define LUOGU_EXTRACT_VERSION "@PROJECT_VERSION@"
 #define LUOGU_EXTRACT_VERSION_MAJOR @PROJECT_VERSION_MAJOR@
 #define LUOGU_EXTRACT_VERSION_MINOR @PROJECT_VERSION_MINOR@

@@ -19,10 +19,8 @@
 // License for more details.
 
 // src/main.cpp
-// Windows（MSVC / MinGW-w64）不保证提供 POSIX getopt/getopt_long，
-// 全平台统一使用自带实现（语义与 GNU getopt 一致：长选项、无歧义前缀缩写、
-// ':' 前缀 optstring、参数重排等，与 glibc 的行为做过逐用例比对）。
-// LUOGU_FORCE_COMPAT_GETOPT 用于在非 Windows 平台强制测试该实现。
+// Windows（MSVC / MinGW-w64）不保证提供 POSIX getopt_long，全平台统一使用自带实现
+// （语义同 GNU getopt）；LUOGU_FORCE_COMPAT_GETOPT 可在非 Windows 平台强制测试该实现。
 #if defined(LUOGU_FORCE_COMPAT_GETOPT) || defined(_WIN32)
 #include "luogu-extract/util/getopt_compat.h"
 #else
@@ -57,7 +55,7 @@
 namespace
 {
 
-// 程序运行参数。以后新增参数时在这里添加字段。
+// 程序运行参数（新增参数在此添加字段）
 struct Options
 {
     bool update = false;    // -U, --update
@@ -68,37 +66,32 @@ struct Options
     bool version = false;   // -V, --version
     std::string output;     // --output（空则按模式取默认 problems.md / problems.tex）
 
-    // ---- 缓存清除参数（三者都只能单独使用）----
-    bool clean_all = false;      // -C, --clean-all：清空整个缓存文件夹
-    bool clean_images = false;   // -CIMG, --clean-images：清空图片缓存
-    bool clean_problems = false; // -CP, --clean-problems：清空题目列表缓存
-    bool clean_fonts = false;    // -CF, --clean-fonts：清空字体缓存
+    // 缓存清除参数：只能彼此组合使用，不能与其它参数同用
+    bool clean_all = false;      // -C, --clean-all
+    bool clean_images = false;   // -CIMG, --clean-images
+    bool clean_problems = false; // -CP, --clean-problems
+    bool clean_fonts = false;    // -CF, --clean-fonts
 
-    // ---- 下载设置参数 ----
-    // -RD, --new-download：下载题面图片时不使用之前缓存的图片，而是重新下载
-    // （新图片原子替换缓存中的同名图片，下载失败不影响原有缓存；仅 -L）
+    // -RD, --new-download：图片不用已有缓存而是重新下载（仅 -L；新图原子替换）
     bool new_download = false;
 
-    // ---- 本地 Markdown 转写（--local / --doc-only，仅 -L）----
-    // --local：把本地 Markdown 文本文件转写为 LaTeX（不下载题目/题解/文章，
-    // 也不读写缓存）；空串表示未使用
+    // --local：把本地 Markdown 转写为 LaTeX（仅 -L，不读写缓存）；空串 = 未使用
     std::string local_file;
-    // --doc-only：不输出封面、目录与页眉标题，整篇连贯输出（仅与 --local 同用）
+    // --doc-only：不输出封面/目录/页眉，整篇连贯输出（仅与 --local 同用）
     bool doc_only = false;
 
-    // ---- 导出设置参数 ----
-    // --compile：-L 导出 LaTeX 成功后自动执行 latexmk --xelatex <输出文件名>.tex
+    // --compile：-L 导出成功后自动执行 latexmk --xelatex
     bool compile_latex = false;
-    bool no_toc_links = false;      // --no-toc-links：目录条目不带跳转超链接（仅 -L）
+    bool no_toc_links = false;      // --no-toc-links：目录条目不带超链接（仅 -L）
     bool toc_backlinks = false;     // --toc-backlinks：页码为跳回目录的超链接（仅 -L）
     bool no_bilibili_link = false;  // --no-bilibili-link：bilibili URL 输出为普通文本（仅 -L）
-    // ---- 题目信息显示开关（-M / -L 均有效）----
+    // 题目信息显示开关（-M / -L 均有效）
     bool no_show_source_tags = false;   // --no-show-source-tags：不显示来源/时间/区域/特殊标签
     bool show_algorithm_tags = false;   // --show-algorithm-tags：显示算法标签
     bool show_difficulty_tags = false;  // --show-difficulty-tags：显示题目难度
-    // --show-contents-difficulty-tags：目录中的题目标题按难度着色（仅 -L）
+    // --show-contents-difficulty-tags：目录标题按难度着色（仅 -L）
     bool show_contents_difficulty_tags = false;
-    // --paginate：题目之间、文章（题解）之间分页（仅 -L）
+    // --paginate：题目与文章之间分页（仅 -L）
     bool paginate = false;
     std::string font_cover;         // --set-font-cover-page（仅 -L）
     std::string font_body_zh;       // --set-font-body-zh-CN（仅 -L）
@@ -110,12 +103,11 @@ struct Options
 
     luogu::ExportFilter filter; // -M / -L 共用的筛选条件
 
-    // ---- 题解与文章抓取与导出（--with-solutions / --article 等，设计 §十二）----
+    // 题解与文章抓取与导出（--with-solutions / --article 等）
     bool with_solutions = false;          // --with-solutions
     bool solutions_only = false;          // --solutions-only
     bool articles_only_download = false; // --articles-only-download
-    // --article：按文章编号单独下载的文章（已规范化为小写并按顺序去重）；
-    // 与题解正文共用来源、TTL、刷新等控制选项，统一放在文档最后
+    // --article：按编号单独下载（已转小写去重），与题解共用来源/TTL 等选项
     std::vector<std::string> articles;
     std::string cookie_file;              // --cookie
     std::string cookie_string;            // --cookie-string
@@ -140,12 +132,10 @@ struct Options
     bool no_article_meta = false;        // --no-article-meta
     bool yes = false;                     // --yes
 
-    // 题解 / 文章相关参数是否被显式给出（用于「缺少 --with-solutions」校验：
-    // --article 自己就能启用文章下载，不算在内）
+    // 题解/文章相关参数是否被显式给出（「缺少 --with-solutions」校验用；--article 不算）
     bool solution_option_used = false;
 };
 
-// 只作为长选项使用的选项码（getopt_long 返回值）
 enum
 {
     OPT_TAG = 1000,
@@ -204,7 +194,6 @@ enum
     OPT_DOC_ONLY,
 };
 
-// 选项码 → 长选项名（用于报错信息）
 inline const char *option_name_for(int code)
 {
     switch (code)
@@ -236,7 +225,6 @@ inline const char *option_name_for(int code)
     }
 }
 
-// 选项缺失参数值时，给出“需要什么参数”的说明（用于中文报错）
 inline std::string option_argument_hint(const std::string &token)
 {
     if (token == "--tag") return "标签名称或数字 ID";
@@ -267,7 +255,6 @@ inline std::string option_argument_hint(const std::string &token)
     return "";
 }
 
-// -h, --help 的帮助信息（与 README「参数说明」表中的说明保持一致）
 const char *kUsage =
     "用法：luogu-extract [选项]\n"
     "      不带任何参数运行（./luogu-extract）时进入简易命令行交互程序：\n"
@@ -436,7 +423,6 @@ void printUsage()
     std::printf("%s", kUsage);
 }
 
-// -V, --version：项目简介 + 版本号 + 版权声明 + 项目仓库链接
 void printVersion()
 {
     std::printf("%s %s\n", LUOGU_EXTRACT_PROJECT_NAME, LUOGU_EXTRACT_VERSION);
@@ -448,8 +434,7 @@ void printVersion()
     std::printf("项目仓库：%s\n", LUOGU_EXTRACT_REPOSITORY_URL);
 }
 
-// 错误/成功提示的颜色只在对应输出流连接到终端时启用：
-// 输出被重定向到文件或管道时不写 ANSI 转义序列（终端下的外观完全不变）
+// 颜色只在输出流连接终端时启用（重定向时不写 ANSI 转义序列）
 inline void printError(const std::string &message)
 {
     if (luogu::compat::stderr_is_tty())
@@ -466,8 +451,7 @@ inline void printSuccess(const std::string &message)
         std::printf("%s\n", message.c_str());
 }
 
-// 参数值的解析与校验统一放在 util/cli_parse（简易命令行交互程序共用同一份
-// 实现，保证两处对同一个值的判定与中文报错完全一致）
+// 参数值解析与校验统一放在 util/cli_parse（与交互程序共用同一份实现）
 using cliparse::default_local_output;
 using cliparse::parse_difficulty_spec;
 using cliparse::parse_pid_range_arg;
@@ -477,21 +461,14 @@ using cliparse::to_lower_ascii;
 using cliparse::to_upper_ascii;
 using cliparse::validate_font_option;
 
-// ---- 参数报错时定位「到底是哪个参数写错了」----
-// getopt 的短选项簇会把 "-local" 拆成 -l -o -c -a -l 逐个解析，出错时 optind
-// 可能仍指向该簇、也可能已指向下一个参数（取决于出错字符是不是簇的最后一个
-// 字符），因此不能简单地取 argv[optind - 1]——那会把上一个参数（如 "-L"）
-// 当成出错的那个。这里统一用 optopt（出错字符）配合两个候选位置定位。
-// 顺带对常见笔误给出提示：「长选项只写了一个连字符」（-local 想写 --local）、
-// 长选项拼写相近（--locale 想写 --local）与长选项缩写有歧义（--art）。
+// 参数报错时定位：短选项簇（"-local" 会被拆成 -l -o -c -a -l）出错时 optind 可能仍指向
+// 该簇、也可能已指向下一个参数，取 argv[optind - 1] 会误判，故用 optopt 配合两个位置定位。
 
-// 是否为「-xyz」形式的短选项簇（单连字符且不是 "--"）
 inline bool is_short_option_cluster(const std::string &token)
 {
     return token.size() >= 2 && token[0] == '-' && token[1] != '-';
 }
 
-// 取长选项名：--name / --name=value → name
 inline std::string long_option_name_of(const std::string &token)
 {
     if (token.size() < 2 || token.compare(0, 2, "--") != 0)
@@ -503,8 +480,7 @@ inline std::string long_option_name_of(const std::string &token)
     return name;
 }
 
-// 「-local」这类把长选项写成单连字符的笔误：首字符恰为出错字符时返回其本应的
-// 长选项名（local），否则返回空串
+// 「-local」这类笔误：首字符恰为出错字符时返回其本应的长选项名
 inline std::string single_dash_long_name(const std::string &token, int bad_char)
 {
     if (!is_short_option_cluster(token) ||
@@ -513,7 +489,7 @@ inline std::string single_dash_long_name(const std::string &token, int bad_char)
     return long_option_name_of("--" + token.substr(1));
 }
 
-// 在已知长选项中找一个与 name 相近的名字（两者互为前缀且至少 3 个字符相同）
+// 在已知长选项中找相近的名字（互为前缀且至少 3 个字符相同）
 inline std::string suggest_long_option(const std::vector<std::string> &names,
                                        const std::string &name)
 {
@@ -536,7 +512,7 @@ inline std::string suggest_long_option(const std::vector<std::string> &names,
     return best;
 }
 
-// 字符串末尾是否为中文句末标点（？。！；UTF-8 下都是 3 字节）
+// 末尾是否为中文句末标点（UTF-8 下均为 3 字节）
 inline bool ends_with_cjk_sentence_end(const std::string &text)
 {
     if (text.size() < 3)
@@ -545,15 +521,13 @@ inline bool ends_with_cjk_sentence_end(const std::string &text)
     return tail == "？" || tail == "。" || tail == "！";
 }
 
-// 未知参数报错里的补充说明（含开头的分隔符；无建议时返回空串）
+// 未知参数报错的补充建议（无建议时返回空串）
 inline std::string bad_option_advice(const std::string &token, int optopt,
                                      const std::vector<std::string> &long_names)
 {
     if (optopt > 0 && optopt < 128)
     {
-        // 短选项：可能只是把长选项写成了一个连字符（-local 想写 --local）。
-        // 只有确实像长选项（- 后面跟着一个词）时才提示，避免对 "-l" 这类
-        // 单纯写错的短选项给出无意义建议
+    // 短选项：只有确实像长选项（- 后跟着一个词）时才提示，避免无意义建议
         const std::string name = single_dash_long_name(token, optopt);
         if (name.empty())
             return "";
@@ -568,7 +542,6 @@ inline std::string bad_option_advice(const std::string &token, int optopt,
     const std::string name = long_option_name_of(token);
     if (name.empty())
         return "";
-    // 缩写有歧义：还有多个长选项以它为前缀
     std::vector<std::string> prefix_matches;
     for (const auto &candidate : long_names)
         if (candidate.size() > name.size() &&
@@ -589,9 +562,8 @@ inline std::string bad_option_advice(const std::string &token, int optopt,
     return "";
 }
 
-// 定位出错的参数原文：optopt 是 getopt 报出的短选项字符（0 表示长选项）。
-// 短选项簇里未知字符不是最后一个时 optind 仍指向该簇，是最后一个时已经指向
-// 下一个参数，因此两个位置都要看，取第一个「以该字符开头的短选项簇」。
+// 定位出错参数原文：optopt 为出错的短选项字符（0 表示长选项）。短选项簇里未知字符不是
+// 最后一个时 optind 仍指向该簇，是最后一个时已指向下一个参数，故两个位置都要看
 inline std::string locate_bad_option(char **argv, int argc, int optind, int optopt)
 {
     const auto token_at = [&](int idx) -> std::string {
@@ -611,8 +583,8 @@ inline std::string locate_bad_option(char **argv, int argc, int optind, int opto
     return token_at(optind - 1);
 }
 
-// 长选项表：以后新增参数时在这里加一项，并在 app::run 的 switch 中处理。
-// （展开多字符短选项时要知道哪些长选项带取值，因此表放在文件作用域。）
+// 长选项表：新增参数在此加一项并在 app::run 的 switch 中处理（文件作用域：展开多字符
+// 短选项时要知道哪些长选项带取值）
 const struct option kLongOptions[] = {
     {"update",     no_argument,       nullptr, 'U'},
     {"markdown",   no_argument,       nullptr, 'M'},
@@ -677,9 +649,7 @@ const struct option kLongOptions[] = {
     {nullptr,      0,                 nullptr, 0},
 };
 
-// 该参数是否是「需要取值的长选项」（`--output`，或 getopt_long 允许的
-// 无歧义前缀缩写 `--out`）。取值写成 --output=xxx 时不单独占一个参数，
-// 按不需要取值处理。
+// 是否为需要取值的长选项（含无歧义前缀缩写）；--output=xxx 形式不单独占参数，按不需取值处理
 inline bool long_option_takes_value(const std::string &token)
 {
     if (token.size() < 3 || token.compare(0, 2, "--") != 0 ||
@@ -690,7 +660,7 @@ inline bool long_option_takes_value(const std::string &token)
     for (const struct option *o = kLongOptions; o->name != nullptr; ++o)
         if (name == o->name)
             return o->has_arg == required_argument;
-    // 前缀缩写：所有候选都要取值时才算（有歧义时 getopt_long 自己会报错）
+    // 前缀缩写：所有候选都要取值时才算
     bool found = false;
     for (const struct option *o = kLongOptions; o->name != nullptr; ++o)
     {
@@ -703,14 +673,9 @@ inline bool long_option_takes_value(const std::string &token)
     return found;
 }
 
-// 多字符短选项（-CIMG / -CP / -RD）不是 getopt 支持的写法：getopt 只认单字符
-// 短选项，会把 "-CIMG" 当成 -C -I -M -G 这样的选项簇。因此在这些参数交给
-// getopt 之前，先把它们逐个替换成等价的长选项（--clean-images 等）；
-// "--" 之后的内容按惯例是位置参数，不做替换。
-// （-C 是单字符短选项，直接由 optstring 处理，无需在此展开。）
-// 只改写「选项位置」上的参数：带值长选项后面的那个参数是它的取值，
-// 即使取值恰好等于 -RD 也不能改写（否则 `--output -RD` 会把输出文件名
-// 变成 `--new-download`）。
+// 多字符短选项（-CIMG / -CP / -RD）不是 getopt 支持的写法（会被当成 -C -I -M -G 的选项簇），
+// 故先替换成等价长选项；"--" 之后的位置参数与带值长选项的取值都不替换，否则
+// `--output -RD` 会把输出文件名变成 `--new-download`
 inline void expand_multichar_short_options(std::vector<std::string> &args_utf8)
 {
     static const struct
@@ -744,10 +709,8 @@ inline void expand_multichar_short_options(std::vector<std::string> &args_utf8)
     }
 }
 
-// 题解 / 文章抓取的整体流程（设计 §四 / §五 / §六 / §八）：
-// 计划（只读缓存）→ 延时与系数 → 风险分级确认 → 逐题串行抓取。
-// --article 的文章与题解共用同一套计划、确认与抓取流程。
-// 返回值即进程退出码；proceed 为 false 表示不要再导出（取消或中止）。
+// 题解 / 文章抓取流程：计划（只读缓存）→ 延时与系数 → 风险分级确认 → 逐题串行抓取
+// （--article 与题解共用同一套流程）；返回值即退出码，proceed 为 false 表示不再导出
 struct SolutionRun
 {
     int exit_code = 0;
@@ -767,7 +730,7 @@ SolutionRun run_solutions(const Options &options,
                                    !options.with_solutions && !options.solutions_only;
     const char *subject = articles_only_run ? "文章" : "题解";
 
-    // ---- 凭据通道：Cookie 只在洛谷原站请求上使用（保存站一律不带）----
+    // Cookie 只在洛谷原站请求上使用，保存站等第三方域名一律不带
     std::string cookie_error;
     std::string cookie_warnings;
     if (!options.cookie_string.empty())
@@ -794,9 +757,8 @@ SolutionRun run_solutions(const Options &options,
     }
     else
     {
-        // 本次运行两种凭据都没给：清掉上一轮 app::run 留在内存 jar 与两个
-        // libcurl 句柄 Cookie 引擎里的凭据。否则交互模式（同进程多次调用
-        // app::run）里「清空 Cookie」不会真正生效，后续请求仍带着旧凭据。
+        // 两种凭据都没给：清掉上一轮 app::run 留在内存与 libcurl Cookie 引擎里的凭据，
+        // 否则交互模式（同进程多次调用）下「清空 Cookie」不生效
         crawler::gate_clear_cookies();
     }
     if (!cookie_warnings.empty())
@@ -811,7 +773,7 @@ SolutionRun run_solutions(const Options &options,
             run.proceed = false;
             return run;
         }
-        // 只下载文章：Cookie 可选（文章接口通常无需登录态）
+        // 只下载文章：Cookie 可选
         std::printf("未提供 Cookie：文章接口通常无需登录态；"
                     "若某篇文章不可访问（需要权限），可用 --cookie 指定登录态\n");
     }
@@ -822,7 +784,6 @@ SolutionRun run_solutions(const Options &options,
                     crawler::gate_cookie_file_hint().c_str());
     }
 
-    // ---- 抓取参数 ----
     solution::TaskOptions task;
     // 默认 auto：缓存优先 + 两个站点轮流分配、并行抓取
     if (options.article_source == "save")
@@ -863,9 +824,8 @@ SolutionRun run_solutions(const Options &options,
     // 计划阶段的列表请求走原站通道，保留交互式等待与重试
     gate_config.interactive_retry = true;
 
-    // ---- 计划阶段（第一遍：只读缓存）----
-    // 先给请求闸门一个初步的延时系数，保证「按需获取题解列表」这一步本身
-    // 也受 --request-delay 控制
+    // 计划阶段（第一遍只读缓存）先给闸门一个初步延时系数，保证「按需获取题解列表」也受
+    // --request-delay 控制；随后把缺失/过期的列表抓回来，风险确认看到的篇数才是精确值
     solution::Plan plan;
     solution::PlanResult plan_result =
         solution::make_plan(selection.problems, task, false, plan);
@@ -874,8 +834,7 @@ SolutionRun run_solutions(const Options &options,
     crawler::gate_configure_channel(crawler::Channel::Save, gate_config,
                                     plan.total_requests);
 
-    // 计划阶段把缓存缺失/过期的题解列表抓回来（列表请求本来就要发，属于
-    // N + P 中的 P），这样风险确认看到的篇数是精确值
+    // 列表请求本就要发（属于 N + P 中的 P），抓回来才能得到精确篇数
     plan_result = solution::make_plan(selection.problems, task, true, plan);
     if (plan_result.status == solution::PlanStatus::Stopped)
     {
@@ -899,9 +858,8 @@ SolutionRun run_solutions(const Options &options,
         run.proceed = false;
         return run;
     }
-    // auto 模式下，正文由调度器处理限流（临时转给另一站点），因此进入
-    // 并行抓取阶段前把两条通道切到「命中限流立即返回」；计划阶段的列表请求
-    // 只能走原站、没有备用站点，仍保留闸门内部的交互式等待与重试
+    // auto 模式下正文由调度器处理限流（临时转给另一站点），故进入并行抓取前把两条通道切到
+    // 「命中限流立即返回」；计划阶段的列表请求只能走原站、无备用站点，仍保留闸门内部的重试
     if (task.source == solution::Source::Auto)
     {
         crawler::GateConfig parallel_config = gate_config;
@@ -912,17 +870,15 @@ SolutionRun run_solutions(const Options &options,
                                         plan.total_requests);
     }
 
-    // 用精确的正文篇数重新计算延时系数（只会更保守）
+    // 用精确篇数重算延时系数（只会更保守）
     crawler::gate_set_planned_requests(crawler::Channel::Official,
                                        plan.total_requests);
     crawler::gate_set_planned_requests(crawler::Channel::Save,
                                        plan.total_requests);
-    // 预计 0 次请求（全部命中缓存）：不打印延时与规模提示，
-    // 由 confirm_risk 给出一行精简说明
+    // 预计 0 次请求（全部命中缓存）时不打印延时与规模提示
     if (plan.total_requests > 0)
         crawler::gate_print_delay_notice(plan.total_requests);
 
-    // ---- 风险分级与确认（设计 §五）----
     prompt::RiskInfo risk = prompt::plan_risk(plan.total_requests, options.yes);
     risk.problems = plan.problems;
     risk.per_problem = options.max_solutions < 0 ? 0 : options.max_solutions;
@@ -944,7 +900,6 @@ SolutionRun run_solutions(const Options &options,
     const prompt::ConfirmResult confirm = prompt::confirm_risk(risk);
     if (confirm == prompt::ConfirmResult::Cancelled)
     {
-        // 用户拒绝确认：立即退出，退出码 0
         run.exit_code = 0;
         run.proceed = false;
         return run;
@@ -956,7 +911,6 @@ SolutionRun run_solutions(const Options &options,
         return run;
     }
 
-    // ---- 抓取阶段 ----
     std::string crawl_error;
     if (!solution::crawl(plan, task, bundle, articles, stats, crawl_error))
     {
@@ -998,9 +952,7 @@ SolutionRun run_solutions(const Options &options,
     return run;
 }
 
-// 作用域内把工作目录切到 dir，析构时恢复原目录（尽力而为）。
-// --compile 要在 .tex 所在目录里执行 latexmk，用它保证函数里所有返回路径
-// （含中途失败提前 return）都会把工作目录恢复原样，不会留下副作用。
+// 作用域内把工作目录切到 dir，析构时恢复：保证所有返回路径（含提前 return）都恢复原目录
 class ScopedCurrentPath
 {
 public:
@@ -1010,7 +962,7 @@ public:
         old_ = std::filesystem::current_path(ec);
         if (ec)
         {
-            // 读不到当前目录就没法恢复，宁可不切换（由调用方报错）
+            // 读不到当前目录就宁可不切换（由调用方报错）
             error_ = ec;
             return;
         }
@@ -1024,13 +976,13 @@ public:
         if (changed_)
         {
             std::error_code restore_ec;
-            std::filesystem::current_path(old_, restore_ec); // 恢复工作目录（尽力而为）
+            std::filesystem::current_path(old_, restore_ec); // 尽力而为
         }
     }
     ScopedCurrentPath(const ScopedCurrentPath &) = delete;
     ScopedCurrentPath &operator=(const ScopedCurrentPath &) = delete;
 
-    // 切换是否成功；失败时工作目录未被改变（可直接报错返回）
+    // 切换是否成功；失败时工作目录未被改变
     bool ok() const { return !error_; }
     const std::error_code &error() const { return error_; }
 
@@ -1040,16 +992,10 @@ private:
     bool changed_ = false;
 };
 
-// --compile：-L 导出 LaTeX 成功后自动执行
-// `latexmk --xelatex <输出文件名>.tex`，等它编译结束再执行
-// `latexmk -c <输出文件名>.tex` 清掉中间文件（.aux/.log/.toc/…，PDF 保留）。
-// - 工作目录切到 .tex 所在目录后再执行：与手动执行这两条命令一致，生成的
-//   PDF 落在 .tex 旁边（图片与字体在 .tex 里都是绝对路径，切目录不影响编译）；
-//   切目录与恢复由 ScopedCurrentPath 负责，任何返回路径都会恢复原目录；
-// - 命令按「参数数组」交给 compat::run_command_utf8（POSIX 直接 execvp、
-//   Windows 用 CreateProcessW），不经过 shell：--output 给的文件名里即使含
-//   " & | ` $( ) %VAR% 等字符也只会当成普通文件名，不会被解释成命令；
-// - 返回程序退出码：0 表示编译成功（清理失败只提示，不影响退出码）。
+// --compile：-L 导出成功后依次执行 `latexmk --xelatex <输出文件名>.tex` 与 `latexmk -c`
+// （只删可再生的中间文件，保留 .pdf/.tex），工作目录切到 .tex 所在目录。命令按参数数组经
+// compat::run_command_utf8 直接执行、不过 shell，--output 的文件名含 shell 元字符也只当文件名。
+// 返回退出码（清理失败只提示，不改退出码）。
 int compile_latex_document(const std::filesystem::path &tex_path)
 {
     const std::filesystem::path dir =
@@ -1064,19 +1010,18 @@ int compile_latex_document(const std::filesystem::path &tex_path)
     }
 
     const std::string raw_name = luogu::compat::path_to_utf8(tex_path.filename());
-    // 以 '-' 开头的文件名会被 latexmk 当成选项（选项注入）：加 "./" 前缀
-    // 让它始终被当作路径（正常文件名不受影响）
+    // 以 '-' 开头的文件名会被 latexmk 当成选项（选项注入），加 "./" 前缀规避
     const std::string file_name =
         (!raw_name.empty() && raw_name[0] == '-') ? "./" + raw_name : raw_name;
     const std::vector<std::string> compile_argv = {"latexmk", "--xelatex", file_name};
-    // 仅用于打印（不执行）：引号只是让提示更易读、便于手动复制
+    // 仅用于打印，不执行（引号只为便于手动复制）
     const std::string command = "latexmk --xelatex \"" + file_name + "\"";
     std::printf("正在编译 LaTeX 文档：%s\n", command.c_str());
     std::fflush(stdout);
     std::string run_error;
     const int status = luogu::compat::run_command_utf8(compile_argv, run_error);
 
-    // latexmk 本身启动不了时不必再执行清理，直接给出原因（工作目录由 guard 恢复）
+    // latexmk 启动不了：不必再清理（目录由 guard 恢复）
     if (status < 0)
     {
         printError("无法执行 latexmk（" + run_error +
@@ -1084,8 +1029,7 @@ int compile_latex_document(const std::filesystem::path &tex_path)
         return 1;
     }
 
-    // 编译结束后（无论成功与否）再执行 latexmk -c 清理中间文件：
-    // -c 只删可再生的中间文件，保留 .pdf 与 .tex
+    // 无论编译成败都执行 latexmk -c 清理中间文件
     const std::vector<std::string> clean_argv = {"latexmk", "-c", file_name};
     const std::string clean_command = "latexmk -c \"" + file_name + "\"";
     std::printf("清理中间文件：%s\n", clean_command.c_str());
@@ -1104,7 +1048,7 @@ int compile_latex_document(const std::filesystem::path &tex_path)
 
     if (clean_status != 0)
     {
-        // 编译已成功、PDF 已生成：清理失败只提示，不改变退出码
+        // 编译已成功、PDF 已生成：清理失败只提示，不改退出码
         printError("latexmk -c 清理中间文件失败" +
                    (clean_status > 0 ? "（退出码 " + std::to_string(clean_status) + "）" : "") +
                    "；可手动执行：" + clean_command);
@@ -1120,7 +1064,6 @@ int compile_latex_document(const std::filesystem::path &tex_path)
     return 0;
 }
 
-// --tags：按官方分类（type）打印标签 ID 对照表
 inline bool print_tag_list()
 {
     if (!tagcache::shared_cache_loaded())
@@ -1170,10 +1113,8 @@ inline bool print_tag_list()
 
 } // namespace
 
-// 同一进程内多次执行 app::run（简易命令行交互程序会用它执行更新缓存、
-// 清理缓存、打印标签表与导出等动作）时，先把 getopt 的全局解析状态复位：
-// 系统 getopt（glibc / musl）在 optind == 0 时重新初始化内部状态，自带的
-// Windows 兼容实现另需复位其参数重排状态（见 getopt_reset 的说明）。
+// 同一进程内多次执行 app::run 前复位 getopt 全局解析状态（optind = 0 让系统 getopt
+// 重新初始化；自带兼容实现另需复位参数重排状态，见 getopt_reset 的说明）。
 static void reset_getopt_state()
 {
 #if defined(LUOGU_FORCE_COMPAT_GETOPT) || defined(_WIN32)
@@ -1185,14 +1126,8 @@ static void reset_getopt_state()
 #endif
 }
 
-// libcurl 的全局初始化只做一次（进程级）：app::run 会被简易交互程序在同一进程
-// 内多次调用，而 crawler/request_gate.cpp 的静态 easy handle（保存在函数内静态
-// 对象里，只创建、从不释放，承载 Cookie 引擎等全局资源）跨运行一直存在；
-// 若每次 app::run 都 curl_global_init + curl_global_cleanup，那些 handle 就会在
-// cleanup 之后被再次使用，属于 libcurl 明确禁止的未定义行为。
-// 因此这里只初始化一次，并且不在 app::run 里 cleanup：静态 handle 到进程结束前
-// 都不会释放，任何时刻 cleanup 都发生在它们释放之前；最安全的选择是让全局资源
-// 随进程一起由操作系统回收（进程退出时统一清理）。
+// libcurl 全局初始化只做一次且不配对 cleanup：request_gate 的静态 easy handle 只创建、从不
+// 释放，若每次 app::run 都 cleanup，它们会被再次使用（libcurl 禁止的 UB）；资源随进程退出回收。
 bool ensure_curl_global_init()
 {
     static std::mutex init_mutex;
@@ -1209,17 +1144,12 @@ bool ensure_curl_global_init()
 int app::run(const std::vector<std::string> &args_input)
 {
     reset_getopt_state();
-    // 同一进程内多次运行时要复位上一次留下的抓取状态：请求闸门的通道延时、
-    // 限流等待与「已停止」标记是进程级静态状态，不复位会把上次运行的
-    // 「已停止 / 已被限流」带进本次运行（app.h 承诺每次调用都复位运行状态）。
-    // 该函数只复位状态，不销毁 request_gate 内部的静态 easy handle。
+    // 复位上一次留下的进程级静态抓取状态（通道延时、限流等待、「已停止」标记），
+    // 否则会把「已停止 / 已被限流」带进本次运行
     crawler::gate_reset_state();
 
-    // Windows 下 CRT 的 main(char**) 参数按 ANSI 代码页转换而非 UTF-8，
-    // 统一转换为 UTF-8 后构造 getopt 可用的参数表（中文参数不乱码）；
-    // 其他平台等价于原 argv 的副本。
+    // Windows 下 CRT 的 main(char**) 参数按 ANSI 代码页转换，统一转成 UTF-8 后构造参数表
     std::vector<std::string> args_utf8 = args_input;
-    // "-CIMG" / "-CP" / "-RD" 这类多字符短选项先展开为等价的长选项
     expand_multichar_short_options(args_utf8);
     std::vector<char *> args;
     args.reserve(args_utf8.size());
@@ -1228,25 +1158,19 @@ int app::run(const std::vector<std::string> &args_input)
     const int arg_count = static_cast<int>(args.size());
     char **const arg_vector = args.data();
 
-    // 已知长选项名（参数报错时用于「是否想输入 --xxx」一类的提示）
     std::vector<std::string> long_option_names;
     for (const struct option *o = kLongOptions; o->name != nullptr; ++o)
         long_option_names.push_back(o->name);
 
     Options options;
     int opt;
-    // -V, --version 必须单独使用；清除类参数（-C / -CIMG / -CP / -CS）
-    // 只能彼此组合使用：分别统计总选项数与非清除类选项数，
-    // 与位置参数（optind）一起判断是否属于参数使用错误
+    // 参数互斥校验用的计数：-V 必须单独使用，清除类参数只能彼此组合
     int option_count = 0;
     int non_clean_option_count = 0;
-    // 最后给出的「多值选项」：1 = --pid，2 = --pid-range，3 = --article。
-    // 空格分隔的多个值（如 "--pid P1001 P1002"、"--article a b"）里，
-    // 多余的裸参数按最后给出的那个选项处理：同时给出 --pid 与 --article 时
-    // 不会互相抢对方的后续值。
+    // 最后给出的「多值选项」：1 = --pid，2 = --pid-range，3 = --article；空格分隔的
+    // 多余裸参数按最后给出的那个选项处理，这样 --pid 与 --article 不会互抢后续值
     int last_multi_option = 0;
-    // 短选项串以 ':' 开头：getopt 出错时不打印英文提示，
-    // 由下面的 '?' / ':' 分支输出统一的中文错误信息
+    // 短选项串以 ':' 开头：getopt 不打印英文提示，由 '?' / ':' 分支输出中文错误
     while ((opt = getopt_long(arg_count, arg_vector, ":UMLhVCy", kLongOptions, nullptr)) != -1)
     {
         ++option_count;
@@ -1269,9 +1193,7 @@ int app::run(const std::vector<std::string> &args_input)
             options.clean_all = true;
             break;
         case OPT_TAG:
-            // 先整体保留，具体按一个标签还是按空格拆分，交给 select_problems
-            // 结合 tags.json 判断：整体是已知标签名（如 "NOIP 普及组"）就按一个，
-            // 否则按空格拆成多个（如 --tag "模拟 贪心"）
+            // 整体保留，是单个标签名还是按空格拆成多个由 select_problems 判断
             if (optarg == nullptr || optarg[0] == '\0')
             {
                 printError("参数 '--tag' 后缺少标签名称或数字 ID；正确用法：--tag <标签名称或数字 ID>");
@@ -1281,7 +1203,6 @@ int app::run(const std::vector<std::string> &args_input)
             break;
         case OPT_DIFFICULTY:
         {
-            // 支持空格分隔的多个难度（如 --difficulty 1 3-5）；空值视为参数缺失
             const std::vector<std::string> specs = split_whitespace(optarg ? optarg : "");
             if (specs.empty())
             {
@@ -1380,8 +1301,7 @@ int app::run(const std::vector<std::string> &args_input)
             break;
         case OPT_ARTICLE:
         {
-            // 支持空格分隔的多个文章编号（如 --article p7fsb45w a1b2c3d4）；
-            // 空值视为参数缺失，后续裸参数在下方统一并入 --article
+            // 支持空格分隔的多个文章编号；空值视为参数缺失
             const std::vector<std::string> tokens =
                 split_whitespace(optarg ? optarg : "");
             if (tokens.empty() || (optarg && optarg[0] == '-'))
@@ -1393,7 +1313,6 @@ int app::run(const std::vector<std::string> &args_input)
             }
             for (const auto &tok : tokens)
             {
-                // 文章编号一律按小写处理（洛谷文章页地址里就是小写字母+数字）
                 const std::string lid = to_lower_ascii(tok);
                 if (!solution::valid_lid(lid))
                 {
@@ -1407,7 +1326,7 @@ int app::run(const std::vector<std::string> &args_input)
                               lid) == options.articles.end())
                     options.articles.push_back(lid); // 重复编号只下载一次
             }
-            last_multi_option = 3; // 后续裸参数按 --article 处理
+            last_multi_option = 3;
             break;
         }
         case OPT_LOCAL:
@@ -1613,7 +1532,6 @@ int app::run(const std::vector<std::string> &args_input)
         case OPT_FONT_TITLE_ZH:
         case OPT_FONT_TITLE_EN:
         {
-            // 校验字体参数（区分系统字体名称与字体文件地址），出错时拒绝执行
             std::string spec;
             const std::string err = validate_font_option(option_name_for(opt), optarg, spec);
             if (!err.empty())
@@ -1646,8 +1564,6 @@ int app::run(const std::vector<std::string> &args_input)
         }
         case OPT_PID:
         {
-            // 支持空格分隔的多个题号（如 --pid P1001 P1002）；空值视为参数缺失。
-            // getopt 只取一个参数，后续裸参数在下方统一并入 --pid
             const std::vector<std::string> tokens =
                 split_whitespace(optarg ? optarg : "");
             if (tokens.empty() || (optarg && optarg[0] == '-'))
@@ -1659,12 +1575,11 @@ int app::run(const std::vector<std::string> &args_input)
             }
             for (const auto &tok : tokens)
                 options.filter.pids.push_back(tok);
-            last_multi_option = 1; // 后续裸参数按 --pid 处理
+            last_multi_option = 1;
             break;
         }
         case OPT_PID_RANGE:
         {
-            // 支持空格分隔的多组范围；空值视为参数缺失
             const std::vector<std::string> tokens =
                 split_whitespace(optarg ? optarg : "");
             if (tokens.empty() || (optarg && optarg[0] == '-'))
@@ -1685,7 +1600,7 @@ int app::run(const std::vector<std::string> &args_input)
                 }
                 options.filter.pid_ranges.push_back(std::move(range));
             }
-            last_multi_option = 2; // 后续裸参数按 --pid-range 处理
+            last_multi_option = 2;
             break;
         }
         case 'h':
@@ -1696,14 +1611,11 @@ int app::run(const std::vector<std::string> &args_input)
             break;
         case '?':
         {
-            // 未知参数：optopt 为出错的短选项字符（长选项为 0）。
-            // 用 locate_bad_option 定位出错参数的原文（短选项簇不能只看
-            // argv[optind - 1]，见该函数的说明），并按常见笔误给出提示
+            // 未知参数：用 locate_bad_option 定位出错参数的原文（见该函数的说明）
             const std::string token =
                 locate_bad_option(arg_vector, arg_count, optind, optopt);
             const std::string advice =
                 bad_option_advice(token, optopt, long_option_names);
-            // 建议以句末标点（？。！）结尾时直接接下一句，否则补一个逗号
             printError("未知参数 '" + token + "'（程序没有此参数）" +
                        (advice.empty() ? "，" : advice +
                                                   (ends_with_cjk_sentence_end(advice)
@@ -1714,7 +1626,7 @@ int app::run(const std::vector<std::string> &args_input)
         }
         case ':':
         {
-            // 选项后缺少必要的参数值（本程序只有长选项需要参数值）
+            // 选项后缺少参数值（本程序只有长选项需要取值）
             const std::string token =
                 locate_bad_option(arg_vector, arg_count, optind, optopt);
             const std::string hint = option_argument_hint(token);
@@ -1732,8 +1644,6 @@ int app::run(const std::vector<std::string> &args_input)
         }
     }
 
-    // -V / --version 属于「单独使用」的信息类参数：与其他任何参数
-    // （含 -h、--tags、-M、-L 等）或多余的位置参数同时出现即为参数使用错误
     if (options.version)
     {
         if (option_count > 1 || optind < arg_count)
@@ -1747,8 +1657,7 @@ int app::run(const std::vector<std::string> &args_input)
         return 0;
     }
 
-    // 清除类参数（-C / -CIMG / -CP / -CS）只能彼此组合使用：
-    // 与非清除类参数（含 -h、--tags、-U、-M、-L 等）或位置参数同时出现即拒绝执行
+    // 清除类参数只能彼此组合（与非清除类参数或位置参数同用即拒绝）
     {
         std::vector<std::string> used_clean;
         if (options.clean_all) used_clean.push_back("-C, --clean-all");
@@ -1781,12 +1690,11 @@ int app::run(const std::vector<std::string> &args_input)
     if (options.list_tags)
         return print_tag_list() ? 0 : 1;
 
-    // 清除类参数只操作本地缓存，不访问网络、也不需要 libcurl：直接执行后退出
+    // 清除类参数只操作本地缓存，不访问网络也不需要 libcurl；-C 删掉整个缓存目录，
+    // 其余动作按「目录不存在 = 已清空」返回
     if (options.clean_all || options.clean_images || options.clean_problems ||
         options.clean_fonts || options.clean_solutions || options.clean_articles)
     {
-        // 依次执行所有被指定的清除动作（可组合）：-C 会删掉整个缓存目录，
-        // 其余动作随后按「目录不存在 = 已清空」正常返回
         crawler::derror clean_result = crawler::SUCCESS;
         auto run_clean = [&clean_result](bool used, crawler::derror (*action)()) {
             if (!used)
@@ -1804,21 +1712,15 @@ int app::run(const std::vector<std::string> &args_input)
         return clean_result == crawler::SUCCESS ? 0 : 1;
     }
 
-    // -M 与 -L 同时给出：此前 -L 会被静默忽略。明确拒绝，避免用户误以为
-    // 两种格式都已导出；需要两种格式时请分两次执行
     if (options.markdown && options.latex)
     {
         printError("参数 -M 与 -L 不能同时使用；请分两次导出（-M 导出 Markdown，-L 导出 LaTeX）");
         return 1;
     }
 
-    // ---- 题解与文章功能：参数使用校验（设计 §十二）----
     const bool solutions_enabled = options.with_solutions || options.solutions_only ||
                                    options.articles_only_download;
-    // --article：按文章编号单独下载；文章与题解正文共用同一套控制选项，
-    // 因此它自己就能让这些选项合法（不需要 --with-solutions）
     const bool articles_enabled = !options.articles.empty();
-    // 只抓文章（没有题解功能参与）：不导出题面，也不需要题解列表的登录态
     const bool articles_only_run = articles_enabled && !options.with_solutions &&
                                    !options.solutions_only;
     const bool download_enabled = solutions_enabled || articles_enabled;
@@ -1841,8 +1743,7 @@ int app::run(const std::vector<std::string> &args_input)
     }
     if (solutions_enabled)
     {
-        // --with-solutions / --solutions-only 需与 -M 或 -L 同用；
-        // --articles-only-download 例外（只抓缓存，不需要导出模式）
+        // --with-solutions / --solutions-only 需与 -M 或 -L 同用（--articles-only-download 例外）
         if (!options.articles_only_download && !options.markdown && !options.latex)
         {
             printError("参数 --with-solutions / --solutions-only 需要与 -M（导出 "
@@ -1855,13 +1756,11 @@ int app::run(const std::vector<std::string> &args_input)
         !options.markdown && !options.latex &&
         !(options.with_solutions || options.solutions_only))
     {
-        // 只下载文章时也必须有一个导出格式（--articles-only-download 例外）
         printError("参数 --article 需要与 -M（导出 Markdown）或 -L（导出 LaTeX）"
                    "一起使用；若只想抓取并缓存文章，请改用 --articles-only-download");
         return 1;
     }
-    // 题解列表接口需要登录态；只下载文章时 Cookie 可选（文章接口通常无需登录，
-    // 但提供 Cookie 可以访问需要权限的文章）
+    // 题解列表接口需要登录态；只下载文章时 Cookie 可选
     const bool need_cookie = solutions_enabled && !articles_only_run;
     if (need_cookie && options.cookie_file.empty() && options.cookie_string.empty())
     {
@@ -1878,7 +1777,6 @@ int app::run(const std::vector<std::string> &args_input)
         return 1;
     }
 
-    // ---- --local / --doc-only：本地 Markdown 转写（仅 -L，不能与其它功能同用）----
     const bool local_mode = !options.local_file.empty();
     if (options.doc_only && !local_mode)
     {
@@ -1894,7 +1792,6 @@ int app::run(const std::vector<std::string> &args_input)
                        "本地 Markdown 只能转写为 LaTeX（-M 导出 Markdown 不涉及转写）");
             return 1;
         }
-        // 与下载题目、题解、文章的功能互斥
         std::vector<std::string> local_conflicts;
         if (options.update) local_conflicts.push_back("-U, --update");
         if (solutions_enabled)
@@ -1922,7 +1819,7 @@ int app::run(const std::vector<std::string> &args_input)
                        "--doc-only 不输出封面与目录、整篇连贯输出，没有可另起一页的章节");
             return 1;
         }
-        // 指定的文件必须存在且是普通文件（读取时还会再校验一次编码与可读性）
+        // 必须存在且是普通文件（读取时还会再校验一次编码与可读性）
         std::error_code file_ec;
         const std::filesystem::path local_path =
             luogu::compat::path_from_utf8(options.local_file);
@@ -1940,9 +1837,7 @@ int app::run(const std::vector<std::string> &args_input)
         }
     }
 
-    // 仅 -L 支持的参数与 -M 一起使用属于参数填用错误：拒绝执行并提示正确用法
-    // （--no-show-source-tags / --show-algorithm-tags / --show-difficulty-tags
-    //   对 -M 同样有效，不在此列）
+    // 仅 -L 支持的参数与 -M 同用属于参数错误，拒绝执行（三个 --show/--no-show-*-tags 对 -M 有效）
     if (options.markdown && !options.latex)
     {
         std::vector<std::string> latex_only;
@@ -1957,10 +1852,8 @@ int app::run(const std::vector<std::string> &args_input)
         if (!options.font_title_zh.empty()) latex_only.push_back("--set-font-title-zh-CN");
         if (!options.font_title_en.empty()) latex_only.push_back("--set-font-title-en-US");
         if (options.no_bilibili_link) latex_only.push_back("--no-bilibili-link");
-        // 双向跳转按钮与目录条目只对 LaTeX 有意义（Markdown 侧两个跳转开关
-        // 同样有效，但 --no-solution-toc 仅 -L）
+        // 两个跳转开关对 -M 也有效，但 --no-solution-toc 仅 -L
         if (options.no_solution_toc) latex_only.push_back("--no-solution-toc");
-        // -RD 只在 -L 导出下载题面图片时才有意义（-M 不下载图片）
         if (options.new_download) latex_only.push_back("--new-download");
         if (options.compile_latex) latex_only.push_back("--compile");
         if (!latex_only.empty())
@@ -1974,8 +1867,7 @@ int app::run(const std::vector<std::string> &args_input)
         }
     }
 
-    // --compile 只在 -L 导出 LaTeX 后有实际动作：与 -M、-U、
-    // --articles-only-download 等组合时拒绝执行（与上面 -M 的校验互补）
+    // --compile 与 -M、-U、--articles-only-download 等组合时拒绝执行
     if (options.compile_latex && !options.latex)
     {
         printError("参数 --compile 仅在 -L（导出 LaTeX）时有效；"
@@ -1984,10 +1876,8 @@ int app::run(const std::vector<std::string> &args_input)
         return 1;
     }
 
-    // --pid / --pid-range / --tag / --difficulty 支持「空格分隔多个值」的写法，
-    // 后面跟的裸参数按这些选项的后续值处理；只有导出模式与题解抓取模式
-    // （--articles-only-download 只抓缓存、不需要 -M/-L）才允许这样写
-    // --local 只转写指定的文件：多余的位置参数一律按参数错误处理
+    // --pid / --pid-range / --tag / --difficulty 支持「空格分隔多个值」：后面的裸参数按
+    // 这些选项的后续值处理；--local 只转写指定文件，多余的参数按错误处理
     const bool bare_args_allowed = !local_mode &&
                                    (options.markdown || options.latex ||
                                     options.with_solutions || options.solutions_only ||
@@ -2004,15 +1894,8 @@ int app::run(const std::vector<std::string> &args_input)
             return 1;
         }
 
-        // -M/-L 模式下剩余裸参数的处理：
-        // - 最后给出的是 --article 时按文章编号并入 --article
-        //   （支持 "--article p7fsb45w a1b2c3d4"；与 --pid 同用时也不会
-        //    互相抢对方的后续值）；
-        // - 使用过 --pid 时按题号并入 --pid（支持 "--pid P1001 P1002"）；
-        // - 使用过 --pid-range 时按题号范围并入 --pid-range
-        //   （支持 "--pid-range P1001-P1010 P2000-P2010"）；
-        // - 否则保持原行为：按难度解析，解析不了则当作 --tag 的后续值
-        //   （支持 "--difficulty 1 2 3" 与 "--tag 模拟 贪心" 两种写法）
+        // 剩余裸参数按「最后给出的多值选项」归属：--article → 文章编号（与 --pid 同用不会
+        // 互抢）；用过 --pid → 题号；用过 --pid-range → 题号范围；否则按难度解析，失败则当 --tag 值
         if (last_multi_option == 3 && !options.articles.empty())
         {
             for (int i = optind; i < arg_count; ++i)
@@ -2064,8 +1947,6 @@ int app::run(const std::vector<std::string> &args_input)
         }
     }
 
-    // -RD, --new-download 只在 -L 导出下载题面图片时才有意义：
-    // 单独使用或只与 -U 一起使用时不会下载任何图片，按参数填用错误拒绝
     if (options.new_download && !options.latex)
     {
         printError("参数 -RD, --new-download 仅在下载题面图片时有效；"
@@ -2084,7 +1965,6 @@ int app::run(const std::vector<std::string> &args_input)
         return 1;
     }
 
-    // 进程级的 libcurl 全局初始化（只在第一次调用时真正初始化，见上面的说明）
     if (!ensure_curl_global_init())
     {
         printError("初始化 libcurl 失败；请检查网络相关运行库是否安装完整");
@@ -2092,33 +1972,26 @@ int app::run(const std::vector<std::string> &args_input)
     }
 
     int result = 0;
-    // -M / -L 共用的题目信息显示开关（默认与 -L 一致：显示来源等标签，
-    // 隐藏算法标签与难度）
+    // -M / -L 共用的题目信息显示开关（默认显示来源等标签，隐藏算法与难度）
     luogu::DisplayOptions display;
     display.source_tags = !options.no_show_source_tags;
     display.algorithm_tags = options.show_algorithm_tags;
     display.difficulty = options.show_difficulty_tags;
 
-    // -U, --update 可与下载题目的参数（-M / -L，含 -RD）一同使用：
-    // 只要命令行中出现 -U 就先更新缓存，再下载题目；与各参数在命令行中的
-    // 先后顺序无关（更新失败时不继续，避免用旧缓存掩盖更新失败）
+    // -U 可与 -M / -L 同用：只要出现 -U 就先更新缓存再下载题目（与命令行顺序无关）；
+    // 更新失败时不继续
     if (options.update)
     {
         result = crawler::update();
         if (result != crawler::SUCCESS)
         {
-            // 缓存更新失败时不继续用旧缓存导出：可能掩盖更新失败
             printError("缓存更新失败，已停止后续操作");
             return result;
         }
     }
 
-    // ---- 题解与文章抓取（--with-solutions / --solutions-only /
-    //      --articles-only-download / --article）----
-    // 先按筛选条件选中题目（与后面导出共用同一份结果，避免重复解析题目缓存），
-    // 再走「计划 → 风险确认 → 抓取」，最后与题面一起导出到同一份文件。
-    // --article 单独使用（未给任何题目筛选参数）时不导出题面：
-    // 「若无其他下载的内容，则仅下载文章并导出」
+    // 题解与文章抓取（--with-solutions / --article 等）：先选中题目（与后面导出共用结果），
+    // 再走「计划 → 风险确认 → 抓取」，最后与题面一起导出；--article 未给筛选参数时只导出文章
     const bool no_problem_filters = options.filter.tags.empty() &&
                                     options.filter.difficulties.empty() &&
                                     options.filter.types.empty() &&
@@ -2134,7 +2007,6 @@ int app::run(const std::vector<std::string> &args_input)
     luogu::SolutionExportOptions solution_export;
     if (solutions_enabled || articles_enabled)
     {
-        // 只导出文章时不必读取题目列表缓存：没有筛选条件就没有题目要导出
         if (!article_only_document)
         {
             std::string select_error;
@@ -2163,19 +2035,16 @@ int app::run(const std::vector<std::string> &args_input)
 
         if (options.articles_only_download)
         {
-            // 只抓取并缓存，不导出文件
             printSuccess("已按 --articles-only-download 完成抓取，未导出任何文件");
             return 0;
         }
     }
-    // 有文章要导出时把文章包装进导出选项（没有文章则为 nullptr，
-    // 生成的文档与不含 --article 时完全一致）
+    // 无文章时为 nullptr，生成的文档与不含 --article 时相同
     const luogu::ArticleBundle *articles_ptr =
         articles_enabled ? &article_bundle : nullptr;
 
     if (options.markdown)
     {
-        // 输出路径按 UTF-8 构造 filesystem::path（Windows 下中文路径可用）
         const std::filesystem::path out_path = luogu::compat::path_from_utf8(
             options.output.empty() ? "problems.md" : options.output);
         std::string error;
@@ -2201,15 +2070,13 @@ int app::run(const std::vector<std::string> &args_input)
     }
     else if (options.latex)
     {
-        // 输出路径按 UTF-8 构造 filesystem::path（Windows 下中文路径可用）；
-        // --local 的默认输出为 <原文件名>.tex（与输入文件同目录）
+        // 输出路径按 UTF-8 构造（Windows 中文路径可用）；--local 默认输出同名 .tex
         const std::filesystem::path out_path = luogu::compat::path_from_utf8(
             options.output.empty()
                 ? (local_mode ? default_local_output(options.local_file)
                               : std::string("problems.tex"))
                 : options.output);
 
-        // 组装 LaTeX 显示选项（题目信息显示开关与 -M 共用同一组参数）
         latex::Options latex_opt;
         latex_opt.lang = options.filter.lang;
         latex_opt.toc_links = !options.no_toc_links;
@@ -2217,10 +2084,7 @@ int app::run(const std::vector<std::string> &args_input)
         latex_opt.bilibili_links = !options.no_bilibili_link;
         latex_opt.display = display;
         latex_opt.toc_difficulty = options.show_contents_difficulty_tags;
-        // --paginate：题目之间、文章（题解 / --article）之间分页
         latex_opt.paginate = options.paginate;
-        // -RD, --new-download：下载题面图片时忽略已有缓存，全部重新下载
-        // （新图片原子替换缓存中的同名图片，下载失败时保留原有缓存）
         latex_opt.new_download = options.new_download;
         latex_opt.font_cover = options.font_cover;
         latex_opt.font_body_zh = options.font_body_zh;
@@ -2229,7 +2093,7 @@ int app::run(const std::vector<std::string> &args_input)
         latex_opt.font_title_zh = options.font_title_zh;
         latex_opt.font_title_en = options.font_title_en;
         latex_opt.cover_title = options.cover_title;
-        // --local：封面标题默认取文件名（去掉扩展名），--set-cover-title 优先
+        // --local：封面标题默认取文件名，--set-cover-title 优先
         if (local_mode && latex_opt.cover_title.empty())
             latex_opt.cover_title = luogu::compat::path_to_utf8(
                 luogu::compat::path_from_utf8(options.local_file).stem());
@@ -2241,7 +2105,6 @@ int app::run(const std::vector<std::string> &args_input)
         std::string error;
         if (local_mode)
         {
-            // 转写本地 Markdown：不读题目列表缓存，也不抓取题目 / 题解 / 文章
             const std::filesystem::path in_path =
                 luogu::compat::path_from_utf8(options.local_file);
             std::printf("正在转写本地 Markdown：%s\n",
@@ -2255,7 +2118,6 @@ int app::run(const std::vector<std::string> &args_input)
             }
             else if (options.compile_latex)
             {
-                // --compile：导出成功后自动执行 latexmk --xelatex <输出文件名>.tex
                 result = compile_latex_document(out_path);
             }
             else
@@ -2275,32 +2137,23 @@ int app::run(const std::vector<std::string> &args_input)
         }
         else if (options.compile_latex)
         {
-            // --compile：导出成功后自动执行 latexmk --xelatex <输出文件名>.tex
             result = compile_latex_document(out_path);
         }
     }
 
-    // 这里（以及上面各条提前返回的路径）都不调用 curl_global_cleanup：
-    // request_gate 的静态 easy handle 到进程结束才会消失，全局资源统一在
-    // 进程退出时由操作系统回收（见 ensure_curl_global_init 的说明）
+    // 不调用 curl_global_cleanup：全局资源随进程退出回收
     return result;
 }
 
 int main(int argc, char *argv[])
 {
     // Windows 传统控制台启用 ANSI 转义解析与 UTF-8 代码页
-    // （彩色/进度输出不乱码）；其他平台为空操作
     luogu::compat::init_console();
 
-    // 不带任何参数运行（./luogu-extract）时进入简易命令行交互程序；
-    // 带参数时完全保持原有的纯参数逻辑。交互程序内部把用户设置翻译成
-    // 等价的参数后同样交给 app::run 执行，因此下载过程中的提示、警告
-    // 与确认与非交互模式完全一致。
+    // 不带参数运行时进入简易交互程序：它把用户设置翻译成等价参数后交给 app::run
     if (argc <= 1)
         return interactive::run();
 
-    // Windows 下 CRT 的 main(char**) 参数按 ANSI 代码页转换而非 UTF-8，
-    // 统一转换为 UTF-8 后交给 app::run（中文参数不乱码）；
-    // 其他平台等价于原 argv 的副本。
+    // Windows 下 CRT 的 main(char**) 参数按 ANSI 代码页转换，统一转成 UTF-8 后交给 app::run
     return app::run(luogu::compat::get_argv_utf8(argc, argv));
 }

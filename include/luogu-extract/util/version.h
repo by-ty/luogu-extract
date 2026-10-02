@@ -20,11 +20,9 @@
 
 // include/luogu-extract/util/version.h
 //
-// 项目版本与仓库信息。版本号在编译期确定：
-// CMake 配置阶段按 CMakeLists.txt 中 project(luogu-extract VERSION ...) 的
-// 版本号生成 <构建目录>/generated/luogu-extract/version_config.h，
-// 本头文件优先引用该生成文件；非 CMake 构建（例如手工调用编译器）时
-// 自动退回下面的后备值，保证代码始终可以编译。
+// 版本号在编译期确定：CMake 配置阶段按 project(... VERSION ...) 生成
+// generated/luogu-extract/version_config.h，本头文件优先引用它；
+// 非 CMake 构建（手工调用编译器）时退回下面的后备值。
 #pragma once
 
 #if defined(__has_include)

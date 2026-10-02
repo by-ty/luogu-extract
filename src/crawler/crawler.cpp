@@ -32,8 +32,7 @@
 #include <atomic>
 #include <mutex>
 #ifdef _WIN32
-// Windows 下主机名解析相关的类型与函数来自 winsock2/ws2tcpip；
-// 按惯例在包含 curl 之前先包含 winsock2.h（并禁用 min/max 宏）
+// Windows：winsock2.h 必须在包含 curl 之前先包含，并禁用 min/max 宏
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -61,13 +60,13 @@ using nlohmann::json;
 
 namespace
 {
-// 重定向到文件/管道时不写 ANSI 转义序列：错误/警告走 stderr，成功提示走 stdout
+// 非 TTY 时不写 ANSI 转义：错误/警告走 stderr，成功提示走 stdout
 const char *kColorReset  = luogu::compat::stderr_is_tty() ? "\033[0m" : "";
 const char *kColorRed    = luogu::compat::stderr_is_tty() ? "\033[1;31m" : "";
 const char *kColorGreen  = luogu::compat::stdout_is_tty() ? "\033[1;32m" : "";
 const char *kColorYellow = luogu::compat::stderr_is_tty() ? "\033[1;33m" : "";
 
-// 多线程 worker 可能并发打印错误信息，用互斥锁避免输出交错
+// worker 并发打印，用互斥锁避免输出交错
 std::mutex &print_mutex()
 {
     static std::mutex m;
@@ -78,7 +77,7 @@ void print_error(const std::string &message)
 {
     std::lock_guard<std::mutex> lock(print_mutex());
     fflush(stdout);
-    // 颜色复位放在具体消息之前：只有 "错误：" 用红色，消息保持默认色
+    // 颜色复位置于消息之前：只有「错误：」用红色
     std::fprintf(stderr, "%s错误：%s %s\n", kColorRed, kColorReset, message.c_str());
 }
 
@@ -89,7 +88,6 @@ void print_success(const std::string &message)
     std::printf("%s%s%s\n", kColorGreen, message.c_str(), kColorReset);
 }
 
-// 非致命问题（如主机名解析失败）的黄色警告提示，与错误信息一样加锁
 void print_warning(const std::string &message)
 {
     std::lock_guard<std::mutex> lock(print_mutex());
@@ -97,8 +95,7 @@ void print_warning(const std::string &message)
     std::fprintf(stderr, "%s警告：%s %s\n", kColorYellow, kColorReset, message.c_str());
 }
 
-// FNV-1a 64 位哈希核心：以给定 seed 作为初始哈希值，逐字节异或后乘素数。
-// 官方偏移基数与素数分别作为两个种子，用于生成 128 位（32 位十六进制）哈希
+// FNV-1a：seed 为初始值；用官方偏移基数与素数双种子拼 128 位哈希
 uint64_t fnv1a64(const std::string &s, uint64_t seed)
 {
     uint64_t hash = seed;
@@ -110,16 +107,10 @@ uint64_t fnv1a64(const std::string &s, uint64_t seed)
     return hash;
 }
 
-// URL -> 缓存文件名：仅由哈希值与扩展名组成（不含 URL 原文）。
-// 哈希 = 双种子 FNV-1a 拼 128 位：分别以官方偏移基数
-// 0xcbf29ce484222325 与官方素数 0x100000001b3 为种子计算两路 64 位
-// FNV-1a，高 64 位在前、低 64 位在后拼接成 128 位，输出 32 位十六进制；
-// 不同 URL 生成的文件名不会碰撞（大小写不敏感文件系统、Unicode 等
-// 情况下依然唯一）；扩展名取自 URL 路径并做白名单清洗（仅小写字母数字
-// 1-5 位），非法/超长扩展名丢弃，避免 Windows 非法路径或超长路径
+// URL -> 缓存文件名：只含哈希（不含 URL 原文，避免非法/超长路径）与扩展名；
+// 双种子 FNV-1a 输出 32 位十六进制不碰撞，扩展名仅 1~5 位小写字母数字
 std::string image_cache_filename(const std::string &url)
 {
-    // 扩展名：URL 路径（忽略查询参数）最后一个 '.' 之后的字母数字串
     std::string path = url;
     const size_t query = path.find_first_of("?#");
     if (query != std::string::npos)
@@ -148,7 +139,6 @@ std::string image_cache_filename(const std::string &url)
         }
     }
 
-    // 双种子 FNV-1a：高 64 位以偏移基数为种子，低 64 位以素数为种子
     const uint64_t kFnvOffsetBasis = 14695981039346656037ULL; // 0xcbf29ce484222325
     const uint64_t kFnvPrime = 1099511628211ULL;              // 0x100000001b3
     const uint64_t high = fnv1a64(url, kFnvOffsetBasis);
@@ -161,14 +151,13 @@ std::string image_cache_filename(const std::string &url)
     return std::string(buf) + ext;
 }
 
-// 是否为洛谷图床（cdn.luogu.com.cn 等）的图片
+// 是否洛谷图床图片（子串匹配，仅用于限速判断）
 bool is_luogu_image_host(const std::string &url)
 {
     return url.find("luogu.com.cn") != std::string::npos;
 }
 
-// 取出 URL 的主机名：小写、不含 userinfo 与端口，IPv6 字面量去掉方括号。
-// 不带 "://" 或缺少主机名（如 data:、bilibili: 等伪协议）时返回空字符串
+// 取 URL 主机名（小写、去 userinfo/端口/方括号）；无法识别时返回空串（放行）
 std::string url_host(const std::string &url)
 {
     const size_t scheme_end = url.find("://");
@@ -179,13 +168,12 @@ std::string url_host(const std::string &url)
     if (end == std::string::npos)
         end = url.size();
     std::string authority = url.substr(begin, end - begin);
-    // 去掉 userinfo（user:password@host）
+    // 去 userinfo：防止 user@host 伪装主机名
     const size_t at = authority.rfind('@');
     if (at != std::string::npos)
         authority.erase(0, at + 1);
     if (!authority.empty() && authority[0] == '[')
     {
-        // IPv6 字面量：取方括号内的地址，忽略端口
         const size_t close = authority.find(']');
         if (close == std::string::npos)
             return "";
@@ -202,7 +190,7 @@ std::string url_host(const std::string &url)
     return authority;
 }
 
-// 解析数字形式 IPv4 地址的一段（支持十进制、0 开头八进制、0x 开头十六进制）
+// 解析 IPv4 的一段：inet_aton 语义（十进制、0 八进制、0x 十六进制）
 bool parse_ipv4_number(const std::string &text, unsigned long long &value)
 {
     if (text.empty())
@@ -240,9 +228,8 @@ bool parse_ipv4_number(const std::string &text, unsigned long long &value)
     return true;
 }
 
-// 按 inet_aton 语义把「1~4 段」的数字主机名解析成 IPv4 地址。
-// curl 自己接受 http://2130706433/、http://0x7f.0.0.1/ 这类写法，
-// 而 getaddrinfo 在部分平台（如 Windows）解析不出来，必须在本地识别
+// 按 inet_aton 语义解析「1~4 段」数字主机名：curl 接受 2130706433 这类写法，
+// 而 getaddrinfo 在部分平台（如 Windows）解析不出，必须在本地识别
 bool parse_numeric_ipv4(const std::string &host, uint32_t &address)
 {
     unsigned long long parts[4] = {0, 0, 0, 0};
@@ -251,7 +238,7 @@ bool parse_numeric_ipv4(const std::string &host, uint32_t &address)
     for (;;)
     {
         if (count == 4)
-            return false; // 超过 4 段：不是 IPv4 字面量
+            return false;
         const size_t dot = host.find('.', begin);
         const std::string part =
             host.substr(begin, dot == std::string::npos ? std::string::npos : dot - begin);
@@ -263,7 +250,7 @@ bool parse_numeric_ipv4(const std::string &host, uint32_t &address)
         begin = dot + 1;
     }
 
-    // inet_aton 语义：1 段为 32 位，2 段为 8+24，3 段为 8+8+16，4 段为 8×4
+    // inet_aton：段数 1~4 分别占 32、8+24、8+8+16、8×4 位
     uint32_t result = 0;
     for (int i = 0; i < count; ++i)
     {
@@ -288,10 +275,7 @@ bool is_blocked_ipv4(uint32_t address)
     if ((address >> 16) == 0xC0A8 ||              // 192.168.0.0/16
         (address >> 16) == 0xA9FE)                // 169.254.0.0/16（链路本地）
         return true;
-    // 运营商级 NAT 与云厂商元数据等同样属于「内部」地址：
-    // 100.64.0.0/10（含阿里云元数据 100.100.100.200）、
-    // 168.63.129.16（Azure wire server）、192.0.0.0/24（IETF 协议分配）、
-    // 198.18.0.0/15（基准测试网段）
+    // 运营商级 NAT、云厂商元数据等同样视为「内部」
     if ((address >> 22) == 0x191)                 // 100.64.0.0/10
         return true;
     if (address == 0xA83F8110u)                   // 168.63.129.16
@@ -303,7 +287,6 @@ bool is_blocked_ipv4(uint32_t address)
     return false;
 }
 
-// 解析出来的地址是否属于内部网段（IPv4 / IPv6 两种族）
 bool is_blocked_sockaddr(const struct sockaddr *addr)
 {
     if (addr == nullptr)
@@ -331,7 +314,7 @@ bool is_blocked_sockaddr(const struct sockaddr *addr)
             return true;
         if (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) // fe80::/10（链路本地）
             return true;
-        // IPv4 映射/兼容地址（::ffff:127.0.0.1、::127.0.0.1）按 IPv4 规则判断
+        // IPv4 映射/兼容地址（::ffff:127.0.0.1 等）按 IPv4 规则判断
         bool v4_prefix = true;
         for (int i = 0; i < 10; ++i)
             if (b[i] != 0)
@@ -349,9 +332,8 @@ bool is_blocked_sockaddr(const struct sockaddr *addr)
     return false;
 }
 
-// 主机名是否解析到内部网段（带进程内缓存）。
-// 解析失败时返回 false（放行）：离线、内网镜像或 DNS 临时故障时无法判断
-// 目标，误拒会破坏正常下载；真正的下载失败仍由 libcurl 报出并提示
+// 主机名是否解析到内部网段（带进程内缓存）；解析失败返回 false 放行：离线或
+// DNS 故障下误拒会破坏正常下载
 bool is_blocked_host_name(const std::string &host)
 {
     struct Resolved
@@ -359,8 +341,7 @@ bool is_blocked_host_name(const std::string &host)
         bool resolved;
         bool blocked;
     };
-    // 同一主机的图片经常成批下载：缓存解析结果，避免每个 URL 都做一次 DNS
-    // 查询（DNS 故障时每次都要等解析超时），解析失败的警告也只提示一次
+    // 缓存解析结果：避免重复查 DNS，失败警告只提示一次
     static std::mutex cache_mutex;
     static std::map<std::string, Resolved> cache;
     {
@@ -388,24 +369,19 @@ bool is_blocked_host_name(const std::string &host)
     bool first_lookup = false;
     {
         std::lock_guard<std::mutex> lock(cache_mutex);
-        // emplace 保留其他线程已写入的结果，只由第一个线程负责警告
+        // emplace：只由第一个线程负责警告
         first_lookup = cache.emplace(host, entry).second;
     }
     if (first_lookup && !entry.resolved)
-        // 主机名来自远程内容：去掉控制字符，避免 \n 之类伪造日志行
+        // 主机名来自远程内容：去掉控制字符，避免伪造日志行
         print_warning("无法解析主机名 '" +
                       luogu::compat::strip_control_chars(host) +
                       "'，跳过内网地址检查");
     return entry.blocked;
 }
 
-// SSRF 防护：URL 是否指向环回/私网/链路本地等内部地址。
-// 图片链接来自题面/题解/文章与 --local 本地文件（可能被第三方内容控制），
-// 不能拿来探测用户内网
-// 环境变量开关：允许下载内网/本机图床的图片（默认关闭）。SSRF 防护默认
-// 拒绝环回/私网/链路本地地址，但内网镜像、自建图床或本地调试（如
-// .dev/test_redownload.cpp 直接传 127.0.0.1 的图片 URL）确实需要它，
-// 因此留一个显式开关；协议白名单（只允许 http/https）不受该开关影响。
+// SSRF 防护：拒绝指向环回/私网/链路本地地址的 URL（图片链接来自第三方可控内容，
+// 不能用来探测内网）；LUOGU_EXTRACT_ALLOW_PRIVATE_IMAGE_HOST 可放行
 bool allow_private_image_host()
 {
     static const bool allowed = [] {
@@ -418,11 +394,11 @@ bool allow_private_image_host()
 bool is_blocked_download_url(const std::string &url)
 {
     if (allow_private_image_host())
-        return false; // 用户显式允许内网地址：只保留协议白名单
+        return false; // 显式允许内网地址：只保留协议白名单
     const std::string host = url_host(url);
     if (host.empty())
-        return false; // 非 http(s) 或缺少主机名：交给协议白名单与 libcurl 处理
-    // 明显的本机名字直接拒绝，不依赖解析结果（/etc/hosts 缺失时也能拦住）
+        return false; // 非 http(s) 或缺主机名：交给协议白名单与 libcurl
+    // 明显的本机名直接拒绝，不依赖解析（/etc/hosts 缺失也能拦）
     if (host == "localhost" || host == "localhost.localdomain" ||
         host == "ip6-localhost" || host == "ip6-loopback" ||
         host == "localhost4" || host == "localhost6" || host == "ip6-localnet")
@@ -436,8 +412,7 @@ bool is_blocked_download_url(const std::string &url)
     return is_blocked_host_name(host);
 }
 
-// 字面 IP 字符串（curl 回调里给出的实际连接地址）是否属于内部网段。
-// 与 is_blocked_download_url 的区别：这里不解析域名，只看 IP 本身。
+// 字面 IP（PREREQFUNCTION 给出的实际连接地址）是否内部网段；不解析域名
 bool is_blocked_ip_literal(const std::string &ip)
 {
     if (ip.empty())
@@ -458,9 +433,8 @@ bool is_blocked_ip_literal(const std::string &ip)
 }
 
 #if LIBCURL_VERSION_NUM >= 0x075000
-// curl 7.80+：每次建立连接（含跳转后的新连接）前都会调用本回调，
-// 回调里给出的是**即将连接的 IP**，因此 302 到内网、DNS 重绑定都能拦住。
-// 返回 ABORT 会让 curl_easy_perform 以 CURLE_ABORTED_BY_CALLBACK 结束。
+// curl 7.80+：每次建立连接（含跳转后）前回调，参数为即将连接的 IP，故 302 到
+// 内网、DNS 重绑定都能拦；返回 ABORT 使 perform 报 CURLE_ABORTED_BY_CALLBACK
 int curl_prereq_callback(void * /*clientp*/, char *conn_primary_ip,
                          char * /*conn_local_ip*/, int /*conn_primary_port*/,
                          int /*conn_local_port*/)
@@ -473,18 +447,16 @@ int curl_prereq_callback(void * /*clientp*/, char *conn_primary_ip,
 }
 #endif
 
-// 统一的「禁止内网地址」curl 选项设置：跳转后的每一跳都校验。
+// 统一的「禁止内网地址」设置：跳转后的每一跳都校验
 void set_ssrf_guard(CURL *curl)
 {
 #if LIBCURL_VERSION_NUM >= 0x075000
     curl_easy_setopt(curl, CURLOPT_PREREQFUNCTION, curl_prereq_callback);
 #endif
-    // 老版本 curl 没有 PREREQFUNCTION：只能靠调用方在 perform 之后用
-    // CURLINFO_EFFECTIVE_URL 复核最终地址（见 check_effective_url_blocked）
+    // 老版本 curl 无 PREREQFUNCTION：只能靠 perform 后用 CURLINFO_EFFECTIVE_URL 复核
 }
 
-// perform 之后的兜底校验：最终地址（跳转链的终点）指向内网时视为失败。
-// 老版本 curl 的唯一防线；新版本上与 PREREQFUNCTION 互为补充。
+// perform 之后的兜底校验：跳转链终点指向内网时视为失败
 bool check_effective_url_blocked(CURL *curl)
 {
     char *effective = nullptr;
@@ -494,7 +466,6 @@ bool check_effective_url_blocked(CURL *curl)
     return is_blocked_download_url(effective);
 }
 
-// 随机延时 0.5~3 秒，避免下载洛谷图床图片时请求过快
 void random_delay()
 {
     static std::mt19937 rng(std::random_device{}());
@@ -502,7 +473,6 @@ void random_delay()
     std::this_thread::sleep_for(std::chrono::duration<double>(dist(rng)));
 }
 
-// 校验文件是否真的是图片（按文件头魔数判断 PNG/JPEG/GIF/WebP/BMP/SVG）
 bool looks_like_image_file(const std::filesystem::path &path)
 {
     FILE *in = luogu::compat::fopen(path, "rb");
@@ -529,9 +499,7 @@ bool looks_like_image_file(const std::filesystem::path &path)
     return false;
 }
 
-// 递归删除文件或目录（不存在时不算失败），用于清除缓存。
-// 返回 true 表示删除成功（removed 为删除的条目数，路径不存在时为 0）；
-// 失败时返回 false，并通过 error 输出失败原因。
+// 递归删除（路径不存在不算失败）；removed 为删除条目数，失败时返回 error 原因
 bool remove_cache_entry(const std::filesystem::path &path, std::uintmax_t &removed,
                         std::string &error)
 {
@@ -545,7 +513,6 @@ bool remove_cache_entry(const std::filesystem::path &path, std::uintmax_t &remov
     return true;
 }
 
-// 把路径列表拼成「'a'、'b'」形式的提示文本
 std::string join_quoted_paths(const std::vector<std::filesystem::path> &paths)
 {
     std::string out;
@@ -584,8 +551,7 @@ static bool decompress_gzip_file(const std::filesystem::path &input_path,
         return false;
     }
 
-    // 解压后大小上限：防止 gzip bomb 写满磁盘。
-    // 官方 latest.ndjson 数百 MB 级别，8 GiB 上限足够宽松
+    // 8 GiB 解压上限：防 gzip bomb（官方 latest.ndjson 仅数百 MB）
     const uint64_t kMaxOutputBytes = 8ULL * 1024 * 1024 * 1024;
     uint64_t written = 0;
     bool failed = false;
@@ -596,7 +562,7 @@ static bool decompress_gzip_file(const std::filesystem::path &input_path,
         written += static_cast<uint64_t>(read_bytes);
         if (written > kMaxOutputBytes)
         {
-            failed = true; // 超过上限：按失败处理（疑似 gzip bomb）
+            failed = true;
             break;
         }
         if (std::fwrite(buffer, 1, static_cast<size_t>(read_bytes), out) !=
@@ -625,7 +591,7 @@ static bool decompress_gzip_file(const std::filesystem::path &input_path,
     return true;
 }
 
-// get_html 的响应体上限：防止服务器返回异常内容时无限吃内存
+// get_html 响应体上限：防异常内容无限吃内存
 struct HtmlResponse
 {
     std::string data;
@@ -639,19 +605,17 @@ static size_t write_callback_html(void *contents, size_t size, size_t nmemb, voi
     if (total > response->max_bytes ||
         response->data.size() > response->max_bytes - total)
     {
-        // 超过上限：返回 0 让 libcurl 中止传输（CURLE_WRITE_ERROR）
+        // 超限返回 0 中止传输（perform 报 CURLE_WRITE_ERROR）
         return 0;
     }
     response->data.append(static_cast<char *>(contents), total);
     return total;
 }
 
-// downloadFile 的写盘回调：携带已写字节数，支持文件大小上限
 struct FileResponse
 {
     FILE *out = nullptr;
-    // 2 GiB 上限；32 位平台（size_t 为 32 位）时退化为 SIZE_MAX，
-    // 避免常量回绕成 0 导致所有下载失败
+    // 2 GiB 上限；32 位平台退化为 SIZE_MAX，避免回绕成 0 使下载全失败
     size_t max_bytes = (sizeof(size_t) < 8)
                            ? std::numeric_limits<size_t>::max()
                            : static_cast<size_t>(2ULL * 1024 * 1024 * 1024);
@@ -670,7 +634,7 @@ size_t write_callback_file(void *contents, size_t size, size_t nmemb, void *user
         response->written > response->max_bytes - total)
     {
         response->overflow = true;
-        return 0; // 超过上限：中止传输
+        return 0;
     }
     if (std::fwrite(contents, 1, total, response->out) != total)
         return 0;
@@ -678,10 +642,7 @@ size_t write_callback_file(void *contents, size_t size, size_t nmemb, void *user
     return total;
 }
 
-// 进度行重写：回到行首 → 重新输出「前缀 + 百分比」→ 清到行尾。
-// 不使用 ANSI 保存/恢复光标序列（\033[s / \033[u）：这类序列依赖终端的
-// 兼容实现（Windows 传统控制台要启用虚拟终端处理后才是模拟支持），
-// 「行首 + 清行重写」只用到 \r 与 \033[K，与 download_images 监视线程一致
+// 进度行重写只用回车符与 ANSI 清行序列，不用依赖终端兼容的保存/恢复光标序列
 static void print_progress_line(const char *prefix, long long downloaded, long long total)
 {
     if (total <= 0)
@@ -691,14 +652,12 @@ static void print_progress_line(const char *prefix, long long downloaded, long l
     fflush(stdout);
 }
 
-// 默认进度回调：显示百分比（与旧行为一致）
 void default_progress(const std::string &url, long long downloaded, long long total)
 {
     (void)url;
     print_progress_line("正在下载：", downloaded, total);
 }
 
-// libcurl 进度回调：转发到用户提供的回调
 struct ProgressContext
 {
     const crawler::download_progress_callback *callback;
@@ -719,8 +678,7 @@ int progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
 
 std::filesystem::path crawler::get_cache_dir()
 {
-    // 环境变量一律按 UTF-8 读取：Windows 下 CRT 的 getenv 按 ANSI 代码页
-    // 解释，含中文用户名等的路径会被破坏
+    // 环境变量按 UTF-8 读：Windows getenv 依 ANSI 代码页，会破坏含中文的路径
     const std::string xdg_cache_home = luogu::compat::getenv_utf8("XDG_CACHE_HOME");
     if (!xdg_cache_home.empty())
         return luogu::compat::path_from_utf8(xdg_cache_home) / "luogu-extract";
@@ -730,15 +688,12 @@ std::filesystem::path crawler::get_cache_dir()
         return luogu::compat::path_from_utf8(home_env) / ".cache" / "luogu-extract";
 
 #ifdef _WIN32
-    // Windows 下按惯例使用 %LOCALAPPDATA% 作为用户缓存根目录
     const std::string local_app_data = luogu::compat::getenv_utf8("LOCALAPPDATA");
     if (!local_app_data.empty())
         return luogu::compat::path_from_utf8(local_app_data) / "luogu-extract";
 #endif
 
-    // 临时目录：先看各平台常见的环境变量（只接受绝对路径），
-    // 再看系统临时目录；两者都不可用时退回绝对路径，不再返回依赖 CWD 的
-    // 相对路径（README 描述的是「系统临时目录」）
+    // 临时目录：先环境变量（仅绝对路径），再系统临时目录
     for (const char *name : {"TMPDIR", "TEMP", "TMP"})
     {
         const std::string value = luogu::compat::getenv_utf8(name);
@@ -755,7 +710,7 @@ std::filesystem::path crawler::get_cache_dir()
         return temp_dir / "luogu-extract";
 
 #ifdef _WIN32
-    // 兜底 1：%USERPROFILE% 即用户主目录（与 README 的「用户主目录」一致）
+    // 兜底：%USERPROFILE%
     const std::string user_profile = luogu::compat::getenv_utf8("USERPROFILE");
     if (!user_profile.empty())
     {
@@ -765,8 +720,7 @@ std::filesystem::path crawler::get_cache_dir()
     }
 #endif
 
-    // 兜底 2：以上都不可用（环境变量与系统临时目录均缺失或非法）时，
-    // 明确警告后退回当前工作目录下的隐藏目录，并保证是绝对路径
+    // 兜底：警告后退回 CWD 下的 .cache（保证绝对路径）
     std::error_code cwd_ec;
     const std::filesystem::path cwd = std::filesystem::current_path(cwd_ec);
     std::filesystem::path fallback;
@@ -774,7 +728,7 @@ std::filesystem::path crawler::get_cache_dir()
         fallback = cwd;
     fallback /= ".cache";
     fallback /= "luogu-extract";
-    // 只警告一次：缓存目录会被频繁查询（如逐张图片计算缓存路径）
+    // 只警告一次：缓存目录会被频繁查询
     static std::once_flag fallback_warned;
     std::call_once(fallback_warned, [&fallback] {
         print_warning("无法确定系统临时目录，缓存将写入 '" +
@@ -787,8 +741,7 @@ std::string crawler::get_html(const std::string &url, derror *error)
 {
     if (error) *error = SUCCESS;
 
-    // SSRF 防护：拒绝抓取环回/私网/链路本地等内部地址
-    // （判定逻辑见 is_blocked_download_url）
+    // SSRF 防护：拒绝抓取环回/私网/链路本地地址
     if (is_blocked_download_url(url))
     {
         print_error("拒绝抓取 " + url +
@@ -810,13 +763,12 @@ std::string crawler::get_html(const std::string &url, derror *error)
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback_html);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    // 网络资源上限：连接/总超时与最大响应体积（防挂起与无限吃内存）
+    // 连接/总超时与响应体积上限（防挂起与内存耗尽）
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
-    // 协议白名单：只允许 http/https，跳转目标同样受限，
-    // 避免被重定向到 file:// 等本地协议
+    // 协议白名单：仅 http/https，跳转目标同样受限
 #if LIBCURL_VERSION_NUM >= 0x075500
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
@@ -826,7 +778,6 @@ std::string crawler::get_html(const std::string &url, derror *error)
 #endif
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
-    // 内网地址防护覆盖跳转后的每一跳（见 set_ssrf_guard）
     set_ssrf_guard(curl);
 
     CURLcode curl_res = curl_easy_perform(curl);
@@ -874,8 +825,7 @@ crawler::derror crawler::downloadFile(const std::string &url,
                                       const std::filesystem::path &fpath,
                                       const crawler::download_progress_callback &progress)
 {
-    // SSRF 防护：拒绝下载环回/私网/链路本地等内部地址（判定逻辑见
-    // is_blocked_download_url）；拒绝时不创建任何文件
+    // SSRF 防护；拒绝时不创建任何文件
     if (is_blocked_download_url(url))
     {
         print_error("拒绝下载 " + url +
@@ -910,16 +860,13 @@ crawler::derror crawler::downloadFile(const std::string &url,
     {
         print_error("初始化 libcurl 失败（下载 " + url + "）");
         std::fclose(out_file);
-        // 初始化失败时删除空文件：否则下一次 download_images 看到
-        // exists 会把它当成已缓存图片跳过
+        // 初始化失败也要删空文件：否则会被当成已缓存图片跳过
         std::error_code ec;
         std::filesystem::remove(fpath, ec);
         return INIT_ERROR;
     }
 
-    // 未提供回调时使用默认的百分比进度显示；默认进度在行首重写整行，
-    // 自定义回调（如 download_images 的空回调）不输出任何转义序列，
-    // 避免多线程并发写 stdout 互相干扰
+    // 默认回调显示百分比；自定义回调不输出转义序列，避免多线程 stdout 交错
     const bool use_default_progress = !progress;
 
     crawler::download_progress_callback effective =
@@ -939,7 +886,6 @@ crawler::derror crawler::downloadFile(const std::string &url,
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 10L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);
-    // 协议白名单：只允许 http/https，跳转目标同样受限
 #if LIBCURL_VERSION_NUM >= 0x075500
     curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "http,https");
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
@@ -954,7 +900,6 @@ crawler::derror crawler::downloadFile(const std::string &url,
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &ctx);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
 
-    // 内网地址防护覆盖跳转后的每一跳（见 set_ssrf_guard）
     set_ssrf_guard(curl);
     CURLcode res = curl_easy_perform(curl);
     const bool redirected_to_private = check_effective_url_blocked(curl);
@@ -1011,7 +956,7 @@ crawler::derror crawler::update_tags()
         return ENV_ERROR;
     }
 
-    // 官方标签接口（题目列表页中通过 __luoguTagRequest 暴露）
+    // 官方标签接口
     const std::string url = "https://www.luogu.com.cn/_lfe/tags/zh-CN";
     derror fetch_error = SUCCESS;
     printf("正在下载标签缓存：");
@@ -1033,7 +978,7 @@ crawler::derror crawler::update_tags()
             return EMPTY_RESPONSE;
         }
 
-        // 收集 (标签 ID, 中文名, 分类)，按数字 ID 升序排列，便于人工查阅
+        // 按数字 ID 升序排列，便于人工查阅
         struct TagEntry
         {
             int id;
@@ -1047,8 +992,7 @@ crawler::derror crawler::update_tags()
                 !t["id"].is_number_integer() || !t["name"].is_string())
                 continue;
 
-            // 官方数据中个别名称带 BOM 字符（如 \ufeff基础算法），入库前清理；
-            // 同时过滤控制字符（\u0000 等），避免输出/解析时被截断
+            // 名称中的 BOM 与控制字符入库前清理，避免输出/解析被截断
             std::string name = luogu::compat::strip_control_chars(
                 t["name"].get<std::string>());
             const std::string bom = "\xEF\xBB\xBF";
@@ -1071,8 +1015,7 @@ crawler::derror crawler::update_tags()
         std::sort(entries.begin(), entries.end(),
                   [](const TagEntry &a, const TagEntry &b) { return a.id < b.id; });
 
-        // 每条记录：{"<数字ID>": {"name": "<中文名>", "type": <分类>}, ...}，
-        // 程序里可直接按键查找；type 用于区分“算法”类标签
+        // 记录格式 {"<数字ID>": {"name", "type"}}，可直接按键查找
         json tag_map = json::object();
         for (const auto &e : entries)
         {
@@ -1106,8 +1049,7 @@ crawler::derror crawler::update_tags()
             print_error("写入文件 '" + luogu::compat::path_to_utf8(save_path) + "' 失败");
             return CANT_CREAT_FILE;
         }
-        // 原子替换必须用 compat::atomic_replace：Windows 下
-        // std::filesystem::rename 在目标已存在时会失败
+        // 原子替换必须用 compat::atomic_replace（Windows rename 不能覆盖已存在目标）
         std::string replace_error;
         if (!luogu::compat::atomic_replace(tmp_path, save_path, replace_error))
         {
@@ -1142,7 +1084,7 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
         return ENV_ERROR;
     }
 
-    // URL 去重：同一 URL 只下载一次，避免多个线程同时写同一缓存文件
+    // URL 去重：避免多线程同时写同一缓存文件
     std::vector<std::string> unique_urls;
     {
         std::set<std::string> seen;
@@ -1153,11 +1095,10 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
 
     const int total = static_cast<int>(unique_urls.size());
 
-    // 直接在同一行显示完整进度，避免与其他保存/恢复光标的序列冲突。
-    // 先打印前缀，监视线程每次使用 '\r' 回到行首并重写整行内容。
+    // 先打印前缀，监视线程每次回到行首重写整行
     printf("正在下载图片：");
 
-    // 并行下载：多个 worker 通过原子索引领取 URL，洛谷图床下载串行化并保持随机间隔
+    // worker 按原子索引领取 URL；洛谷图床串行并保留随机间隔
     std::atomic<size_t> next_index{0};
     std::atomic<int> downloaded{0}, skipped{0};
     std::atomic<bool> monitor_stop{false};
@@ -1166,16 +1107,13 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
     bool first_luogu_download = true;
     derror first_error = SUCCESS;
 
-    // 启动监视线程，定期读取 downloaded 并更新输出（基于 downloaded/total）
     std::thread monitor([&] {
         while (!monitor_stop.load())
         {
             int d = downloaded.load();
-            // 使用浮点计算并四舍五入，避免长时间为 0 的地板除
+            // 浮点四舍五入，避免整数除法长时间显示 0
             int cur = total > 0 ? static_cast<int>(std::floor((static_cast<double>(d) * 100.0) / static_cast<double>(total) + 0.5)) : 100;
-            // 回到行首并清除到行尾，重写完整前缀 + 进度。
-            // 与 print_error/print_warning 共用 print_mutex：否则 worker 的错误
-            // 信息可能与进度行互相插行（同一行里混进两种输出）
+            // 与 print_error 共用 print_mutex，否则 worker 输出会插进进度行
             {
                 std::lock_guard<std::mutex> lock(print_mutex());
                 printf("\r正在下载图片：%3d %% (%d/%d).\033[K", cur, d, total);
@@ -1183,7 +1121,6 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
         }
-        // 结束前再做一次最终输出并换行
         int d = downloaded.load();
         int cur = total > 0 ? static_cast<int>(std::floor((static_cast<double>(d) * 100.0) / static_cast<double>(total) + 0.5)) : 100;
         {
@@ -1207,17 +1144,15 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
                     break;
                 const std::string &url = unique_urls[i];
                 if (url.rfind("http://", 0) != 0 && url.rfind("https://", 0) != 0)
-                    continue; // 只处理 http(s) 图片链接
+                    continue;
 
                 const std::filesystem::path save_path = image_dir / image_cache_filename(url);
                 if (!redownload)
                 {
-                    // 未要求重新下载：缓存中已有该图片时直接跳过
                     std::error_code exists_ec;
                     if (std::filesystem::exists(save_path, exists_ec) && !exists_ec)
                     {
-                        // 已存在：校验文件头确实是图片。此前进程被杀等场景可能
-                        // 留下半截文件，不校验会把它永远当成已缓存图片
+                        // 校验文件头：中断下载可能留下半截文件，否则会被永远当成已缓存图片
                         if (looks_like_image_file(save_path))
                         {
                             ++skipped;
@@ -1227,10 +1162,7 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
                     }
                 }
 
-                // --new-download（redownload = true）时不使用缓存中已有的图片：
-                // 先下载到同目录的临时文件，校验通过后再原子替换缓存中的同名
-                // 文件（rename 覆盖），因此下载失败/内容无效只影响临时文件，
-                // 原有缓存图片保持不变
+                // --new-download：先写临时文件再原子替换，失败只影响临时文件
                 const std::filesystem::path temp_path =
                     redownload ? luogu::compat::temp_sibling_path(save_path)
                                : std::filesystem::path();
@@ -1238,7 +1170,6 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
                     redownload ? temp_path : save_path;
 
                 auto download_one = [&] {
-                    // 图片下载不显示进度条（可自定义回调）
                     const derror result = downloadFile(url, target_path,
                                                        [](const std::string &, long long, long long) {});
                     if (result != SUCCESS)
@@ -1254,7 +1185,7 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
                         return;
                     }
 
-                    // 校验下载内容确实是图片；无效内容（如错误页）删除并视为失败
+                    // 内容不是图片（如错误页）时删除并按失败处理
                     if (!looks_like_image_file(target_path))
                     {
                         std::error_code rm_ec;
@@ -1267,9 +1198,7 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
 
                     if (redownload)
                     {
-                        // 原子替换缓存中的同名图片（同名旧图片在替换前一直可用）。
-                        // 必须用 compat::atomic_replace：Windows 下
-                        // std::filesystem::rename 在目标已存在时会失败
+                        // 原子替换：改名成功前旧缓存图片一直可用
                         std::string replace_error;
                         if (!luogu::compat::atomic_replace(temp_path, save_path,
                                                            replace_error))
@@ -1304,15 +1233,13 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls,
     for (auto &worker : workers)
         worker.join();
 
-    // 停止监视线程并等待其结束
     monitor_stop.store(true);
     if (monitor.joinable())
         monitor.join();
 
     if (downloaded == 0 && skipped == 0)
     {
-        // 重新下载时所有图片都算“需要下载”，此时没有下载成功意味着全部失败，
-        // 报“没有需要下载的图片”会误导（未重新下载时该提示是准确的）
+        // 重新下载时没有成功即全部失败，报「没有需要下载的图片」会误导
         if (redownload && first_error != SUCCESS)
             print_error("图片重新下载失败");
         else
@@ -1395,7 +1322,7 @@ crawler::derror crawler::clean_problems()
         cache_dir / "latest.ndjson.gz",
     };
 
-    // 更新中断时可能残留 latest.ndjson.tmp.* 临时文件，一并清除
+    // 一并清除中断残留的 latest.ndjson.tmp.* 文件
     std::error_code dir_ec;
     if (std::filesystem::is_directory(cache_dir, dir_ec) && !dir_ec)
     {
@@ -1454,8 +1381,7 @@ crawler::derror crawler::update()
     std::filesystem::path save_path = cache_dir / "latest.ndjson.gz";
     std::filesystem::path extract_path = cache_dir / "latest.ndjson";
     printf("正在下载题目列表：");
-    // 进度在行首整行重写（见 print_progress_line），保留「题目列表」前缀；
-    // downloadFile 的默认进度不带该前缀，故这里自行提供回调
+    // 自行提供回调以保留「题目列表」前缀（默认进度不带前缀）
     derror result = downloadFile(url, save_path,
                                  [](const std::string &, long long downloaded,
                                     long long total) {
@@ -1470,8 +1396,7 @@ crawler::derror crawler::update()
         return result;
     }
 
-    // 解压到临时文件，成功后 fsync + 原子替换 latest.ndjson：
-    // 解压中断/磁盘满不会破坏已有可用缓存
+    // 解压到临时文件后原子替换，避免破坏已有缓存
     const std::filesystem::path tmp_extract =
         luogu::compat::temp_sibling_path(extract_path);
     if (!decompress_gzip_file(save_path, tmp_extract))
@@ -1481,8 +1406,6 @@ crawler::derror crawler::update()
                     luogu::compat::path_to_utf8(save_path) + "'");
         return DECOMPRESS_ERROR;
     }
-    // 原子替换必须用 compat::atomic_replace：Windows 下
-    // std::filesystem::rename 在目标已存在时会失败
     std::string replace_error;
     if (!luogu::compat::atomic_replace(tmp_extract, extract_path, replace_error))
     {
@@ -1494,6 +1417,5 @@ crawler::derror crawler::update()
 
     print_success("题目列表缓存更新成功");
 
-    // 题目列表更新成功后，顺带更新标签缓存（保存为 tags.json）
     return crawler::update_tags();
 }

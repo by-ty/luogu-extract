@@ -49,7 +49,6 @@ std::string trim_ascii(const std::string &s)
     return s.substr(a, b - a + 1);
 }
 
-// 去掉 /etc/os-release 值两侧的引号与空白。
 std::string clean_os_release_value(const std::string &raw)
 {
     std::string v = trim_ascii(raw);
@@ -60,11 +59,8 @@ std::string clean_os_release_value(const std::string &raw)
     return v;
 }
 
-// 判断发行版标识或其派生标识是否属于 Ubuntu 系列。
-// Ubuntu 官方衍生版的 ID 大多以 ubuntu 开头（Ubuntu Budgie、Ubuntu Kylin），
-// 部分名称把 ubuntu 放在中间或结尾（Kubuntu、Xubuntu、Edubuntu），因此
-// 这里统一检查 ID 是否包含 ubuntu；Linux Mint、elementary OS 等则在
-// ID_LIKE 中声明 ubuntu。两种情形都选择 ctex 的 ubuntu 字体方案。
+// 是否属于 Ubuntu 系列：ID 含 ubuntu 即算（Kubuntu/Xubuntu 等把 ubuntu 放在
+// 中间或结尾），Linux Mint、elementary OS 等则在 ID_LIKE 中声明 ubuntu
 bool is_ubuntu_family(const std::string &id, const std::string &id_like)
 {
     const std::string a = lower_ascii(id);
@@ -115,8 +111,7 @@ std::string ctex_fontset_name()
 #elif defined(__APPLE__)
     return "mac";
 #else
-    // Linux：运行阶段读取 /etc/os-release。该文件无法访问或缺少 ID 信息时
-    // 使用 ctex 自带的 fandol 字体集（Fandol 字体随 TeX Live 分发，覆盖最好）。
+    // Linux：读 /etc/os-release；不可访问或缺 ID 时回退 ctex 的 fandol 字体集
     std::ifstream release("/etc/os-release");
     if (!release)
         return "fandol";
@@ -156,12 +151,11 @@ std::string font_argument(const std::string &spec)
     std::string t = spec;
     std::replace(t.begin(), t.end(), '\\', '/');
 
-    // 不含路径分隔符 -> 按已安装字体名称传给 fontspec。
     if (t.find('/') == std::string::npos)
         return "{" + font_spec_escape(t) + "}";
 
-    // 字体文件地址：拆成 Path= / Extension= / 字体名三段，这是 fontspec
-    // 加载字体文件最稳妥的写法，可避免路径中空格、中文等造成解析歧义。
+    // 字体文件路径拆成 Path= / Extension= / 字体名三段：fontspec 最稳妥的写法，
+    // 避免路径中的空格、中文造成解析歧义
     const std::filesystem::path p = luogu::compat::path_from_utf8(t);
     std::string dir = luogu::compat::path_to_utf8(p.parent_path());
     if (dir.empty())
@@ -181,22 +175,16 @@ std::string font_argument(const std::string &spec)
 
 void write_font_setup(FILE *out, const Options &opt)
 {
-    // 1. 正文：ctex fontset 已经提供默认 CJK 主字体；仅在用户显式指定时
-    //    覆盖西文 / 中文主字体。先设置西文再设置中文，避免 xeCJK 重复定义
-    //    默认 CJK 字体族。
+    // 正文：ctex fontset 已提供默认 CJK 主字体，仅在用户显式指定时覆盖；
+    // 先西文后中文，避免 xeCJK 重复定义默认 CJK 字体族
     if (!opt.font_body_en.empty())
         std::fprintf(out, "\\setmainfont%s\n", font_argument(opt.font_body_en).c_str());
     if (!opt.font_body_zh.empty())
         std::fprintf(out, "\\setCJKmainfont%s\n", font_argument(opt.font_body_zh).c_str());
 
-    // 2. 代码块西文等宽字体与“正文黑体部分”（Markdown 的 # 小标题、
-    //    “题目描述”“输入输出样例”等固定小标题）的西文字体使用同一套
-    //    选择逻辑：默认按“Consolas -> Menlo -> DejaVu Sans Mono”顺序
-    //    回退（Windows 常见 Consolas，macOS 常见 Menlo，Linux TeX Live
-    //    几乎必带 DejaVu Sans Mono），三个都不存在时保留 fontspec 默认
-    //    等宽字体；用户传 --set-font-body-codes 时两者都用该字体。
-    //    \luogoheadinglatin 用 \newfontfamily 定义，只切换西文字族，
-    //    中文字体仍由 \heiti 等 CJK 字体命令控制，逻辑不变。
+    // 代码块等宽字体与小标题西文字体共用选择逻辑：默认按 Consolas -> Menlo ->
+    // DejaVu Sans Mono 回退（覆盖 Windows/macOS/Linux），都不存在时保留 fontspec
+    // 默认；\luogoheadinglatin 只切西文字族，中文字体仍由 \heiti 等 CJK 命令控制
     if (opt.font_code.empty())
     {
         std::fputs(
@@ -216,31 +204,25 @@ void write_font_setup(FILE *out, const Options &opt)
         std::fprintf(out, "\\newfontfamily{\\luogoheadinglatin}%s\n", code_font.c_str());
     }
 
-    // CJK 等宽字体不再单独强制 SimHei：ctex fontset 已经设置了与当前
-    // 中文字体方案匹配的 \CJKmonofont，避免重新定义 CJKttdefault 的警告，
-    // 也让 Linux/Windows/macOS 的默认行为各自一致。
+    // CJK 等宽字体交给 ctex fontset（已设与方案匹配的 \CJKmonofont），
+    // 自行重定义会触发 CJKttdefault 警告
 
-    // 3. 标签徽章字体跟随正文字体：不再按操作系统单独指定思源黑体 /
-    //    文泉驿微米黑，标签直接使用当前正文中西文字体（可由
-    //    --set-font-body-zh-CN / --set-font-body-en-US 指定）。
-    //    \tagsfonts 保留为空定义，标签渲染代码无需改动。
+    // 标签徽章字体跟随正文中西文字体（由 --set-font-body-* 指定）；
+    // \tagsfonts 保留为空定义，标签渲染代码无需改动
     std::fputs("\\newcommand{\\tagsfonts}{}\n", out);
-    // 标签徽章统一由 \luogotag{<HTML 背景色>}{<文字>} 渲染。\colorbox 的尺寸由
-    // 内容决定，而不同标签文字的高低/下伸部不同（如 Special Judge 的 p、g），
-    // 背景框会高低不一：\vphantom{涵} 把每个徽章的高度与深度都固定成一个标准
-    // 汉字的字高/字深（不再额外加深），\smash 让文字本身不再影响尺寸，
-    // 各标签框因此完全等高且与汉字标签一样紧凑。\colorbox 的 \fboxsep 留白
-    // 足以容纳比占位汉字略高的字形与各类下伸部，文字不会被挤出彩色背景。
+    // \luogotag{<HTML 背景色>}{<文字>}：\colorbox 尺寸随内容变化，各标签文字的
+    // 高低/下伸部不同会使背景框高低不一；\vphantom{涵} 固定每个徽章的高度与深度、
+    // \smash 让文字不影响尺寸，各徽章因此等高紧凑，\fboxsep 留白也足以容纳字形
     std::fputs("\\newcommand{\\luogotag}[2]{\\textcolor{white}{\\colorbox[HTML]{#1}{"
                "\\tagsfonts\\small\\vphantom{涵}\\smash{#2}}}}\n",
                out);
 
-    // 4. 用户指定的封面 / 标题字体。命令在标题格式中按需展开。
+    // 用户指定的封面/标题字体，命令在标题格式中按需展开
     if (!opt.font_cover.empty())
     {
         std::fprintf(out, "\\newfontfamily{\\luogocoverfont}%s\n",
                      font_argument(opt.font_cover).c_str());
-        // 封面标题同时切换西文与 CJK 字体族，确保指定字体对中文封面也生效。
+        // 封面标题同时切换西文与 CJK 字体族，中文封面也生效
         std::fprintf(out, "\\newCJKfontfamily{\\luogocoverfontcjk}%s\n",
                      font_argument(opt.font_cover).c_str());
         std::fputs(
@@ -256,10 +238,8 @@ void write_font_setup(FILE *out, const Options &opt)
         std::fprintf(out, "\\newfontfamily{\\luogotitleen}%s\n",
                      font_argument(opt.font_title_en).c_str());
 
-    // Markdown ## / ### / #### 小标题：中文默认使用 ctex fontset 预设黑体；
-    // 西文默认与代码块同字体（\luogoheadinglatin）；若用户传了
-    // --set-font-title-zh-CN / --set-font-title-en-US，则按对应维度改用
-    // 用户标题字体，维持 --set-font-* 系列参数的最高优先级。
+    // Markdown 小标题：中文默认 ctex 预设黑体、西文默认与代码块同字体；
+    // 用户传 --set-font-title-* 时按维度改用标题字体（该系列参数优先级最高）
     std::fprintf(out, "\\newcommand{\\luogomarkdownheading}{%s%s}\n",
                  opt.font_title_zh.empty() ? "\\heiti" : "\\luogotitlezh",
                  opt.font_title_en.empty() ? "\\luogoheadinglatin" : "\\luogotitleen");

@@ -34,9 +34,8 @@ using problem::Problem;
 namespace
 {
 
-// 删除 ::anti-ai[...] 指令块（洛谷用它向 AI 隐藏题面内容，导出时应把整段
-// 内容连同指令名与方括号一起删除）。方括号允许嵌套；未闭合的块删除到
-// 字符串末尾；指令名不区分大小写，未跟 '[' 的指令名按普通文本保留。
+// 删除 ::anti-ai[...] 指令块（洛谷用它向 AI 隐藏题面）：整块连同指令名与方括号一起删除。
+// 方括号允许嵌套，未闭合则删到字符串末尾；指令名不区分大小写，其后不是 '[' 时按普通文本保留。
 std::string strip_anti_ai(std::string s)
 {
     static constexpr char kMarker[] = "::anti-ai";
@@ -45,7 +44,6 @@ std::string strip_anti_ai(std::string s)
     size_t i = 0;
     while (i < s.size())
     {
-        // 不区分大小写（仅 ASCII）查找指令名
         size_t p = std::string::npos;
         for (size_t q = i; q + kMarkerLen <= s.size(); ++q)
         {
@@ -74,12 +72,10 @@ std::string strip_anti_ai(std::string s)
         size_t q = p + kMarkerLen;
         if (q >= s.size() || s[q] != '[')
         {
-            // 指令名后没有紧跟 '['：不是指令块，保留原文并继续向后查找
             out += s.substr(p, q - p);
             i = q;
             continue;
         }
-        // 找与 '[' 配对的 ']'（块内容里允许出现嵌套的方括号）
         int depth = 1;
         size_t r = q + 1;
         while (r < s.size() && depth > 0)
@@ -92,18 +88,15 @@ std::string strip_anti_ai(std::string s)
         }
         if (depth != 0)
         {
-            // 未闭合：视为直到字符串末尾都处于块内，全部删除
             i = s.size();
             break;
         }
-        i = r; // 整块（含 ']'）被删除
+        i = r;
     }
     return out;
 }
 
-// 键存在但值为 null 时也返回缺省值（官方数据里 background/hint 等可能为 null）。
-// 同时过滤控制字符（\u0000 等）：fputs/fprintf("%s") 依赖 C 字符串终止符，
-// 含 NUL 的内容会被静默截断，且控制字符会破坏 LaTeX 编译
+// 键缺失或值不是字符串时返回 ""；并过滤控制字符（NUL 会截断 %s 输出，控制字符会破坏 LaTeX）
 std::string get_string(const json &j, const char *key)
 {
     if (!j.contains(key) || !j[key].is_string())
@@ -130,7 +123,7 @@ problem::Problem::Problem(const json &data,
     type = luogu::compat::strip_control_chars(get_string(data, "type"));
     difficulty = get_int(data, "difficulty", 0);
 
-    // 标签：批量缓存里一般是中文名；若是数字 ID 则用 tag_id_to_name 翻译
+    // tags 一般是中文名，也可能是数字 ID（用 tag_id_to_name 翻译，查不到则记作 tag#<id>）
     if (data.contains("tags") && data["tags"].is_array())
     {
         for (const auto &t : data["tags"])
@@ -157,8 +150,7 @@ problem::Problem::Problem(const json &data,
         }
     }
 
-    // 中文题面：优先取 translations.zh-CN（部分题目默认语言是英文，如 P1561），
-    // 缺失时回退到顶层字段（批量缓存里中文键名是 title/inputFormat/outputFormat）
+    // 中文题面优先取 translations.zh-CN（部分题默认语言是英文），缺失时回退到顶层字段
     auto zh_field = [&](const char *key) -> std::string {
         if (data.contains("translations") && data["translations"].is_object())
         {
@@ -179,7 +171,6 @@ problem::Problem::Problem(const json &data,
     formatO = zh_field("outputFormat");
     hint = zh_field("hint");
 
-    // 样例
     if (data.contains("samples") && data["samples"].is_array())
     {
         for (const auto &sample : data["samples"])
@@ -194,7 +185,6 @@ problem::Problem::Problem(const json &data,
         }
     }
 
-    // 时空限制
     if (data.contains("limits") && data["limits"].is_object())
     {
         const json &limits = data["limits"];
@@ -206,10 +196,7 @@ problem::Problem::Problem(const json &data,
                 if (v.is_number_integer()) memory.push_back(v.get<int>());
     }
 
-    // 多语言题面：只保留 en（zh-CN 与顶层字段重复）；
-    // 英文题面与中文题面（get_string）保持一致：删除 ::anti-ai 指令块，
-    // 并过滤控制字符（\u0000 等会截断输出、破坏 LaTeX 编译）；
-    //（-M / -L 的 --lang en 直接读取该对象的字符串字段）
+    // 多语言题面只保留 en（zh-CN 与顶层字段重复）：同样删除 ::anti-ai 块并过滤控制字符，--lang en 直接读它
     if (data.contains("translations") && data["translations"].is_object() &&
         data["translations"].contains("en") && data["translations"]["en"].is_object())
     {
@@ -223,9 +210,7 @@ problem::Problem::Problem(const json &data,
 
 std::vector<std::string> Problem::image_urls() const
 {
-    // 同时扫描中文题面与英文题面（translations.en）中的图片：
-    // --lang en 导出时题面字段改用英文，英文独有的图片也要进入
-    // “缺失图片”列表被下载，否则会被 \IfFileExists 静默跳过
+    // 中英文题面的图片都要扫描：--lang en 导出时英文独有的图片也必须进入待下载列表
     std::string all;
     auto add = [&](const std::string &field) {
         all += field;

@@ -38,7 +38,6 @@
 
 namespace
 {
-// 重定向到文件/管道时不写 ANSI 转义序列（这些提示走 stderr）
 const char *kColorReset = luogu::compat::stderr_is_tty() ? "\033[0m" : "";
 const char *kColorRed = luogu::compat::stderr_is_tty() ? "\033[1;31m" : "";
 
@@ -58,34 +57,29 @@ std::string trim(const std::string &s)
     return s.substr(first, last - first + 1);
 }
 
-// 单侧封顶：自动递增后的延时不超过 60 秒，但用户显式配置的更大值仍然有效
+// 单侧封顶 60 秒；用户显式配置的更大值仍有效
 const long kScaleCapMs = 60000;
 
-// 连续超时/连接失败达到该次数时按疑似限流处理
 const int kConsecutiveFailuresAsRateLimit = 5;
 
-// Retry-After 的硬上限（秒）：该值来自服务器，恶意或异常的响应可以给得很大，
-// 不限幅就会把本次运行的等待时间拉到数天（用户显式配置的 --rate-limit-wait
-// 不受此上限约束，只有响应头里的 Retry-After 受限）
+// Retry-After 硬上限（秒）：服务器可控，不限幅会把等待拉到数天；--rate-limit-wait 不受此限
 const long kMaxRetryAfterSec = 3600;
 
-// ---- 运行时状态 ----
-// 原站与保存站各一条通道，各自维护延时系数、限流等待与放弃状态；
-// auto 模式下两条通道并行工作，因此所有共享状态都要加锁。
+// 原站与保存站各一条通道；auto 模式下两通道并行，所有共享状态都要加锁。
 
 struct ChannelState
 {
     crawler::GateConfig config;
     long long planned_requests = 0;
     double planned_scale = 1.0;
-    bool boosted = false;          // 限流后是否已额外放大
-    int rate_limit_rounds = 0;     // 已触发的等待轮数（交互式等待模式）
-    int consecutive_failures = 0;  // 连续超时/连接失败次数
-    int strikes = 0;               // 连续被限流次数（auto 模式，达到 3 次即放弃）
-    bool abandoned = false;        // 本通道已放弃
-    std::chrono::steady_clock::time_point blocked_until{}; // 限流等待截止时间
-    std::string limit_reason;      // 最近一次限流原因
-    std::mt19937 rng;              // 每通道独立的抖动发生器
+    bool boosted = false;
+    int rate_limit_rounds = 0;     // 已等待轮数（交互式等待模式）
+    int consecutive_failures = 0;
+    int strikes = 0;               // 连续被限流次数（auto 模式，达 3 次放弃）
+    bool abandoned = false;
+    std::chrono::steady_clock::time_point blocked_until{};
+    std::string limit_reason;
+    std::mt19937 rng;
 };
 
 struct GateState
@@ -94,19 +88,17 @@ struct GateState
 
     luogu::cookie::Jar jar;
     std::string cookie_file_hint;
-    unsigned long long jar_version = 0;  // jar 每变化一次 +1（句柄据此决定是否重装）
+    unsigned long long jar_version = 0;  // jar 每变化一次 +1
 
     bool user_stopped = false;
     bool rate_limited_out = false;
     std::string rate_limit_reason;
 
-    std::mutex mutex;   // 保护上面的所有状态（两条通道并行时会并发访问）
-    std::mutex print;   // 串行化终端输出
+    std::mutex mutex;
+    std::mutex print;
 
     GateState()
     {
-        // 每条通道的抖动发生器各用一个随机种子（静态对象构造时执行一次；
-        // 这里用构造函数而不是 std::call_once，避免 lambda 捕获静态变量）
         std::random_device rd;
         for (int i = 0; i < crawler::kChannelCount; ++i)
             channels[i].rng.seed(rd());
@@ -125,9 +117,7 @@ ChannelState &channel_state(crawler::Channel ch)
     return state().channels[index < 0 || index >= crawler::kChannelCount ? 0 : index];
 }
 
-// 统一加锁访问（返回副本，避免调用方在锁外继续持有引用）。
-// 因此取共享状态的接口（如 gate_channel_limit_reason）必须返回值而不是引用，
-// 否则出锁后另一条线程改写该字段就会与调用方的读竞争
+// 统一加锁并返回副本；取共享状态的接口必须返回值，不能返回锁内引用
 template <typename Fn>
 auto with_channel(crawler::Channel ch, Fn &&fn) -> decltype(fn(std::declval<ChannelState &>()))
 {
@@ -144,7 +134,6 @@ void print_error(const std::string &message)
     std::fprintf(stderr, "%s错误：%s %s\n", kColorRed, kColorReset, message.c_str());
 }
 
-// 线程安全的一行输出
 void print_line(const std::string &message)
 {
     GateState &s = state();
@@ -162,7 +151,6 @@ double effective_scale(ChannelState &st)
     return scale;
 }
 
-// 生效区间：基础区间乘以系数，单侧封顶 60 秒（用户显式配置的更大值仍有效）
 std::pair<long, long> effective_delay_ms_of(ChannelState &st)
 {
     const double scale = effective_scale(st);
@@ -176,8 +164,6 @@ std::pair<long, long> effective_delay_ms_of(ChannelState &st)
     return {lo, hi};
 }
 
-// 在 [lo, hi] 闭区间内均匀取一个毫秒值（std::mt19937 +
-// std::uniform_int_distribution，标准库实现，跨平台结果一致）
 long random_delay_ms(ChannelState &st, long lo, long hi)
 {
     if (hi <= lo)
@@ -193,8 +179,7 @@ bool looks_like_html(const std::string &body)
            head.find("<html") != std::string::npos;
 }
 
-// 响应体中的风控特征串。只在「非 200」或「200 且是 HTML」时才检查，
-// 避免题解正文里恰好出现「请稍后再试」这类短语时被误判为限流。
+// 只在「非 200」或「200 且是 HTML」时检查风控特征串，避免正文含这些短语被误判为限流
 bool body_has_rate_limit_mark(const std::string &body)
 {
     static const char *kMarks[] = {
@@ -207,7 +192,7 @@ bool body_has_rate_limit_mark(const std::string &body)
     return false;
 }
 
-// 极简 JSON 取值：从形如 {"status":401,...} 的错误模板中取出 status
+// 从错误模板 JSON 的前 256 字节内取出 "status"
 bool json_status_of(const std::string &body, long &status)
 {
     const size_t pos = body.find("\"status\"");
@@ -234,8 +219,6 @@ bool body_is_login_error(const std::string &body)
            body.find("\"needLogin\":1") != std::string::npos;
 }
 
-// ---- curl 回调 ----
-
 struct ResponseBuffer
 {
     std::string data;
@@ -250,7 +233,7 @@ size_t write_cb(void *contents, size_t size, size_t nmemb, void *userp)
     if (total > buf->max_bytes || buf->data.size() > buf->max_bytes - total)
     {
         buf->overflow = true;
-        return 0; // 中止传输
+        return 0;
     }
     buf->data.append(static_cast<char *>(contents), total);
     return total;
@@ -269,7 +252,6 @@ size_t header_cb(char *buffer, size_t size, size_t nitems, void *userp)
     auto *sink = static_cast<HeaderSink *>(userp);
     const std::string line(buffer, total);
 
-    // 状态行："HTTP/2 200"
     if (line.compare(0, 5, "HTTP/") == 0)
     {
         const size_t sp = line.find(' ');
@@ -294,10 +276,8 @@ size_t header_cb(char *buffer, size_t size, size_t nitems, void *userp)
     return total;
 }
 
-// Retry-After 支持秒数与 HTTP-date 两种形式；解析失败返回 0。
-// 秒数上限 kMaxRetryAfterSec：这个值完全由服务器控制，不限幅（"Retry-After:
-// 999999999" 或超出 long 范围的数字）会让本次运行等待数天，甚至因收窄转换
-// 溢出变成负数而被当成 --rate-limit-wait 0。负数与非数字仍然返回 0。
+// Retry-After 秒数上限 kMaxRetryAfterSec：该值由服务器控制，不限幅会让等待拉到
+// 数天甚至溢出成负数；非正数与非数字一律返回 0
 long parse_retry_after(const std::string &value)
 {
     const std::string v = trim(value);
@@ -311,13 +291,10 @@ long parse_retry_after(const std::string &value)
 }
 } // namespace
 
-// ---------------------------------------------------------------------------
-
 const crawler::Endpoints &crawler::endpoints()
 {
     static Endpoints ep = []() {
         Endpoints e;
-        // 环境变量覆盖仅用于本地 mock 测试（帮助文本中不列出）
         const std::string official =
             luogu::compat::getenv_utf8("LUOGU_EXTRACT_BASE_OFFICIAL");
         if (!official.empty())
@@ -372,7 +349,6 @@ bool crawler::parse_delay_spec(const std::string &spec, DelaySpec &out, std::str
                     "（正数，可带小数，如 5 或 2.5）";
             return false;
         }
-        // 均值 ±30% 均匀抖动
         lo = mean * 0.7;
         hi = mean * 1.3;
     }
@@ -485,8 +461,6 @@ bool crawler::gate_scale_boosted()
                         [](ChannelState &st) { return st.boosted; });
 }
 
-// ---- 限流记账（auto 模式的两站点调度器使用）----
-
 crawler::ChannelLimitInfo crawler::gate_note_rate_limit(Channel ch,
                                                         const std::string &reason)
 {
@@ -504,7 +478,7 @@ crawler::ChannelLimitInfo crawler::gate_note_rate_limit(Channel ch,
         else
         {
             info.wait_ms = static_cast<long>(st.config.rate_limit_wait_sec) * 1000;
-            // 运行中出现限流后，本通道剩余请求的延时额外 ×1.5
+            // 限流后剩余请求延时额外 ×1.5（不回写配置，--no-delay-auto-scale 时不放大）
             if (st.config.auto_scale && !st.boosted)
                 st.boosted = true;
             if (info.wait_ms > 0)
@@ -554,7 +528,6 @@ long long crawler::gate_channel_block_remaining_ms(Channel ch)
 
 std::string crawler::gate_channel_limit_reason(Channel ch)
 {
-    // 必须返回值：with_channel 出锁后，另一条线程可能正在改写 st.limit_reason
     return with_channel(ch, [](ChannelState &st) { return st.limit_reason; });
 }
 
@@ -609,12 +582,8 @@ void crawler::gate_print_delay_notice(long long planned_requests)
                 scale);
 }
 
-// ---- 凭据通道 ----
-
 namespace
 {
-// 清空两个请求句柄的 Cookie 引擎（定义见下方「长连接句柄」一节，
-// gate_clear_cookies 在它之前，故先声明）
 void clear_cookie_engines();
 } // namespace
 
@@ -629,7 +598,7 @@ bool crawler::gate_load_cookies(const std::filesystem::path &file, std::string &
     std::lock_guard<std::mutex> lock(s.mutex);
     s.jar = std::move(jar);
     s.cookie_file_hint = hint;
-    ++s.jar_version;  // 新 jar 需要重新装进句柄引擎
+    ++s.jar_version;
     return true;
 }
 
@@ -642,7 +611,7 @@ bool crawler::gate_set_cookie_string(const std::string &text, std::string &error
     std::lock_guard<std::mutex> lock(s.mutex);
     s.jar = std::move(jar);
     s.cookie_file_hint = "--cookie-string";
-    ++s.jar_version;  // 新 jar 需要重新装进句柄引擎
+    ++s.jar_version;
     return true;
 }
 
@@ -667,30 +636,24 @@ void crawler::gate_clear_cookies()
         std::lock_guard<std::mutex> lock(s.mutex);
         s.jar.cookies.clear();
         s.cookie_file_hint.clear();
-        ++s.jar_version;  // jar 已变化：句柄下次请求按新版本重新安装
+        ++s.jar_version;
     }
-    // jar 只是「待安装的凭据」：已经装进 libcurl 引擎的 Cookie 必须显式清掉，
-    // 否则后续请求仍会带着旧凭据（auto 模式下两条通道会并发读写 jar，
-    // 因此先出 s.mutex 再取句柄锁，两把锁不交叉持有）
+    // jar 只是「待安装的凭据」：已装进引擎的 Cookie 必须显式清除；
+    // 先出 s.mutex 再取句柄锁，两把锁不交叉持有
     clear_cookie_engines();
 }
 
 std::string crawler::gate_cookie_file_hint()
 {
-    // 返回值拷贝：cookie_file_hint 会被 gate_load_cookies 在锁内改写，
-    // 返回引用会让调用方在锁外读到正在被改写的 std::string（与 limit_reason 同理）
     GateState &s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
     return s.cookie_file_hint;
 }
 
-// ---- 请求执行 ----
-
 namespace
 {
-// 限流暂停流程（设计 §8.2）：最多触发 max_rate_limit_rounds 轮等待，
-// 每轮等待结束后重试当前请求；仍被拒绝则直接停止（不再等待、不再重试）。
-// 返回 true 表示「已等待完毕，可以重试当前请求」。
+// 限流等待：最多 max_rate_limit_rounds 轮，每轮等完重试当前请求，仍被拒绝即停止；
+// 返回 true 表示可以重试当前请求
 bool handle_rate_limit(crawler::Channel ch, const std::string &reason)
 {
     GateState &s = state();
@@ -748,8 +711,6 @@ bool handle_rate_limit(crawler::Channel ch, const std::string &reason)
         return false;
     }
 
-    // 运行中出现限流后，本次运行剩余请求的延时额外 ×1.5
-    // （局部放大，不回写缓存与配置；--no-delay-auto-scale 时不做任何放大）
     const bool boosted_now = with_channel(ch, [](ChannelState &st) {
         if (st.config.auto_scale && !st.boosted)
         {
@@ -769,9 +730,7 @@ bool handle_rate_limit(crawler::Channel ch, const std::string &reason)
     return true;
 }
 
-// 是否携带 Cookie：既要调用方要求（只有洛谷原站请求会要求），
-// 又要目标域名在白名单内（luogu.com.cn / luogu.org 及其子域，
-// 或端点被环境变量覆盖时的测试主机）
+// 是否携带 Cookie：既要调用方要求（只有原站请求会要求），又要域名在白名单内
 bool cookie_allowed_for(const std::string &url)
 {
     const std::string host = luogu::cookie::host_of_url(url);
@@ -780,44 +739,25 @@ bool cookie_allowed_for(const std::string &url)
     return luogu::cookie::host_allowed(host, extra_host);
 }
 
-// 长连接句柄：Cookie 引擎绑在句柄上，C3VK 之类的 CDN 挑战 Cookie
-// 因此在多次请求之间复用，避免每次都要多花一次 302 往返。
-//
-// 两个句柄分别用于「带凭据」与「不带凭据」：
-// - 带凭据句柄按域名白名单装入用户 jar 里的凭据；
-// - 不带凭据句柄从不装入任何用户凭据，保证保存站（第三方镜像）
-//   请求在任何情况下都不携带洛谷凭据（即使端点被指向同一主机）。
-//   注意两个句柄都启用了 Cookie 引擎（CURLOPT_COOKIEFILE ""），差别只在
-//   是否装入用户 jar：镜像自己下发的 Cookie 仍会在该句柄内正常往返。
-//
-// 句柄按「本次请求是否允许携带凭据」选择，而不是按调用方通道选择：
-// 白名单判定是逐请求做的（见 cookie_allowed_for），若把句柄与通道硬绑定，
-// 「保存站端点被指向洛谷主机」时就会把凭据发给第三方镜像。
-//
-// 每个句柄各带一把互斥量：惰性初始化、重置、设置选项、perform、getinfo
-// 整体串行。句柄上的 WRITEDATA / HEADERDATA 指向本次请求栈上的缓冲，
-// 同一句柄被两条线程并发使用会让响应写进另一条线程的缓冲（错乱 / 串味）。
-// 当前 auto 模式下原站线程走「带凭据」句柄、保存站线程走「不带凭据」句柄，
-// 本不会撞在一起；互斥量把这条不变量变成结构性保证，限流等待放在锁外。
+// 长连接句柄：Cookie 引擎绑在句柄上，CDN 挑战 Cookie 因此可跨请求复用。两个句柄分别用于
+// 「带凭据」/「不带凭据」，按本次请求是否允许携带凭据选择（而非按调用方通道），避免把凭据
+// 发给第三方镜像。每个句柄一把互斥量串行化请求全过程：WRITEDATA/HEADERDATA 指向本线程栈缓冲
 struct HandleSlot
 {
     CURL *handle = nullptr;
-    bool jar_installed = false;          // 用户 jar 是否已装进本句柄的引擎
-    unsigned long long jar_version = 0;  // 已装入的 jar 版本（jar_installed 为真时有效）
+    bool jar_installed = false;
+    unsigned long long jar_version = 0;  // 已装入的 jar 版本（仅 jar_installed 为真时有效）
     std::mutex mutex;
 };
 
 HandleSlot &handle_slot(bool with_cookies)
 {
-    // 函数内静态对象只初始化一次（C++11 起无初始化竞争），这里只承载句柄本身，
-    // 句柄的创建与使用全部在 slot.mutex 保护下
     static HandleSlot with_cookie_slot;
     static HandleSlot without_cookie_slot;
     return with_cookies ? with_cookie_slot : without_cookie_slot;
 }
 
-// 用户 jar 的一次快照：版本号 + 域名白名单过滤后的待安装 Netscape 行。
-// 在 s.mutex 保护下取好副本，安装时就不再访问共享状态（两把锁不交叉持有）。
+// jar 快照：版本号 + 白名单过滤后的 Netscape 行，在 s.mutex 下取副本
 struct CookieSnapshot
 {
     unsigned long long version = 0;
@@ -843,15 +783,9 @@ CookieSnapshot cookie_snapshot()
     return snapshot;
 }
 
-// 取用句柄并保证 Cookie 引擎状态正确（调用方必须已持有 slot.mutex）。
-// 只在 jar 版本变化时安装一次用户 jar：每次请求都重装会把服务器刚下发的
-// 同名 Cookie（挑战 Cookie / 轮换过的会话 Cookie）覆盖回文件里的旧值。
-// 调用方必须持有 slot.mutex。
-// 已知限制（潜在竞态，当前调用图不可达）：jar 快照在进入句柄锁之前取得，
-// 若另一条线程恰好在这中间调用 gate_clear_cookies()（清 jar + 清引擎并让
-// 版本号 +1），本函数随后仍会把旧 jar 装回并记录旧版本号，而那批 Cookie
-// 不会被后续的「空 jar」安装移除。因此 gate_clear_cookies() 只允许在没有
-// 并发请求时调用（当前唯一调用点是 app::run 入口、抓取线程启动之前）。
+// 取用句柄（调用方须已持有 slot.mutex）。只在 jar 版本变化时安装用户 jar：每次重装
+// 会把服务器刚下发的同名 Cookie 覆盖回文件里的旧值。已知竞态（当前调用图不可达）：
+// 快照在取句柄锁之前取得，若期间 gate_clear_cookies() 清空 jar，旧 jar 仍会被装回
 CURL *acquire_handle(HandleSlot &slot, const CookieSnapshot *jar)
 {
     if (!slot.handle)
@@ -859,14 +793,13 @@ CURL *acquire_handle(HandleSlot &slot, const CookieSnapshot *jar)
         slot.handle = curl_easy_init();
         if (!slot.handle)
             return nullptr;
-        // 空文件名 = 只启用内存中的 Cookie 引擎，不读写磁盘
+        // 空文件名 = 只用内存中的 Cookie 引擎，不读写磁盘
         curl_easy_setopt(slot.handle, CURLOPT_COOKIEFILE, "");
         curl_easy_setopt(slot.handle, CURLOPT_COOKIESESSION, 0L);
     }
     else
     {
-        // 保留 Cookie（curl_easy_reset 只重置选项，不清空 Cookie 缓存，
-        // 引擎也保持启用），因此挑战 Cookie 不会因为复用句柄而丢
+        // curl_easy_reset 不清空 Cookie 缓存（引擎仍启用），挑战 Cookie 不丢
         curl_easy_reset(slot.handle);
     }
     if (jar && (!slot.jar_installed || slot.jar_version != jar->version))
@@ -879,10 +812,8 @@ CURL *acquire_handle(HandleSlot &slot, const CookieSnapshot *jar)
     return slot.handle;
 }
 
-// 清空两个句柄 Cookie 引擎里的全部 Cookie（"ALL" 只清 Cookie，引擎保持启用，
-// 之后仍能接收与保存服务器下发的 Cookie）。
-// 调用方不得持有 s.mutex：本函数要取句柄锁，请求路径的加锁顺序是
-// 「先取 jar 快照（s.mutex）→ 再取句柄锁」，两把锁不交叉持有。
+// 清空两个句柄引擎里的全部 Cookie（"ALL" 只清 Cookie，引擎保持启用）；
+// 调用方不得持有 s.mutex，本函数要取句柄锁
 void clear_cookie_engines()
 {
     for (int i = 0; i < 2; ++i)
@@ -890,9 +821,9 @@ void clear_cookie_engines()
         HandleSlot &slot = handle_slot(i == 0);
         std::lock_guard<std::mutex> lock(slot.mutex);
         if (!slot.handle)
-            continue; // 句柄还没创建过，引擎本来就是空的
+            continue;
         curl_easy_setopt(slot.handle, CURLOPT_COOKIELIST, "ALL");
-        slot.jar_installed = false; // 引擎已清空，下次请求按当前版本重新安装
+        slot.jar_installed = false;
     }
 }
 } // namespace
@@ -922,7 +853,6 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
         return st.config.interactive_retry;
     });
 
-    // 每次尝试前先过闸门；重试（限流后）同样重新等待
     for (int attempt = 1; attempt <= 3; ++attempt)
     {
         if (gated && !gate_wait(cls, ch))
@@ -933,11 +863,8 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             return result;
         }
 
-        // 是否携带凭据逐请求判定：既要调用方要求（只有洛谷原站请求会要求），
-        // 又要目标域名在白名单内（见 cookie_allowed_for）；句柄按这个结果选择
         const bool use_cookies = opt.send_cookie && cookie_allowed_for(opt.url);
         HandleSlot &slot = handle_slot(use_cookies);
-        // 先取 jar 快照与超时值（都要拿 s.mutex），再进句柄锁：两把锁不交叉持有
         const CookieSnapshot jar = use_cookies ? cookie_snapshot() : CookieSnapshot{};
         const long timeout_sec =
             opt.timeout_sec > 0
@@ -959,9 +886,8 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
         CURLcode code = CURLE_FAILED_INIT;
         long http_code = 0;
         {
-            // 句柄互斥量覆盖「重置 + 安装 jar + 设置选项 + perform + getinfo」：
-            // WRITEDATA / HEADERDATA 指向本线程栈上的缓冲，同一句柄绝不能被
-            // 另一条线程并发改写；限流等待在锁外进行，不占着句柄睡觉
+            // 句柄锁覆盖「重置 + 装 jar + 设选项 + perform + getinfo」，限流等待在锁外；
+            // WRITEDATA/HEADERDATA 指向本线程栈缓冲，同一句柄不能被别条线程并发改写
             std::lock_guard<std::mutex> handle_lock(slot.mutex);
             CURL *curl = acquire_handle(slot, use_cookies ? &jar : nullptr);
             if (!curl)
@@ -988,7 +914,7 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
             curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
 #if LIBCURL_VERSION_NUM >= 0x075500
-            // 只允许 http/https 跳转（新接口），避免被重定向到 file:// 等协议
+            // 只允许 http/https 跳转，避免被重定向到 file:// 等协议
             curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
 #else
             curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS,
@@ -1002,7 +928,7 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
         }
         if (header_list)
             curl_slist_free_all(header_list);
-        // 注意：句柄不清理，Cookie 引擎的状态要跨请求保留
+        // 句柄不清理：Cookie 引擎状态要跨请求保留
 
         result.attempts = attempt;
         result.http_code = headers.status > 0 ? headers.status : http_code;
@@ -1021,7 +947,6 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             result.status = RequestStatus::NetworkError;
             result.error = std::string("网络请求失败：") + curl_easy_strerror(code);
 
-            // 连续超时/连接失败按疑似限流处理
             const int failures = with_channel(ch, [](ChannelState &st) {
                 return ++st.consecutive_failures;
             });
@@ -1029,7 +954,6 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             {
                 if (!interactive_retry)
                 {
-                    // auto 模式：把「疑似限流」交给调度器处理
                     result.status = RequestStatus::RateLimited;
                     result.error = "连续 " + std::to_string(failures) +
                                    " 次请求超时或连接失败（疑似限流）";
@@ -1041,7 +965,7 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
                     result.status = RequestStatus::Stopped;
                     return result;
                 }
-                continue; // 等待后重试
+                continue;
             }
             return result;
         }
@@ -1050,7 +974,6 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             return 0;
         });
 
-        // ---- 状态码与限流判定 ----
         const long code_http = result.http_code;
         if (code_http == 304)
         {
@@ -1065,7 +988,7 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
         }
         if (code_http == 200)
         {
-            // 200 也可能是风控页（HTML）或未登录错误模板（JSON status=401）
+            // 200 也可能是风控页或未登录模板
             long json_status = 0;
             if (json_status_of(result.body, json_status) && json_status == 401)
             {
@@ -1081,7 +1004,6 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             }
             if (looks_like_html(result.body) && body_has_rate_limit_mark(result.body))
             {
-                // 风控页面：按限流处理
             }
             else if (result.body.empty())
             {
@@ -1114,11 +1036,8 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             else
                 reason = "响应体包含风控提示（HTTP 200 + HTML）";
 
-            // 等待时长取 max(Retry-After, 配置值)；
-            // 但 --rate-limit-wait 0 表示「检测到限流直接停止」，
-            // 是用户的显式选择，Retry-After 不能把它变成等待。
-            // parse_retry_after 已把秒数限幅到 kMaxRetryAfterSec（3600）以内，
-            // 因此这里的收窄转换不会溢出，也不会把等待拉长到数天
+            // 等待时长取 max(Retry-After, 配置值)；--rate-limit-wait 0 是用户显式选择
+            // 「直接停止」，Retry-After 不能改变它（Retry-After 已限幅，不会溢出）
             const long retry_after = parse_retry_after(result.retry_after);
             with_channel(ch, [&](ChannelState &st) {
                 if (st.config.rate_limit_wait_sec > 0 &&
@@ -1129,8 +1048,7 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
 
             if (!interactive_retry)
             {
-                // auto 模式：立即返回，由调度器决定「临时转给另一站点」还是
-                // 「放弃该站点」
+                // auto 模式：立即返回，由调度器决定转给另一站点还是放弃该站点
                 result.status = RequestStatus::RateLimited;
                 result.error = reason;
                 return result;
@@ -1155,7 +1073,7 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
                 }
                 return result;
             }
-            continue; // 等待结束，重试当前请求
+            continue;
         }
 
         if (code_http == 403)
@@ -1175,7 +1093,6 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
         return result;
     }
 
-    // 三次尝试都用完（两次等待后仍被限流）
     result.status = RequestStatus::RateLimited;
     result.error = "仍被限流，已停止本次抓取";
     return result;
@@ -1206,9 +1123,7 @@ bool crawler::gate_rate_limited_out()
 
 std::string crawler::gate_rate_limit_reason()
 {
-    // 限流原因写进 GateState::rate_limit_reason（gate_note_rate_limit），
-    // 不是某个通道的 limit_reason：此前读的是 Official 通道的字段，永远为空。
-    // 与 gate_channel_limit_reason 一样返回拷贝，避免调用方持有锁内引用。
+    // 限流原因取自 GateState::rate_limit_reason，不是通道的 limit_reason
     GateState &s = state();
     std::lock_guard<std::mutex> lock(s.mutex);
     return s.rate_limit_reason;
@@ -1226,10 +1141,9 @@ void crawler::gate_reset_state()
     for (int i = 0; i < kChannelCount; ++i)
     {
         const Channel ch = static_cast<Channel>(i);
-        // 与 gate_reset_channel 一致：连续限流计数、放弃标志、等待截止时间、原因
+        // 与 gate_reset_channel 一致，另清零运行期计数与放大：同一进程内多次
+        // app::run（交互模式）时从头计数、恢复基础延时
         gate_reset_channel(ch);
-        // 限流相关的运行期计数与放大一并清零：同一进程内多次 app::run
-        // （交互模式）时从头计数、恢复基础延时
         with_channel(ch, [](ChannelState &st) {
             st.rate_limit_rounds = 0;
             st.consecutive_failures = 0;

@@ -24,15 +24,14 @@
 #include <cstdio>
 #include <string>
 #include <vector>
-// libxml2 自带 UTF-8 / UTF-16 / ISO-8859-1 等编码处理器，其余编码（如 GB18030）
-// 走 iconv；libxml2 已是本项目的依赖，用它转码可同时覆盖 Windows / macOS / Linux
+// libxml2 自带 UTF-8 / UTF-16 等处理器，其余编码（GB18030 等）走 iconv，且已是本项目依赖
 #include <libxml/encoding.h>
 #include <libxml/tree.h>
 #include "luogu-extract/util/compat.h"
 
 namespace
 {
-// 单个本地文本文件的大小上限（64 MB）：超过时拒绝，避免一次性读入过多内存
+// 单个本地文本文件上限（64 MB）：超过则拒绝，避免一次性读入过多内存
 const size_t kMaxTextBytes = 64u * 1024u * 1024u;
 
 // 严格校验是否为合法 UTF-8（拒绝过长编码、代理区码点与越界码点）
@@ -77,7 +76,6 @@ bool valid_utf8(const std::string &s)
                 return false;
             cp = (cp << 6) | (cc & 0x3Fu);
         }
-        // 过长编码 / 代理区 / 超出 Unicode 范围
         if ((len == 2 && cp < 0x80) || (len == 3 && cp < 0x800) ||
             (len == 4 && cp < 0x10000) || cp > 0x10FFFF ||
             (cp >= 0xD800 && cp <= 0xDFFF))
@@ -115,7 +113,7 @@ void append_utf8(unsigned int cp, std::string &out)
     }
 }
 
-// UTF-16（含代理对）→ UTF-8；奇数个字节时最后一个字节忽略
+// UTF-16（含代理对）→ UTF-8；奇数个字节时忽略最后一个字节
 std::string utf16_to_utf8(const std::string &bytes, bool big_endian)
 {
     std::string out;
@@ -145,7 +143,6 @@ std::string utf16_to_utf8(const std::string &bytes, bool big_endian)
     return out;
 }
 
-// UTF-32 → UTF-8
 std::string utf32_to_utf8(const std::string &bytes, bool big_endian)
 {
     std::string out;
@@ -168,7 +165,7 @@ std::string utf32_to_utf8(const std::string &bytes, bool big_endian)
     return out;
 }
 
-// 按指定编码名转成 UTF-8（libxml2 编码处理器；GB 系列走 iconv）
+// 编码名无对应处理器或字节序列非法时返回 false
 bool transcode_to_utf8(const std::string &bytes, const char *encoding,
                        std::string &out)
 {
@@ -197,7 +194,7 @@ bool transcode_to_utf8(const std::string &bytes, const char *encoding,
             break;
         if (remaining == last_remaining)
         {
-            ok = false; // 没有进展：编码无法继续转换（多半是非法字节序列）
+            ok = false; // 没有进展：多半是非法字节序列
             break;
         }
         last_remaining = remaining;
@@ -231,13 +228,13 @@ void normalize_text(std::string &s)
         {
             out += '\n';
             if (i + 1 < s.size() && s[i + 1] == '\n')
-                ++i; // CRLF 只算一次换行
+                ++i;
             continue;
         }
         if (c < 0x20 && c != '\t' && c != '\n')
-            continue; // 其余 C0 控制字符丢弃
+            continue;
         if (c == 0x7F)
-            continue; // DEL
+            continue;
         out += static_cast<char>(c);
     }
     s.swap(out);
@@ -288,7 +285,7 @@ bool textenc::read_text_file_utf8(const std::filesystem::path &path,
     const size_t total = bytes.size();
     bool decoded = false;
 
-    // ---- 1. 按 BOM 判定（UTF-32 的 BOM 是 UTF-16 BOM 的前缀，必须先判 UTF-32）----
+    // BOM 判定：UTF-32 的 BOM 是 UTF-16 BOM 的前缀，必须先判 UTF-32
     if (total >= 4 && head[0] == 0xFF && head[1] == 0xFE && head[2] == 0x00 &&
         head[3] == 0x00)
     {
@@ -303,7 +300,7 @@ bool textenc::read_text_file_utf8(const std::filesystem::path &path,
     }
     else if (total >= 3 && head[0] == 0xEF && head[1] == 0xBB && head[2] == 0xBF)
     {
-        out = bytes.substr(3); // UTF-8 BOM
+        out = bytes.substr(3);
         decoded = true;
     }
     else if (total >= 2 && head[0] == 0xFF && head[1] == 0xFE)
@@ -317,7 +314,7 @@ bool textenc::read_text_file_utf8(const std::filesystem::path &path,
         decoded = true;
     }
 
-    // ---- 2. 无 BOM：合法 UTF-8 直接用；否则按 GB18030（GBK / GB2312）转码 ----
+    // 无 BOM：合法 UTF-8 直接用，否则依次尝试 GB18030 / GBK / GB2312
     if (!decoded)
     {
         if (valid_utf8(bytes))
@@ -347,7 +344,7 @@ bool textenc::read_text_file_utf8(const std::filesystem::path &path,
         }
     }
 
-    // 归一化换行并过滤控制字符后重新确认仍有内容（例如整份文件都是控制字符）
+    // 归一化后可能已无内容（如整份文件都是控制字符），需重新确认
     normalize_text(out);
     if (out.empty())
     {

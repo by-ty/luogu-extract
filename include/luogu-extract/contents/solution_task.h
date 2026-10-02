@@ -19,9 +19,8 @@
 // License for more details.
 
 // include/luogu-extract/contents/solution_task.h
-// 题解抓取的「计划阶段」与「抓取阶段」：
-// 计划阶段只读缓存、不访问网络，算出本次实际待抓篇数 N 与列表请求数 P，
-// 供风险分级提示、延时系数与耗时估算使用；抓取阶段逐题串行抓取。
+// 题解抓取的「计划阶段」与「抓取阶段」：计划阶段只读缓存、不访问网络
+// （resolve_lists 例外），算出待抓篇数 N 与列表请求数 P；抓取阶段逐题串行抓取。
 #ifndef LUOGU_EXTRACT_CONTENTS_SOLUTION_TASK_H
 #define LUOGU_EXTRACT_CONTENTS_SOLUTION_TASK_H
 
@@ -38,17 +37,15 @@ namespace solution
     struct TaskOptions
     {
         Source source = Source::Official; // --article-source
-        // --article：按文章编号单独下载的文章（顺序即导出顺序；main 已校验
-        // 编号并去重）。文章与题解正文共用来源、TTL、刷新与完整性等控制选项
+        // --article：按文章编号单独下载（顺序即导出顺序，main 已校验并去重）；
+        // 与题解正文共用来源、TTL、刷新与完整性控制选项
         std::vector<std::string> article_lids;
-        // --max-solutions：正整数表示每题取前 n 篇；< 0 表示 all（该题全部题解，
-        // 不设上限）
+        // --max-solutions：正整数 = 每题取前 n 篇；< 0 = all（该题全部，不设上限）
         int max_articles = 1;
-        // --solution-ttl：题解**列表**的有效期（天）。< 0 表示无限
-        // （默认：只要缓存里有列表就一直用，只有显式指定天数才会过期重取）；
-        // 0 表示每次都发 ETag 条件请求（304 时只刷新时间戳）
+        // --solution-ttl：题解**列表**有效期（天）；< 0 无限（默认），
+        // 0 表示每次发 ETag 条件请求（304 时只刷新时间戳）
         int list_ttl_days = -1;
-        // --article-ttl：题解**正文**的有效期（天），语义同上
+        // --article-ttl：题解**正文**有效期（天），语义同上
         int article_ttl_days = -1;
         bool refresh_solutions = false;   // --refresh-solutions
         bool refresh_articles = false;    // --refresh-articles
@@ -58,11 +55,11 @@ namespace solution
     /// 计划阶段：一道题里的一篇题解
     struct ArticlePlan
     {
-        Summary summary;                 // 列表里的摘要（顺序即列表顺序）
+        Summary summary;                 // 列表摘要（顺序即列表顺序）
         bool cached = false;             // 已命中缓存（无需网络请求）
         Source cached_source = Source::Official; // 命中的缓存来自哪个来源
-        // auto 模式：本篇分配到哪条通道（0 原站 / 1 保存站）；
-        // 非 auto 模式固定为所选来源对应的通道；cached 为 true 时无意义
+        // auto 模式分配到的通道（0 原站 / 1 保存站）；非 auto 固定为所选来源的通道，
+        // cached 为 true 时无意义
         int site = 0;
     };
 
@@ -73,9 +70,8 @@ namespace solution
         std::string name;
         bool list_cached = false;    // 缓存里有列表
         bool list_known = false;     // 列表已就绪（缓存可用，或计划阶段已抓取）
-        // 计划阶段通过网络抓到的列表（抓取阶段只负责落盘，不再重复请求）
-        bool list_from_network = false;
-        bool list_not_modified = false; // 计划阶段的条件请求命中 304
+        bool list_from_network = false; // 计划阶段通过网络抓到的列表（抓取阶段只落盘）
+        bool list_not_modified = false; // 计划阶段条件请求命中 304
         std::string list_etag;
         std::vector<Summary> list_items;
         int total_available = 0;
@@ -93,8 +89,7 @@ namespace solution
         std::string lid;
         bool cached = false;             // 已命中缓存（无需网络请求）
         Source cached_source = Source::Official; // 命中的缓存来自哪个来源
-        // auto 模式：本篇分配到哪条通道（0 原站 / 1 保存站）；
-        // 非 auto 模式固定为所选来源对应的通道；cached 为 true 时无意义
+        // 含义同 ArticlePlan::site
         int site = 0;
     };
 
@@ -132,12 +127,10 @@ namespace solution
         std::string error;
     };
 
-    /// 计划阶段。默认只读缓存，不发起任何网络请求。
-    /// resolve_lists 为 true 时，会把缓存缺失/已过期的题解列表在计划阶段就
-    /// 抓回来（列表请求本来就要发，属于 N + P 里的 P，受请求闸门控制），
-    /// 这样「正文篇数」在风险确认之前就是精确值——`--max-solutions all`
-    /// 没有篇数上限，必须靠它才能给出真实的抓取量与风险档位。
-    /// opt.article_lids（--article）指定的文章同样在此计入 N。
+    /// 计划阶段。默认只读缓存、不发网络请求；resolve_lists 为 true 时把缺失/过期的
+    /// 列表在计划阶段就抓回来（列表请求本就是 N + P 中的 P，受请求闸门控制），
+    /// 使风险确认前就能得到精确正文篇数（--max-solutions all 无上限，必须靠它）。
+    /// opt.article_lids（--article）指定的文章同样计入 N。
     PlanResult make_plan(const std::vector<problem::Problem> &problems,
                          const TaskOptions &opt, bool resolve_lists, Plan &plan);
 
@@ -167,10 +160,9 @@ namespace solution
     };
 
     /// 抓取阶段：逐题串行抓取列表与正文，落缓存并组装导出用的题解包；
-    /// --article 指定的文章按同一套来源/延时/限流规则抓取，装入 articles
-    /// （顺序与命令行给出的编号一致）。
-    /// @return false 表示因错误中止（error 给出中文说明）；
-    ///         用户主动停止 / 限流中止不算错误，通过 stats 的标志位返回
+    /// --article 指定的文章按同一套来源/延时/限流规则抓取，顺序与命令行一致。
+    /// 返回 false 表示因错误中止（error 给出中文说明）；用户主动停止 / 限流中止
+    /// 不算错误，通过 stats 的标志位返回
     bool crawl(const Plan &plan, const TaskOptions &opt,
                luogu::SolutionBundle &bundle, luogu::ArticleBundle &articles,
                CrawlStats &stats, std::string &error);

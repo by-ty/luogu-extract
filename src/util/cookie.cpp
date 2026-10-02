@@ -52,7 +52,7 @@ std::string to_lower(std::string s)
     return s;
 }
 
-// 去掉 domain 的前导 '.'（Netscape 格式用前导点表示包含子域）
+// Netscape 用前导 '.' 表示包含子域，去掉便于比较
 std::string normalize_domain(const std::string &domain)
 {
     std::string d = to_lower(trim(domain));
@@ -66,8 +66,8 @@ long long now_seconds()
     return static_cast<long long>(std::time(nullptr));
 }
 
-// 是否含控制字符（含制表符、换行、回车）：Netscape 行以 '\t' 分列、以换行
-// 分行，字段里带上控制字符会破坏列结构甚至注入新行
+// 是否含控制字符（含制表符、换行）：Netscape 行以 '\t' 分列、换行分行，
+// 字段里带上控制字符会破坏列结构甚至注入新行
 bool has_control_char(const std::string &s)
 {
     for (const unsigned char c : s)
@@ -78,8 +78,7 @@ bool has_control_char(const std::string &s)
     return false;
 }
 
-// 剔除控制字符（留给 netscape_line 的最后一道防线；正常解析流程里不合规的
-// 条目已在载入时被拒绝，不会走到这里）
+// netscape_line 的最后一道防线（载入时不合规的条目已被拒绝）
 std::string remove_control_chars(const std::string &s)
 {
     std::string out;
@@ -92,8 +91,7 @@ std::string remove_control_chars(const std::string &s)
     return out;
 }
 
-// Cookie 名必须是 HTTP token：不含控制字符与空白（';' 与 '=' 在解析时已被
-// 拆开，不会出现在名字里）
+// Cookie 名必须是 HTTP token：不含控制字符与空白（';'、'=' 已在解析时拆开）
 bool valid_cookie_name(const std::string &name)
 {
     for (const unsigned char c : name)
@@ -104,7 +102,6 @@ bool valid_cookie_name(const std::string &name)
     return true;
 }
 
-// 按 '\t' 拆分（Netscape 格式固定 7 列，字段内不含制表符）
 std::vector<std::string> split_tabs(const std::string &line)
 {
     std::vector<std::string> out;
@@ -125,7 +122,7 @@ std::vector<std::string> split_tabs(const std::string &line)
     return out;
 }
 
-// 权限建议：POSIX 下 cookies.txt 若对同组/其他用户可读则提示（不修改用户文件）
+// POSIX 下 cookies.txt 对同组/其他用户可读则提示 chmod 600（不修改用户文件）
 void check_file_permissions(const std::filesystem::path &path, std::string *warnings)
 {
     if (!warnings)
@@ -167,8 +164,7 @@ bool luogu::cookie::load_netscape_file(const std::filesystem::path &path, Jar &o
     {
         if (line.empty())
             continue;
-        // 注释行；"#HttpOnly_" 前缀是 curl/浏览器标记 HttpOnly 的写法，
-        // 去掉前缀后按普通数据行解析
+        // "#HttpOnly_" 是 curl/浏览器标记 HttpOnly 的写法：去掉前缀后按普通数据行解析
         bool http_only = false;
         if (line[0] == '#')
         {
@@ -184,12 +180,10 @@ bool luogu::cookie::load_netscape_file(const std::filesystem::path &path, Jar &o
             continue;
 
         Cookie c;
-        // 域字段带前导 '.' 表示包含子域（Netscape 的 includeSubdomains）
         const std::string raw_domain = trim(f[0]);
         c.domain = normalize_domain(raw_domain);
         c.path = f[2].empty() ? "/" : trim(f[2]);
-        // 第 4 列才是 secure 标志（第 2 列是 includeSubdomains，它只体现在
-        // 域字段的前导 '.' 上，与 secure 无关）
+        // 第 4 列才是 secure：第 2 列是 includeSubdomains，只体现在域字段的前导 '.' 上
         c.secure = to_lower(trim(f[3])) == "true";
         c.http_only = http_only;
         c.include_subdomains = !raw_domain.empty() && raw_domain[0] == '.';
@@ -206,8 +200,7 @@ bool luogu::cookie::load_netscape_file(const std::filesystem::path &path, Jar &o
 
         if (c.domain.empty() || c.name.empty())
             continue;
-        // 名字与值里的控制字符（制表符/换行等）会破坏 Netscape 行结构：
-        // 整条拒绝并计数，由调用方提示用户
+        // 名/值里的控制字符会破坏 Netscape 行结构：整条拒绝并计数，由调用方提示
         if (!valid_cookie_name(c.name) || has_control_char(c.value))
         {
             ++invalid;
@@ -277,9 +270,8 @@ bool luogu::cookie::load_cookie_string(const std::string &text, Jar &out,
                     "--cookie-string \"k=v; k2=v2\"";
             return false;
         }
-        // 名字必须是不含空白/控制字符的 token，值里也不能有控制字符（制表符、
-        // 换行）：否则交给 curl 的 Netscape 行会被拆错列甚至注入新行。
-        // 报错不打印 Cookie 名与值（值属于凭据，不写日志）
+        // 名必须是不含空白/控制字符的 token、值也不能含控制字符：否则交给 curl 的
+        // Netscape 行会拆错列甚至注入新行。报错不打印名与值（值属凭据，不写日志）
         if (!valid_cookie_name(c.name))
         {
             error = "参数 '--cookie-string' 中存在含空白或控制字符的 Cookie 名；"
@@ -335,11 +327,10 @@ std::string luogu::cookie::host_of_url(const std::string &url)
     if (end == std::string::npos)
         end = url.size();
     std::string host = url.substr(start, end - start);
-    // 去掉 userinfo（user:pass@host）
     const size_t at = host.find('@');
     if (at != std::string::npos)
         host = host.substr(at + 1);
-    // 去掉端口（IPv6 字面量的方括号形式对本项目不适用）
+    // 去掉端口；IPv6 字面量的方括号形式对本项目不适用
     const size_t colon = host.find(':');
     if (colon != std::string::npos)
         host = host.substr(0, colon);
@@ -348,11 +339,8 @@ std::string luogu::cookie::host_of_url(const std::string &url)
 
 std::string luogu::cookie::netscape_line(const Cookie &c)
 {
-    // 交给 libcurl 的 Netscape 行格式：
-    // domain \t includeSubdomains \t path \t secure \t expires \t name \t value
-    // 会话 Cookie 的 expires 用 0 表示。
-    // 名字与值里的控制字符会破坏列结构（制表符）或注入新行（换行），这里
-    // 再剔除一次作为最后防线（载入时不合规的条目已被拒绝）
+    // 交给 libcurl 的 Netscape 行：domain \t includeSubdomains \t path \t secure \t
+    // expires \t name \t value（会话 Cookie 的 expires 记 0）；名/值再剔一次控制字符
     std::string line = c.domain;
     line += c.include_subdomains ? "\tTRUE\t" : "\tFALSE\t";
     line += c.path.empty() ? "/" : c.path;

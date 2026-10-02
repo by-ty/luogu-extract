@@ -42,117 +42,78 @@ namespace latex
         // bilibili 视频 URL 是否输出为超链接（--no-bilibili-link 置为 false；默认 true）
         bool bilibili_links = true;
 
-        // Markdown 的一级标题（#）是否渲染成 \section（进目录、写页眉），
-        // 而不是默认的 \section*（只当大标题，不进目录）。
-        // --local 转写本地 Markdown 时置为 true：一级标题正是本文档的章节标题，
-        // 目录条目与页眉标题都由它决定；题面 / 题解 / 文章正文里的一级标题
-        // 保持默认（不进目录），以免污染整册的目录与页眉。
+        // Markdown 一级标题（#）是否渲染成 \section（进目录、写页眉）而非 \section*。
+        // --local 转写本地 Markdown 时置 true（一级标题即本文档章节标题）；
+        // 题面/题解/文章正文里的一级标题保持默认，以免污染整册目录与页眉
         bool h1_as_section = false;
 
-        // 题目信息显示开关（与 -M 共用同一组参数）：
-        // 来源/时间/区域/特殊标签、算法标签、难度是否显示
+        // 题目信息显示开关（与 -M 共用同一组参数）
         luogu::DisplayOptions display;
 
-        // 目录中的题目标题是否按难度着色（--show-contents-difficulty-tags
-        // 置为 true；默认 false，即黑色）。与 display.difficulty 相互独立。
+        // 目录中的题目标题按难度着色（--show-contents-difficulty-tags；
+        // 与 display.difficulty 相互独立）
         bool toc_difficulty = false;
 
-        // 题目之间、文章（题解）之间是否分页（--paginate 置为 true；
-        // 默认 false，即连续排版）。开启后每道题、每篇文章都从新的一页
-        // 开始，只在两次写入之间插入 \newpage：不写 \addcontentsline、
-        // 也不生成书签，因此目录与 PDF 书签完全不受影响。
+        // 题目之间、文章之间分页（--paginate）：只在两次写入之间插入 \newpage，
+        // 不写 \addcontentsline、不生成书签，因此目录与 PDF 书签不受影响
         bool paginate = false;
 
-        // 下载题面图片时是否忽略缓存中已有的图片、全部重新下载
-        // （-RD, --new-download 置为 true；默认 false 即已有图片直接跳过）。
-        // 新图片先下载到缓存目录中的临时文件，校验通过后再原子替换缓存中的
-        // 同名文件，因此重新下载失败不会影响原有缓存。
+        // 下载题面图片时忽略缓存、全部重新下载（-RD, --new-download）。
+        // 新图片先写临时文件再原子替换同名缓存，重新下载失败不影响原缓存
         bool new_download = false;
 
-        // 字体设置：空串表示使用 ctex fontset / 代码字体回退链给出的默认字体。
-        // 值既可以是系统已安装的字体名称，也可以是字体文件地址（main 中已规范化）。
+        // 字体设置：空串表示使用 ctex fontset / 代码字体回退链给出的默认字体；
+        // 值可以是系统字体名，也可以是字体文件地址（main 中已规范化）
         std::string font_cover;    // 封面标题字体（--set-font-cover-page）
         std::string font_body_zh;  // 正文中文字体（--set-font-body-zh-CN）
-        std::string font_body_en;  // 正文及题目大标题西文字体，不作用于公式
-                                    // （--set-font-body-en-US）
-        std::string font_code;     // 代码块，以及正文黑体部分（小标题）西文字体
-                                    // （--set-font-body-codes）
+        std::string font_body_en;  // 正文与题目大标题西文字体，不作用于公式
+                                   // （--set-font-body-en-US）
+        std::string font_code;     // 代码块与正文黑体部分（小标题）西文字体
+                                   // （--set-font-body-codes）
         std::string font_title_zh; // 题目大标题/小节标题/目录/页眉中文字体
-                                    // （--set-font-title-zh-CN）
+                                   // （--set-font-title-zh-CN）
         std::string font_title_en; // 小节标题/目录/页眉西文字体（--set-font-title-en-US；
-                                    // 题目大标题西文跟随 font_body_en）
+                                   // 题目大标题西文跟随 font_body_en）
 
         // 封面标题文字（--set-cover-title；空串表示默认 "luogu extract"）
         std::string cover_title;
 
-        // ---- 题解与文章导出（设计 §十）----
-        // 题解包（nullptr 表示不导出题解）；题解与题面在同一文件内，
+        // 题解与文章导出：题解包（nullptr 表示不导出题解），与题面同文件，
         // 位置由 solution_export.document_end 决定
         const luogu::SolutionBundle *solutions = nullptr;
-        // --article 按文章编号下载的文章（nullptr 表示没有）；文章统一放在
-        // 文档最后（题解之后），级别与题解相同，只是没有题目跳转按钮
+        // --article 单独下载的文章（nullptr 表示没有），统一放在文档最后
         const luogu::ArticleBundle *articles = nullptr;
         luogu::SolutionExportOptions solution_export;
     };
 
-    // 把一段 markdown / HTML 文本转换为 LaTeX。
-    // 标题映射为 \section 及更低层级；小节中文标题默认使用 ctex 预设
-    // 黑体 \heiti（含 Markdown 的 ## / ### / ####），其西文使用代码块字体
-    // （见 latex_fonts.h 的 write_font_setup）。图片链接映射为缓存中的文件
-    // （crawler::image_cache_path），超宽/超高图片按比例缩小到版心内，小图片
-    // 不放大；视频（Bilibili 等）只输出链接；
-    // 数学公式原样保留。
-    // 洛谷的折叠框（:::info / :::success / :::warning / :::error，可带
-    // [标题]，未指定标题时用默认标题「提示/成功/警告/错误」）用 mdframed
-    // 环境渲染：标题条底色为对应折叠框颜色、白色粗体字，内容白底黑字、
-    // 字体与正文一致，框线为对应颜色；顶层折叠框占满整行宽度并可自然跨页，
-    // 嵌套折叠框在上一级框内、左右各缩进 1em（宽度略小于上一级），由于
-    // mdframed 的嵌套盒子不能跨页，嵌套框的内容会按估算高度自动切成若干
-    // 一页以内的小块（第二块起标题加「（续）」），保证不被截断。
-    // 依赖的宏包：graphicx、hyperref、ulem（删除线）、amsmath/amssymb（公式/
-    // 任务框）、mdframed（折叠框）。
+    // 把一段 markdown / HTML 转为 LaTeX：标题映射为 \section 及更低层级（小节中文标题用
+    // ctex 的 \heiti，西文用代码块字体）；图片映射为缓存文件（超宽/超高按比例缩小，小图
+    // 不放大）；视频只输出链接；数学公式原样保留。
+    // 折叠框（:::info / :::success / :::warning / :::error，可带 [标题]）用 mdframed 渲染，
+    // 嵌套框按估算高度切成若干一页以内的小块（第二块起标题加「（续）」）以免被截断。
+    // 依赖宏包：graphicx、hyperref、ulem、amsmath/amssymb、mdframed
     std::string markdown_to_latex(const std::string &markdown);
 
-    // 把一题转换为以 \section 开头的 LaTeX 内容（结构同 markdown 导出：
-    // 难度/标签/作者/时空限制 + 背景/描述/输入输出格式/样例/提示）。
-    // first_solution_lid 非空且启用了题解导出时，题目标题行右侧生成
-    // 「查看题解」按钮，指向该题第一篇题解的锚点（设计 §10.2）。
+    // 把一题转为以 \section 开头的 LaTeX（难度/标签/作者/时空限制 + 各部分题面）。
+    // first_solution_lid 非空且启用题解导出时，标题行右侧生成「查看题解」按钮
     std::string problem_to_latex(const problem::Problem &p, const Options &opt = {},
                                  const std::string &first_solution_lid = "");
 
-    // 把一篇文章转换为以 \section 开头的 LaTeX 内容
+    // 把一篇文章转为以 \section 开头的 LaTeX
     std::string article_to_latex(const article::Article &a);
 
-    // 读取缓存并按条件筛选题目（与 -M 共用筛选逻辑），
-    // 导出为一份完整的、可直接用 xelatex 编译的 LaTeX 文档。
-    // 默认中文方案由 ctex fontset= 按操作系统选择；数学字体使用 unicode-math。
-    // @param filter      筛选条件
-    // @param output_path 输出 .tex 文件路径
-    // @param error       失败时返回的错误信息
-    // @param opt         显示选项（目录超链接/回链、字体、封面标题、bilibili 链接等）
-    // @return 成功返回 true
-    /// @param preselected 可选的预筛选结果（题解流程已筛选过一次时传入，
-    ///                    避免重复读取与解析题目列表缓存）；nullptr 时自行筛选
+    // 读取缓存并按条件筛选题目（与 -M 共用筛选逻辑），导出为可直接用 xelatex 编译的
+    // LaTeX 文档（中文方案由 ctex fontset= 按系统选择，数学字体用 unicode-math）。
+    // preselected 非空时复用已筛选的结果，避免重复解析题目列表缓存
     bool export_latex(const luogu::ExportFilter &filter,
                       const std::filesystem::path &output_path,
                       std::string &error,
                       const Options &opt = {},
                       const luogu::ProblemSelection *preselected = nullptr);
 
-    // --local：把本地 Markdown 文本文件转写为 LaTeX 文档（不访问网络、不使用缓存）。
-    // - 文件按普通文本读取，编码自适应（BOM 判定 UTF-8 / UTF-16 / UTF-32，
-    //   无 BOM 时先按严格 UTF-8 校验，否则按 GB18030 转码），统一成 UTF-8；
-    // - 默认输出封面（标题由调用方通过 opt.cover_title 给出）、目录与页眉：
-    //   目录条目与页眉标题由 Markdown 的一级标题（#）决定，--paginate 时
-    //   每处一级标题另起一页；目录超链接由 --no-toc-links 控制；
-    // - doc_only（--doc-only）时不输出封面、目录与页眉标题，整篇连贯输出，
-    //   页眉页码（--toc-backlinks）改为跳转到文档首页。
-    // @param input_path  本地 Markdown 文件路径（后缀名不限）
-    // @param output_path 输出 .tex 文件路径
-    // @param error       失败时返回的错误信息
-    // @param opt         与 -L 共用的排版选项（封面标题、字体、目录链接等）
-    // @param doc_only    --doc-only：不输出封面、目录与页眉标题
-    // @return 成功返回 true
+    // --local：把本地 Markdown 转写为 LaTeX 文档（不访问网络、不使用缓存）。
+    // 编码自适应（BOM 判定 UTF-8/UTF-16/UTF-32，无 BOM 时先严格校验 UTF-8，
+    // 否则按 GB18030 转码）；doc_only（--doc-only）时不输出封面、目录与页眉标题
     bool export_local_markdown(const std::filesystem::path &input_path,
                                const std::filesystem::path &output_path,
                                std::string &error,

@@ -28,19 +28,11 @@
 
 namespace markdown
 {
-    // 读取缓存的题目列表（latest.ndjson），按条件筛选后合并成一个 markdown 文件
-    // @param filter      筛选条件（与 -L 共用）
-    // @param output_path 输出文件路径
-    // @param error       失败时返回的错误信息
-    // @param cover_title 一级标题文字（--set-cover-title；空串表示默认“洛谷题目导出”）
-    // @param display     题目信息显示开关（与 -L 共用：来源/算法标签、难度；
-    //                    默认显示来源类标签，隐藏算法标签与难度）
-    // @param solutions   题解包（nullptr 表示不导出题解）；题解与题面同文件
-    // @param solution_export 题解导出的位置与开关（--solution-placement 等）
-    // @param articles    --article 按文章编号下载的文章（nullptr 表示没有）；
-    //                    文章统一置于文档最后（题解之后），级别与题解相同，
-    //                    只是没有题目跳转链接与「（所属题目）」说明
-    // @return 成功返回 true
+    // 读取缓存题目列表，按条件筛选后合并成一个 markdown 文件。
+    // cover_title：一级标题（空串表示默认「洛谷题目导出」）；display：与 -L 共用的
+    // 题目信息显示开关；solutions：题解包（nullptr 表示不导出，与题面同文件）；
+    // articles：--article 的文章（nullptr 表示没有），统一置于文档最后，级别与题解相同，
+    // 只是没有题目跳转链接与「（所属题目）」说明
     bool export_markdown(const luogu::ExportFilter &filter,
                          const std::filesystem::path &output_path,
                          std::string &error,

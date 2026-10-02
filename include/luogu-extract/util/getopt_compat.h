@@ -19,21 +19,11 @@
 // License for more details.
 
 // include/luogu-extract/util/getopt_compat.h
-// 平台无关的 getopt / getopt_long 实现：Windows（MSVC/MinGW-w64）通常不提供
-// POSIX <getopt.h>，本头文件按 glibc 的实现语义移植了本程序用到的行为：
-//   - optstring 以 ':' 开头时不打印错误：未知选项返回 '?'，缺少参数返回 ':'
-//   - optstring 以 '+' 开头时遇第一个裸参数即停止；以 '-' 开头时裸参数
-//     作为选项 1 返回（optarg 指向参数）
-//   - 支持短选项簇（如 -UML）、长选项 --name、--name=value、--name value
-//   - 支持长选项的无歧义前缀缩写（与 GNU getopt 一致）；歧义时优先精确匹配
-//   - 出错时 argv[optind - 1] 指向出错的 token
-//   - 必选参数会吞掉下一个 token，即使它以 '-' 开头（与 GNU 一致）
-//   - 实现 GNU 式参数重排（permutation，直接移植 glibc 的 exchange 算法）：
-//     选项与裸参数可以混排，裸参数保持原有相对顺序被挪到 argv 末尾；
-//     getopt 返回 -1 后 argv[optind..argc) 即全部裸参数
-//   - "--" 之后的内容全部视为裸参数；"--" 自身被交换到裸参数区之前
-// 非 Windows 平台默认用系统 <getopt.h>；定义 LUOGU_FORCE_COMPAT_GETOPT
-// 可强制使用本实现（用于测试）。
+// 平台无关的 getopt / getopt_long，按 glibc 语义移植（Windows 无 POSIX <getopt.h>）；非 Windows 默认用系统头，
+// 定义 LUOGU_FORCE_COMPAT_GETOPT 可强制本实现（测试用）。要点：
+// - optstring 前导 ':' 不打印错误（未知 '?'、缺参数 ':'），'+' 遇首个裸参数即停，'-' 把裸参数作为选项 1 返回；
+// - 短选项簇、--name[=value]、长选项无歧义前缀缩写（歧义时精确匹配优先）、必选参数会吞掉下一个 token；
+// - GNU 式重排：返回 -1 后 argv[optind..argc) 全是裸参数（"--" 之后亦然），出错时 argv[optind-1] 指向出错 token。
 #ifndef LUOGU_EXTRACT_UTIL_GETOPT_COMPAT_H
 #define LUOGU_EXTRACT_UTIL_GETOPT_COMPAT_H
 
@@ -54,8 +44,7 @@ struct option
     int val;
 };
 
-// 与 glibc/POSIX 相同的 C 链接：非 Windows 平台强制测试本实现时，
-// 系统头文件（如 unistd.h）也会声明这些符号，C 链接可以保证兼容。
+// 与 glibc/POSIX 相同的 C 链接（非 Windows 强制用本实现时会与系统头文件声明同名符号）
 extern "C"
 {
 
@@ -66,11 +55,10 @@ inline int optopt = '?';
 
 namespace detail
 {
-    // 参数重排状态（等价于 glibc 的 __first_nonopt / __last_nonopt / __ordering）
     struct PermuteState
     {
         int first_nonopt = 1;   // 已跳过的裸参数区起始
-        int last_nonopt = 1;    // 已跳过的裸参数区末尾（== 下一个选项位置）
+        int last_nonopt = 1;    // 已跳过的裸参数区末尾
         int ordering = 0;       // 0 = PERMUTE, 1 = REQUIRE_ORDER, 2 = RETURN_IN_ORDER
         const char *nextchar = nullptr; // 当前短选项簇内的解析位置
         bool initialized = false;
@@ -87,10 +75,8 @@ namespace detail
         return arg[0] != '-' || arg[1] == '\0';
     }
 
-    // 直接移植 glibc 的 exchange：交换 argv 中两个相邻块
-    //   [first_nonopt, last_nonopt)（已跳过的裸参数）与
-    //   [last_nonopt, optind)（期间处理过的选项），
-    // 保持每块内部顺序不变，并更新 first_nonopt / last_nonopt。
+    // 移植 glibc 的 exchange：交换相邻块 [first_nonopt, last_nonopt)（已跳过的裸参数）与
+    // [last_nonopt, optind)（期间的选项），保持块内顺序并更新记录
     inline void exchange(char **argv, int first_nonopt, int last_nonopt, int optind_now)
     {
         int bottom = first_nonopt;
@@ -118,14 +104,13 @@ namespace detail
         st.last_nonopt = optind_now;
     }
 
-    // 打印错误信息（等价于 glibc 的行为：opterr 非 0 且 optstring 不以 ':' 开头）
+    // 等价 glibc：opterr 非 0 且 optstring 不以 ':' 开头才打印错误
     inline bool should_print_errors(const char *optstring)
     {
         return opterr != 0 && optstring[0] != ':';
     }
 
-    // 处理长选项（移植 glibc process_long_option，long_only 恒为 false）。
-    // 返回 getopt_long 应返回的值。
+    // 长选项处理（移植 glibc process_long_option，long_only 恒为 false）
     inline int process_long_option(int argc, char *const argv[],
                                    const char *optstring,
                                    const struct option *longopts,
@@ -143,8 +128,7 @@ namespace detail
         const struct option *pfound = nullptr;
         int option_index = -1;
 
-        // 1. 先找精确匹配（GNU 语义：精确匹配优先于前缀缩写，
-        //    即使存在多个前缀匹配项）
+        // 1. 精确匹配优先于前缀缩写（即使存在多个前缀匹配项）
         for (int i = 0; longopts && longopts[i].name; ++i)
         {
             if (std::strlen(longopts[i].name) == name_len &&
@@ -156,7 +140,7 @@ namespace detail
             }
         }
 
-        // 2. 无精确匹配时找前缀缩写；多个候选且 (has_arg, flag, val) 不同则歧义
+        // 2. 无精确匹配时找前缀缩写；多个候选且 (has_arg, flag, val) 不同即歧义
         if (pfound == nullptr)
         {
             std::string ambig_list;
@@ -173,7 +157,6 @@ namespace detail
                          pfound->flag != longopts[i].flag ||
                          pfound->val != longopts[i].val)
                 {
-                    // 记录歧义候选：无论是否打印错误，歧义都成立
                     if (print_errors)
                     {
                         if (ambig_list.empty())
@@ -201,7 +184,6 @@ namespace detail
             }
         }
 
-        // 3. 未匹配到任何长选项
         if (pfound == nullptr)
         {
             if (print_errors)
@@ -213,10 +195,9 @@ namespace detail
             return '?';
         }
 
-        // 4. 已匹配：消费该 token
         ++optind;
         st.nextchar = nullptr;
-        if (name[name_len] == '=') // 带 "=value"
+        if (name[name_len] == '=')
         {
             if (pfound->has_arg)
             {
@@ -279,18 +260,17 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
             optind = 1;
         st.first_nonopt = st.last_nonopt = optind;
         if (optstring[0] == '-')
-            st.ordering = 2; // RETURN_IN_ORDER
+            st.ordering = 2;
         else if (optstring[0] == '+')
-            st.ordering = 1; // REQUIRE_ORDER
+            st.ordering = 1;
         else
-            st.ordering = 0; // PERMUTE
+            st.ordering = 0;
     }
     // 后续调用时 optstring 前缀符号已在初始化时消费，跳过
     if (optstring[0] == '-' || optstring[0] == '+')
         ++optstring;
     const bool colon_mode = (optstring[0] == ':');
 
-    // ---- 需要前进到下一个 token ----
     if (st.nextchar == nullptr || *st.nextchar == '\0')
     {
         // 用户可能手动回退过 optind：把记录区间收敛到有效范围
@@ -299,7 +279,7 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
         if (st.first_nonopt > optind)
             st.first_nonopt = optind;
 
-        if (st.ordering == 0) // PERMUTE
+        if (st.ordering == 0)
         {
             if (st.first_nonopt != st.last_nonopt && st.last_nonopt != optind)
                 exchange(av, st.first_nonopt, st.last_nonopt, optind);
@@ -311,8 +291,7 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
             st.last_nonopt = optind;
         }
 
-        // "--"：提前结束选项解析；与 glibc 相同，把它当作一个"选项"与
-        // 已跳过的裸参数交换，使其位于裸参数区之前，其后全部视为裸参数
+        // "--"：同 glibc，交换到裸参数区之前，其后全为裸参数
         if (optind != argc && std::strcmp(av[optind], "--") == 0)
         {
             ++optind;
@@ -342,7 +321,7 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
             return 1;
         }
 
-        // ---- 长选项 ----
+        // 长选项
         if (longopts && av[optind][1] == '-')
         {
             st.nextchar = av[optind] + 2;
@@ -350,11 +329,9 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
                                        longindex, st.nextchar);
         }
 
-        // ---- 短选项：跳过前导 '-' ----
         st.nextchar = av[optind] + 1;
     }
 
-    // ---- 处理当前短选项簇中的一个字符 ----
     {
         const char c = *st.nextchar;
         ++st.nextchar;
@@ -390,7 +367,6 @@ inline int getopt_long(int argc, char *const argv[], const char *optstring,
             }
             else
             {
-                // 必选参数
                 if (*st.nextchar != '\0')
                 {
                     optarg = const_cast<char *>(st.nextchar);
@@ -423,10 +399,8 @@ inline int getopt(int argc, char *const argv[], const char *optstring) noexcept
 
 } // extern "C"
 
-// 重新开始一次参数解析：同一进程内多次调用 getopt_long（每次传入不同的 argv）
-// 之前复位全局解析状态。glibc / musl 的做法是把 optind 置 0；本实现除 optind
-// 之外还保存了参数重排状态（first_nonopt / last_nonopt / nextchar），必须
-// 一并复位，否则第二次解析会把 argv[0] 当成裸参数。
+// 重新开始一次参数解析（同一进程内多次调用 getopt_long 前必须复位）。本实现除 optind 外还存有重排状态
+// （first_nonopt / last_nonopt / nextchar），不一并复位的话第二次解析会把 argv[0] 当成裸参数。
 inline void getopt_reset()
 {
     optind = 1;

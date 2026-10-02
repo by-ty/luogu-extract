@@ -27,8 +27,7 @@
 
 namespace image_util
 {
-    // 从 markdown / HTML 文本中提取图片链接（去重，保持出现顺序）。
-    // 支持 markdown 语法 ![alt](url) 以及 HTML 的 <img src="url">。
+    // 提取 markdown / HTML 中的图片链接（去重、保持出现顺序）：![alt](url) 与 <img src="url">
     std::vector<std::string> extract_urls(const std::string &markdown);
 }
 

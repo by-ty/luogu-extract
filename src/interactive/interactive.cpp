@@ -20,16 +20,10 @@
 
 // src/interactive/interactive.cpp
 // 简易命令行交互程序：不带任何参数运行可执行文件时进入（./luogu-extract）。
-//
-// 设计要点：
-// - 本文件只负责「问」与「把答案翻译成命令行参数」，真正的更新、清理、
-//   打印标签与导出全部交给 app::run 执行，因此下载过程中的提示、警告、
-//   风险确认与退出码与非交互模式完全一致，也不会出现两套逻辑不一致；
-// - 任何一步输入 q 并回车即结束程序；直接回车一律表示使用默认值
-//   （默认值与非交互模式下不传该参数时完全相同）；
-// - 输入不符合要求时给出中文提示并重新询问；
-// - 可配置的项目随前面的选择变化（导出 Markdown 时不出现仅 LaTeX 的排版
-//   选项，未启用题解/文章时也不出现对应的抓取选项）。
+// 本文件只负责「问」并把答案翻译成命令行参数，真正的更新、清理、打印标签与
+// 导出全部交给 app::run，因此提示、警告、风险确认与退出码与非交互模式一致。
+// 任何一步输入 q 或标准输入结束都立即结束程序；直接回车 = 使用默认值（与非
+// 交互模式下不传该参数时相同）；输入不符合要求时给出中文提示并重新询问。
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -50,28 +44,24 @@
 namespace
 {
 
-// ---- 输出 ----
-
 const char *kReset = "\033[0m";
 const char *kTitle = "\033[1;36m";
 const char *kGreen = "\033[1;32m";
 const char *kRed = "\033[1;31m";
 const char *kYellow = "\033[1;33m";
 
-// 选项状态的配色（便于一眼区分「已启用/已填值」与「未启用/使用默认值」）：
-// 已启用用绿色、已填写的值用黄色，未启用与「默认（…）/未设置」用灰色
+// 选项状态配色：已启用绿、已填值黄、未启用或「默认（…）/未设置」灰
 const char *kStateOn = "\033[1;32m";
 const char *kStateValue = "\033[1;33m";
 const char *kStateOff = "\033[90m";
 
-// 二元参数的当前状态
 std::string toggle_state_text(bool enabled)
 {
     return enabled ? std::string(kStateOn) + "已启用" + kReset
                    : std::string(kStateOff) + "未启用" + kReset;
 }
 
-// 值参数的当前状态：is_default 为 true 表示未设置 / 使用默认值
+// is_default 为 true 表示未设置 / 使用默认值
 std::string value_state_text(const std::string &text, bool is_default)
 {
     return (is_default ? std::string(kStateOff) : std::string(kStateValue)) +
@@ -106,8 +96,6 @@ void print_success(const std::string &text)
     std::printf("%s%s%s\n", kGreen, text.c_str(), kReset);
 }
 
-// ---- 输入 ----
-
 // 去掉首尾空白（含 Windows 换行残留的 '\r'）；路径、标题等值内部的空格保留
 std::string trim(const std::string &s)
 {
@@ -120,13 +108,12 @@ std::string trim(const std::string &s)
     return s.substr(begin, end - begin);
 }
 
-// 交互会话：把「读一行输入」与「用户要求结束程序」封装在一起。
-// 任何一步（含值输入）输入 q 并回车、或标准输入结束，都立即结束整个程序。
+// 交互会话：任何一步（含值输入）输入 q、或标准输入结束（Ctrl-D / 管道读完）都立即退出
 struct Session
 {
     bool ended = false;
 
-    // 读取一行（去掉首尾空白）；返回 false 表示会话已结束，调用方应立即返回
+    // 返回 false 表示会话已结束（用户要求退出或输入耗尽），调用方应立即返回
     bool ask(const std::string &prompt, std::string &out)
     {
         std::fputs(prompt.c_str(), stdout);
@@ -154,8 +141,6 @@ struct Session
     }
 };
 
-// ---- 设置的数据模型 ----
-
 // 第 3 步：要执行的操作
 enum class Action
 {
@@ -166,81 +151,73 @@ enum class Action
     Tags,         // --tags
 };
 
-// 值参数的取值方式（决定如何解析与校验用户输入）
+// 值参数的取值方式（决定 apply_value 如何解析与校验）：多数整行保存，
+// Tags / Difficulties / Types / Pids / PidRanges / ArticleIds 按空白拆成多项。
 enum class ValueKind
 {
-    Text,              // 整行文本
-    OutputFile,        // 输出文件路径（整行）
-    CoverTitle,        // 标题（整行）
-    Tags,              // 标签（一行可多个）
-    Difficulties,      // 难度（一行可多个）
-    Types,             // 题目类型（一行可多个）
-    Pids,              // 题号（一行可多个）
-    PidRanges,         // 题号范围（一行可多个）
-    Lang,              // 题面语言
-    Font,              // 字体名称或字体文件地址（整行）
-    LocalFile,         // 本地 Markdown 文件地址（整行）
-    ArticleIds,        // 文章编号（一行可多个）
-    CookieFile,        // cookies.txt 路径（整行）
-    CookieString,      // Cookie 串（整行）
-    ArticleSource,     // 文章正文来源
-    MaxSolutions,      // 每题抓取篇数
-    RequestDelay,      // 请求间隔
-    TtlDays,           // 缓存有效期天数
-    RateLimitWait,     // 限流等待秒数
-    SolutionPlacement, // 题解在文档中的位置
+    Text,
+    OutputFile,
+    CoverTitle,
+    Tags,
+    Difficulties,
+    Types,
+    Pids,
+    PidRanges,
+    Lang,
+    Font,
+    LocalFile,
+    ArticleIds,
+    CookieFile,
+    CookieString,
+    ArticleSource,
+    MaxSolutions,
+    RequestDelay,
+    TtlDays,
+    RateLimitWait,
+    SolutionPlacement,
 };
 
-// 一项可修改的设置：二元参数（flag）或值参数（value / values）。
-// 二元参数一律使用「积极称呼」显示（如 --no-show-source-tags 显示为
-// 「显示来源、时间、区域、特殊题目标签」，默认启用）。
+// 一项可修改的设置：flag 为二元参数，value / values 分别为单值 / 多值参数。
+// 二元参数一律用「积极称呼」显示（--no-show-source-tags → 「显示来源等标签」）。
 struct Setting
 {
     std::string label;
-    bool *flag = nullptr;                        // 二元参数
-    std::string *value = nullptr;                // 单值参数
-    std::vector<std::string> *values = nullptr;  // 多值参数
+    bool *flag = nullptr;
+    std::string *value = nullptr;
+    std::vector<std::string> *values = nullptr;
     ValueKind kind = ValueKind::Text;
-    std::string empty_text; // 留空（即不传该参数）时的显示文本
-    std::string hint;       // 值输入提示
+    std::string empty_text; // 未设置（即不传该参数）时显示的文本
+    std::string hint;
 };
 
-// 交互过程中收集到的全部设置
 struct State
 {
-    // ---- 第 2 步：是否先更新缓存 ----
     bool update_cache = true;
 
-    // ---- 第 3 步：操作类型 ----
     Action action = Action::Markdown;
 
-    // ---- 第 4 步：导出内容 ----
     bool c_problems = true;
     bool c_solutions = false;
     bool c_articles = false;
     bool c_local = false;
 
-    // ---- 题目筛选 ----
     std::vector<std::string> tags;
     std::vector<std::string> difficulties;
     std::vector<std::string> types;
     std::vector<std::string> pids;
     std::vector<std::string> pid_ranges;
     std::string lang;
-    // 「下载所有题目」：不传任何筛选参数（= 全部题目）。与筛选条件互斥，
-    // 只是为了让用户显式确认「确实要下载全部题目」。
+    // 「下载所有题目」= 不传任何筛选参数（即全部题目）；与筛选条件互斥，
+    // 仅用于让用户显式确认。
     bool all_problems = false;
 
-    // ---- 题目信息显示（-M / -L 均有效）----
     bool show_source_tags = true;
     bool show_algorithm_tags = false;
     bool show_difficulty_tags = false;
 
-    // ---- 输出 ----
     std::string output;
     std::string cover_title;
 
-    // ---- LaTeX 排版（仅 -L）----
     bool toc_links = true;
     bool toc_backlinks = false;
     bool toc_difficulty = false;
@@ -254,14 +231,11 @@ struct State
     std::string font_title_zh;
     std::string font_title_en;
 
-    // ---- 本地 Markdown 转写（仅 -L）----
     std::string local_file;
     bool doc_only = false;
 
-    // ---- 文章 ----
     std::vector<std::string> articles;
 
-    // ---- 题解 / 文章抓取与导出 ----
     std::string cookie_file;
     std::string cookie_string;
     std::string article_source;
@@ -280,7 +254,6 @@ struct State
     bool solution_toc = true;
     bool article_meta = true;
 
-    // ---- 第 6 步：LaTeX 导出后自动编译----
     bool compile_latex = false;
 
     bool exporting() const
@@ -294,8 +267,6 @@ struct State
     // 需要题目集合：导出题面，或按题目抓题解
     bool needs_problems() const { return c_problems || c_solutions; }
 };
-
-// ---- 设置的构造与显示 ----
 
 std::string join(const std::vector<std::string> &items, const std::string &sep)
 {
@@ -348,7 +319,6 @@ Setting multi_item(const std::string &label, std::vector<std::string> *values,
     return s;
 }
 
-// 一项设置当前取值的显示文本（带状态配色）
 std::string current_text(const Setting &s)
 {
     if (s.flag)
@@ -375,7 +345,7 @@ void print_settings(const std::vector<Setting> &settings, const std::string &hea
     }
 }
 
-// 默认输出文件：随模式变化（与非交互模式的默认值一致）
+// 默认输出文件随模式变化，与非交互模式的默认值一致
 std::string default_output_text(const State &st)
 {
     if (st.c_local)
@@ -394,12 +364,11 @@ std::string default_cover_text(const State &st)
     return "默认（洛谷题目导出）";
 }
 
-// 根据当前选择组装可修改的设置列表（第 5 步）：只列出与本次操作有关的项目
+// 第 5 步：只列出与本次操作有关的设置项
 std::vector<Setting> build_settings(State &st)
 {
     std::vector<Setting> list;
 
-    // ---- 题目筛选（导出题面或按题目抓题解时才有意义）----
     if (st.needs_problems())
     {
         list.push_back(multi_item("标签筛选", &st.tags, ValueKind::Tags, "未设置",
@@ -424,7 +393,6 @@ std::vector<Setting> build_settings(State &st)
                                    &st.all_problems));
     }
 
-    // ---- 导出设置 ----
     if (st.exporting())
     {
         list.push_back(value_item("输出文件", &st.output, ValueKind::OutputFile,
@@ -433,7 +401,6 @@ std::vector<Setting> build_settings(State &st)
         list.push_back(value_item("封面标题 / Markdown 一级标题",
                                   &st.cover_title, ValueKind::CoverTitle,
                                   default_cover_text(st), "整行都会作为标题文字（可以含空格）"));
-        // 本地 Markdown 转写不涉及题面显示设置
         if (!st.c_local)
         {
             list.push_back(toggle_item("显示来源、时间、区域、特殊题目标签",
@@ -443,7 +410,6 @@ std::vector<Setting> build_settings(State &st)
         }
     }
 
-    // ---- LaTeX 排版（仅 -L）----
     if (st.latex())
     {
         list.push_back(toggle_item("目录条目带跳转到对应题目页的超链接", &st.toc_links));
@@ -470,7 +436,6 @@ std::vector<Setting> build_settings(State &st)
                                   ValueKind::Font, font_empty, font_hint));
     }
 
-    // ---- 本地 Markdown 转写 ----
     if (st.c_local)
     {
         list.push_back(value_item("本地 Markdown 文件", &st.local_file,
@@ -479,7 +444,6 @@ std::vector<Setting> build_settings(State &st)
         list.push_back(toggle_item("不输出封面、目录与页眉标题", &st.doc_only));
     }
 
-    // ---- 文章编号 ----
     if (st.c_articles)
     {
         list.push_back(multi_item("文章编号", &st.articles, ValueKind::ArticleIds,
@@ -487,7 +451,6 @@ std::vector<Setting> build_settings(State &st)
                                   "6~32 位小写字母或数字（如 p7fsb45w），多个用空格分隔"));
     }
 
-    // ---- 题解 / 文章抓取设置 ----
     if (st.downloads_any())
     {
         list.push_back(value_item("Cookie 文件", &st.cookie_file,
@@ -527,7 +490,6 @@ std::vector<Setting> build_settings(State &st)
         }
     }
 
-    // ---- 题解 / 文章导出（文档内）的设置 ----
     if (st.exporting() && st.downloads_any())
     {
         if (st.downloads_solutions())
@@ -550,8 +512,6 @@ std::vector<Setting> build_settings(State &st)
     return list;
 }
 
-// ---- 取值（解析与校验）----
-
 // 标签是否能在标签缓存中找到（名称或数字 ID 均可）
 bool tag_known(const std::string &token, const tagcache::Cache &cache)
 {
@@ -573,9 +533,8 @@ bool tag_known(const std::string &token, const tagcache::Cache &cache)
     }
 }
 
-// 标签输入：先按「、」「；」「;」分组，每组若整体恰好是已知标签名（如
-// 「NOIP 普及组」）就按一个标签，否则按空白拆成多个——与 --tag 的处理一致，
-// 同时让「含空格的标签名 + 其它标签」也能在一行里写完。
+// 标签输入先按「、」「；」「;」分组：一组若整体恰是已知标签名（如「NOIP 普及组」）
+// 就算一个标签，否则按空白拆成多个，与 --tag 的处理一致。
 std::vector<std::string> split_tag_input(const std::string &line)
 {
     const bool has_map = tagcache::shared_cache_loaded();
@@ -591,7 +550,7 @@ std::vector<std::string> split_tag_input(const std::string &line)
         if (item.find_first_of(" \t") != std::string::npos && has_map &&
             cache.name_to_id.find(item) != cache.name_to_id.end())
         {
-            out.push_back(item); // 整体就是一个含空格的标签名
+            out.push_back(item);
             return;
         }
         for (const auto &tok : cliparse::split_whitespace(item))
@@ -601,7 +560,7 @@ std::vector<std::string> split_tag_input(const std::string &line)
     for (size_t i = 0; i < line.size(); ++i)
     {
         const char c = line[i];
-        // 分隔符：';'、「；」(EF BC 9B)、「、」(E3 80 81)
+        // 分隔符：';' 与 UTF-8 的「；」「、」（按字节匹配，注意边界判断）
         const bool cjk_semicolon = c == '\xEF' && i + 2 < line.size() &&
                                    line[i + 1] == '\xBC' && line[i + 2] == '\x9B';
         const bool cjk_comma = c == '\xE3' && i + 2 < line.size() &&
@@ -619,7 +578,7 @@ std::vector<std::string> split_tag_input(const std::string &line)
     return out;
 }
 
-// 把命令行报错文案里的「参数错误：」前缀去掉（交互式提示里已经有「错误：」）
+// 去掉命令行报错文案的「参数错误：」前缀（交互式提示里已经带了「错误：」）
 std::string strip_error_prefix(std::string text)
 {
     static const std::string prefix = "参数错误：";
@@ -628,19 +587,15 @@ std::string strip_error_prefix(std::string text)
     return text;
 }
 
-// 解析并写入一项设置的新值；返回空串表示成功。
-// 空输入一律表示「使用默认值」：即不传该参数，与命令行留空的默认值完全一致。
-// 所有校验都通过后才提交（先解析到临时变量，最后一次性赋值）：输错一个标签或
-// 路径时不会把之前设置好的内容清空（调用方会重新询问）。
+// 解析并写入一项设置的新值；返回空串表示成功，空输入 = 使用默认值（不传该参数）。
+// 校验全部通过后才提交（先解析到临时变量再一次性赋值），输错不会清掉已设置的内容。
 std::string apply_value(State &st, const Setting &s, const std::string &line)
 {
-    // 本次解析的结果；校验失败时直接返回错误，目标设置保持原值
     std::vector<std::string> new_values;
     std::string new_value;
 
     if (line.empty())
     {
-        // 空输入 = 使用默认值：清空该设置（与非交互模式下不传该参数一致）
         if (s.values)
             s.values->clear();
         if (s.value)
@@ -813,7 +768,7 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         if (std::filesystem::is_directory(path, ec) && !ec)
             return "'" + line + "' 是目录；请指定 cookies.txt 文件";
         new_value = line;
-        st.cookie_string.clear(); // 与 Cookie 串二选一
+        st.cookie_string.clear(); // Cookie 文件与 Cookie 串二选一：设置其一时清空另一个
         break;
     }
 
@@ -822,7 +777,7 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
         if (line.find('=') == std::string::npos)
             return "Cookie 串应形如 \"k=v; k2=v2\"；请检查是否漏掉了 '='";
         new_value = line;
-        st.cookie_file.clear(); // 与 Cookie 文件二选一
+        st.cookie_file.clear();
         break;
     }
 
@@ -892,7 +847,6 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
     }
     }
 
-    // 全部校验通过：一次性提交（与之前「先清空再写入」的成功路径等价）
     if (s.values)
         *s.values = new_values;
     if (s.value)
@@ -900,7 +854,7 @@ std::string apply_value(State &st, const Setting &s, const std::string &line)
     return "";
 }
 
-// 用户表示「本轮修改完毕」时检查设置是否齐全；返回空串表示可以继续
+// 检查设置是否齐全；返回空串表示可以继续
 std::string check_requirements(const State &st)
 {
     if (st.needs_problems())
@@ -927,8 +881,6 @@ std::string check_requirements(const State &st)
     }
     return "";
 }
-
-// ---- 询问序号 / 是否 ----
 
 // 解析用户输入的序号（多个用空格分隔，去重并保持输入顺序）
 bool parse_selection(const std::string &line, size_t count,
@@ -976,7 +928,6 @@ int ask_yes_no(Session &session, const std::string &question, bool default_value
     }
 }
 
-// 询问一项值参数的新值（校验不通过时重新询问；空输入 = 使用默认值）
 bool ask_value(Session &session, State &st, const Setting &setting)
 {
     print_line();
@@ -995,8 +946,6 @@ bool ask_value(Session &session, State &st, const Setting &setting)
         print_error(err);
     }
 }
-
-// ---- 各步骤 ----
 
 // 第 2 步：是否更新题目列表缓存与标签缓存（直接回车 = Y）
 bool ask_update(Session &session, State &st)
@@ -1017,7 +966,7 @@ bool ask_update(Session &session, State &st)
     return true;
 }
 
-// 第 3 步：选择导出类型（只能选一个）
+// 第 3 步：只能选一个
 bool ask_action(Session &session, State &st)
 {
     print_title("请选择要执行的操作（只可选一个）");
@@ -1055,7 +1004,7 @@ bool ask_action(Session &session, State &st)
     }
 }
 
-// 第 3 步之「清理缓存」：选择要清理的内容（可多选），清理完回到第 3 步
+// 清理缓存：可多选，清理完回到第 3 步
 bool ask_clean(Session &session)
 {
     static const char *kCleanArgs[] = {"-C",    "-CIMG", "-CP",
@@ -1097,10 +1046,10 @@ bool ask_clean(Session &session)
     }
 }
 
-// 第 4 步：选择导出内容（可多选；直接回车 = 只导出题目）
+// 第 4 步：可多选；直接回车 = 只导出题目
 bool ask_content(Session &session, State &st)
 {
-    // 本地 Markdown 只能转写为 LaTeX：导出 Markdown 时第 4 步不提供该选项
+    // 本地 Markdown 只能转写为 LaTeX：导出 Markdown 时不提供该选项
     const bool local_available = st.latex();
     const size_t option_count = local_available ? 4 : 3;
 
@@ -1187,7 +1136,6 @@ bool ask_cookie(Session &session, State &st)
     }
 }
 
-// 选择文章后立即询问文章编号
 bool ask_articles(Session &session, State &st)
 {
     print_title("请输入要下载的文章编号");
@@ -1213,7 +1161,6 @@ bool ask_articles(Session &session, State &st)
     }
 }
 
-// 选择本地转写后立即询问文件地址
 bool ask_local_file(Session &session, State &st)
 {
     print_title("请输入要转写的本地 Markdown 文件");
@@ -1237,7 +1184,7 @@ bool ask_local_file(Session &session, State &st)
     }
 }
 
-// 第 5 步：显示设置 → 按序号修改 → 再次显示……直到用户输入 n / 直接回车
+// 第 5 步：直接回车或 n 进入下一步，否则按序号修改
 bool settings_loop(Session &session, State &st)
 {
     for (;;)
@@ -1255,7 +1202,7 @@ bool settings_loop(Session &session, State &st)
             if (problem.empty())
                 return true;
             print_error(problem);
-            continue; // 设置不完整：重新显示设置让用户补齐
+            continue; // 设置不完整：重新显示，让用户补齐
         }
 
         std::vector<size_t> picks;
@@ -1303,13 +1250,8 @@ bool settings_loop(Session &session, State &st)
     }
 }
 
-// ---- 把设置翻译成命令行参数 ----
-
-// 「下载所有题目」默认用「不传任何筛选参数」表达；但 --article 单独使用
-// （没有任何题目筛选参数、也没有题解功能）时程序只导出文章、不导出题面，
-// 因此「题目 + 文章 + 下载所有题目」这一种组合需要给一个恒真的筛选条件，
-// 才能让题面与文章一起导出。洛谷题库的题目类型只有 B（基础题）与 P（普通题），
-// 传入 --type B --type P 即「全部类型」，与不筛选等价。
+// 「下载所有题目」靠不传筛选参数表达；但「题目 + 文章 + 下载所有题目」时
+// --article 单独使用只导出文章，故要补恒真筛选条件 --type B --type P（等价于不筛选）。
 bool needs_forced_all_filter(const State &st)
 {
     return st.all_problems && st.c_problems && st.c_articles && !st.c_solutions;
@@ -1319,7 +1261,6 @@ std::vector<std::string> build_args(const State &st)
 {
     std::vector<std::string> args{"luogu-extract"};
 
-    // ---- 导出类型 ----
     if (st.action == Action::Markdown)
         args.push_back("-M");
     else if (st.action == Action::Latex)
@@ -1327,7 +1268,6 @@ std::vector<std::string> build_args(const State &st)
     else if (st.action == Action::ArticlesOnly)
         args.push_back("--articles-only-download");
 
-    // ---- 导出内容 ----
     if (st.c_problems && st.c_solutions)
         args.push_back("--with-solutions");
     else if (st.c_solutions)
@@ -1336,7 +1276,6 @@ std::vector<std::string> build_args(const State &st)
         args.push_back("--solutions-only"); // 只导出题解，不导出题面
     }
 
-    // ---- 题目筛选 ----
     for (const auto &tag : st.tags)
         args.push_back("--tag=" + tag);
     for (const auto &difficulty : st.difficulties)
@@ -1355,7 +1294,6 @@ std::vector<std::string> build_args(const State &st)
     if (!st.lang.empty())
         args.push_back("--lang=" + st.lang);
 
-    // ---- 输出与显示 ----
     if (st.exporting())
     {
         if (!st.output.empty())
@@ -1373,7 +1311,6 @@ std::vector<std::string> build_args(const State &st)
         }
     }
 
-    // ---- LaTeX 排版 ----
     if (st.latex())
     {
         if (!st.toc_links)
@@ -1404,7 +1341,6 @@ std::vector<std::string> build_args(const State &st)
             args.push_back("--compile");
     }
 
-    // ---- 本地 Markdown 转写 ----
     if (st.c_local)
     {
         args.push_back("--local=" + st.local_file);
@@ -1412,11 +1348,9 @@ std::vector<std::string> build_args(const State &st)
             args.push_back("--doc-only");
     }
 
-    // ---- 文章 ----
     for (const auto &lid : st.articles)
         args.push_back("--article=" + lid);
 
-    // ---- 题解 / 文章抓取 ----
     if (st.downloads_any())
     {
         if (!st.cookie_file.empty())
@@ -1497,7 +1431,7 @@ std::string shell_preview(const std::vector<std::string> &args)
     return out;
 }
 
-// 第 7 步：输出完整的设置内容（含是否自动编译）并请求确认
+// 第 7 步：打印本次设置与等价命令行，供用户确认
 void print_summary(State &st)
 {
     const std::vector<Setting> settings = build_settings(st);
@@ -1520,7 +1454,7 @@ void print_summary(State &st)
     print_line();
 }
 
-// 第 7 步：是否开始（Y/n；n 返回第 5 步继续修改设置）
+// 第 7 步：n 表示返回上一步继续修改设置
 int ask_start(Session &session)
 {
     for (;;)
@@ -1551,11 +1485,10 @@ int interactive::run()
     print_line("带参数运行可跳过交互，直接按参数执行（-h 查看全部参数）。");
     print_line("提示：每一步都可以输入 q 并回车结束程序；直接回车表示使用默认值。");
 
-    // ---- 第 2 步：是否更新题目列表缓存与标签缓存 ----
     if (!ask_update(session, st))
         return 0;
 
-    // ---- 第 3 步起：选择操作；清理缓存与打印标签表完成后回到第 3 步 ----
+    // 清理缓存 / 打印标签表完成后回到这里重新选择操作
     for (;;)
     {
         if (!ask_action(session, st))
@@ -1573,7 +1506,6 @@ int interactive::run()
             continue;
         }
 
-        // ---- 第 4 步：导出内容 ----
         if (st.action == Action::ArticlesOnly)
         {
             st.c_problems = false;
@@ -1597,7 +1529,6 @@ int interactive::run()
                 return 0;
         }
 
-        // ---- 第 5~7 步：设置 → （LaTeX 时）自动编译 → 确认；n 回到第 5 步 ----
         bool start = false;
         while (!start)
         {
@@ -1627,7 +1558,6 @@ int interactive::run()
             }
         }
 
-        // ---- 第 8~9 步：按设置执行（与非交互模式完全一致），完成后退出程序 ----
         return app::run(build_args(st));
     }
 }

@@ -41,7 +41,6 @@ bool tagcache::Cache::load(const std::filesystem::path &path)
     std::string content;
     try
     {
-        // 一次性读入内存再解析：比逐字符流式解析更快
         char buffer[65536];
         size_t n = 0;
         while ((n = std::fread(buffer, 1, sizeof(buffer), in)) > 0)
@@ -103,8 +102,7 @@ bool tagcache::Cache::load(const std::filesystem::path &path)
     }
     catch (...)
     {
-        // 解析中途失败：清空三个容器，避免调用方拿到半份缓存
-        // （shared_cache_loaded() 为 false 时不应残留不一致数据）
+        // 解析中途失败：清空容器，避免调用方拿到半份缓存
         id_to_name.clear();
         name_to_id.clear();
         name_to_type.clear();
@@ -120,9 +118,8 @@ bool tagcache::Cache::load_from_cache_dir()
 
 namespace
 {
-// 持有共享缓存及加载状态；函数内 static 保证整个进程只构造（加载）一次，
-// 且 C++11 起的初始化是线程安全的。reset_shared_cache 走 reload()，
-// 在原对象上重新加载，因此 shared_cache() 先前返回的引用不会失效。
+// 函数内 static 保证只加载一次且线程安全；reset_shared_cache 走 reload() 在原对象上重载，
+// 因此 shared_cache() 先前返回的引用不会失效
 struct SharedCacheHolder
 {
     tagcache::Cache cache;

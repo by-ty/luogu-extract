@@ -66,9 +66,8 @@ std::vector<std::string> cliparse::split_whitespace(const std::string &s)
 bool cliparse::parse_positive_int(const std::string &value, long min_value,
                                   long max_value, long &out)
 {
-    // 允许首尾空白（与头文件里的说明一致）：strtol 只跳过前导空白，这里先
-    // 显式去掉两端的空白，保证 "5 "、" 5 " 与 "5" 等价；交互模式直接读入
-    // 用户输入的整行，尾随空格很常见
+    // 先显式去掉两端空白再交给 strtol：strtol 只跳前导空白，而交互模式直接读入
+    // 整行、尾随空格很常见，需保证 "5 "、" 5 " 与 "5" 等价
     size_t first = 0;
     size_t last = value.size();
     while (first < last && std::isspace(static_cast<unsigned char>(value[first])))
@@ -111,7 +110,7 @@ bool cliparse::parse_difficulty_spec(const std::string &spec,
         return true;
     }
 
-    // 区间 A-B（不允许再出现第二个 '-'，如 "1-2-3"）
+    // 区间 A-B；再出现 '-'（如 "1-2-3"）视为非法
     const std::string a = spec.substr(0, dash);
     const std::string b = spec.substr(dash + 1);
     if (b.find('-') != std::string::npos)
@@ -191,8 +190,7 @@ std::string cliparse::default_local_output(const std::string &input)
 
 namespace
 {
-// 识别字体文件的实际格式（按文件头魔数），返回应使用的扩展名（含点号）；
-// 无法识别时返回空串。用于给无扩展名的字体文件补全扩展名。
+// 按文件头魔数识别字体格式，返回应使用的扩展名（含点号），无法识别返回空串
 std::string detect_font_extension(const std::filesystem::path &path)
 {
     FILE *f = luogu::compat::fopen(path, "rb");
@@ -203,15 +201,13 @@ std::string detect_font_extension(const std::filesystem::path &path)
     std::fclose(f);
     if (n < 4)
         return "";
-    // TrueType：00 01 00 00 / 'true' / 'typ1'
+    // 魔数：TrueType 为 00 01 00 00 / 'true' / 'typ1'，OpenType(CFF) 为 'OTTO'，TTC 为 'ttcf'
     if ((head[0] == 0x00 && head[1] == 0x01 && head[2] == 0x00 && head[3] == 0x00) ||
         std::memcmp(head, "true", 4) == 0 ||
         std::memcmp(head, "typ1", 4) == 0)
         return ".ttf";
-    // OpenType（CFF）：'OTTO'
     if (std::memcmp(head, "OTTO", 4) == 0)
         return ".otf";
-    // TrueType Collection：'ttcf'
     if (std::memcmp(head, "ttcf", 4) == 0)
         return ".ttc";
     return "";
@@ -251,14 +247,12 @@ std::string cliparse::validate_font_option(const std::string &option_name,
         return "参数 '" + option_name + "' 后缺少字体名称或字体文件地址；正确用法：" +
                option_name + " <字体名称或字体文件地址>";
 
-    // 不含路径特征且不是现存文件 → 按系统已安装的字体名称处理
     if (!font_value_is_file_address(value))
     {
         font_out = value;
         return "";
     }
 
-    // 按字体文件地址处理：文件必须存在，否则拒绝执行
     std::error_code ec;
     std::filesystem::path p =
         std::filesystem::absolute(luogu::compat::path_from_utf8(value), ec);
@@ -266,8 +260,7 @@ std::string cliparse::validate_font_option(const std::string &option_name,
         return "参数 '" + option_name + "' 指定的字体文件 '" + value +
                "' 不存在；请检查文件路径，或改用系统已安装的字体名称";
 
-    // 无扩展名的字体文件：fontspec 无法加载，按文件头识别格式后复制到
-    // 缓存目录并补上扩展名，生成的 LaTeX 引用副本
+    // 无扩展名字体 fontspec 无法加载：按文件头识别格式，复制到缓存目录并补上扩展名
     if (!p.has_extension())
     {
         const std::string ext = detect_font_extension(p);
@@ -295,8 +288,8 @@ std::string cliparse::validate_font_option(const std::string &option_name,
         p = std::filesystem::absolute(target, ec2);
     }
 
-    // 输出 UTF-8 路径（Windows 下 string() 按 ANSI 代码页解释，会乱码），
-    // 并把 '\' 归一化为 '/'，便于写入 LaTeX 代码
+    // 输出 UTF-8 路径（Windows 下 string() 按 ANSI 解释会乱码），并把 '\' 换成 '/'
+    // 便于写入 LaTeX
     std::string spec = luogu::compat::path_to_utf8(p);
     std::replace(spec.begin(), spec.end(), '\\', '/');
     font_out = std::move(spec);

@@ -22,9 +22,7 @@
 #include <cstdio>
 #include <string>
 #include <limits>
-// FindLibXml2 / pkg-config 提供的 include 目录一般是 <prefix>/include/libxml2，
-// 因此直接写 <libxml/...>（写 <libxml2/libxml/...> 在 Homebrew/vcpkg 等
-// 只给出 libxml2 目录的环境会编译失败）
+// FindLibXml2 / pkg-config 给出的 include 目录一般是 <prefix>/include/libxml2，故直接写 <libxml/...>
 #include <libxml/parser.h>
 #include <libxml/HTMLparser.h>
 #include <libxml/xpath.h>
@@ -38,10 +36,8 @@ using article::Article;
 
 namespace
 {
-// 官方接口的字段类型并不稳定（例如 "content": null、"upvote": "5"、
-// "author": 3）：nlohmann 的 value()/get<>() 在「键存在但类型不符」时抛
-// type_error，而本文件的解析跑在抓取线程里，异常逃出线程函数即 terminate。
-// 因此统一走下面几个容错取值：键缺失或类型不符一律取默认值，绝不抛异常。
+// 官方接口字段类型不稳定（"content": null、"upvote": "5"、"author": 3），而 nlohmann 的
+// get<>() 遇类型不符会抛 type_error，异常逃出抓取线程即 terminate：以下取值一律容错、绝不抛异常。
 std::string str_value(const json &obj, const char *key, const std::string &fallback = "")
 {
     if (!obj.is_object() || !obj.contains(key))
@@ -104,11 +100,9 @@ article::Article::Article(std::string html)
         return;
     }
 
-    // 1. 解析 HTML
     htmlDocPtr doc = htmlReadMemory(html.c_str(), static_cast<int>(html.size()), nullptr, "UTF-8", HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING);
     if (!doc) return;
 
-    // 2. 使用 XPath 查找 id="lentille-context" 的 script 标签
     xmlXPathContextPtr xpathCtx = xmlXPathNewContext(doc);
     if (!xpathCtx)
     {
@@ -124,7 +118,6 @@ article::Article::Article(std::string html)
         return;
     }
 
-    // 3. 获取 script 标签内的文本内容
     xmlNodePtr node = xpathObj->nodesetval->nodeTab[0];
     if (!node)
     {
@@ -147,7 +140,6 @@ article::Article::Article(std::string html)
     xmlXPathFreeContext(xpathCtx);
     xmlFreeDoc(doc);
 
-    // 4. 解析 JSON
     try
     {
         json data = json::parse(jsonStr);
@@ -162,7 +154,6 @@ article::Article::Article(std::string html)
     }
     catch (const std::exception &e)
     {
-        // JSON 解析失败，保留默认值
         std::fprintf(stderr, "解析 JSON 失败：%s\n", e.what());
     }
 }
@@ -176,13 +167,13 @@ bool article::Article::from_json(const json &articleData, std::string &error)
         return false;
     }
 
-    // 基本字段（str_value 内部已过滤控制字符，避免 NUL 截断输出/破坏 LaTeX）
+    // str_value 已过滤控制字符（避免 NUL 截断输出 / 破坏 LaTeX）
     lid = str_value(articleData, "lid");
     title = str_value(articleData, "title");
     category = int_value(articleData, "category");
     time = ll_value(articleData, "time");
 
-    // 作者信息（author 可能是 null，也可能不是对象）
+    // author 可能为 null 或非对象
     if (articleData.contains("author") && articleData["author"].is_object())
     {
         author_uid = int_value(articleData["author"], "uid");
@@ -190,13 +181,11 @@ bool article::Article::from_json(const json &articleData, std::string &error)
         author_avatar = str_value(articleData["author"], "avatar");
     }
 
-    // 统计数据
     upvote = int_value(articleData, "upvote");
     reply_count = int_value(articleData, "replyCount");
     favor_count = int_value(articleData, "favorCount");
     status = int_value(articleData, "status");
 
-    // 对应的题解信息
     if (articleData.contains("solutionFor") && articleData["solutionFor"].is_object())
     {
         solution_pid = str_value(articleData["solutionFor"], "pid");
@@ -207,7 +196,6 @@ bool article::Article::from_json(const json &articleData, std::string &error)
 
     promote_status = int_value(articleData, "promoteStatus");
 
-    // 文章内容
     content = str_value(articleData, "content");
     content_full = bool_value(articleData, "contentFull");
 

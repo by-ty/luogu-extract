@@ -71,7 +71,6 @@ std::string join_strings(const std::vector<std::string> &v, const std::string &s
     return out;
 }
 
-// 按空白拆成多个 token（空 token 忽略）
 std::vector<std::string> split_whitespace(const std::string &s)
 {
     std::vector<std::string> out;
@@ -89,8 +88,7 @@ std::vector<std::string> split_whitespace(const std::string &s)
     return out;
 }
 
-// 把 --tag 参数规范成标签名：数字 ID 优先按 tags.json 翻译，其余按名称原样处理
-// 返回 false 仅当输入是数字 ID 但缺少 tags.json 无法翻译
+// 数字 ID 按 tags.json 翻译，其余按名称原样；输入是 ID 但缺少 tags.json 时返回 false
 bool resolve_tag(const std::string &raw, bool has_tag_map,
                  const tagcache::Cache &cache, std::string &out)
 {
@@ -104,7 +102,7 @@ bool resolve_tag(const std::string &raw, bool has_tag_map,
         return true;
     }
     if (!has_tag_map)
-        return false; // 数字 ID 需要 tags.json 才能翻译
+        return false;
 
     int id = 0;
     try
@@ -128,14 +126,8 @@ bool resolve_tag(const std::string &raw, bool has_tag_map,
     return true;
 }
 
-// 题号排序用的数字部分：取题号里「第一段连续数字」，口径与 parse_pid_parts
-// 的 num 字段一致（P1001 → 1001、CF1234A → 1234）。不能把所有数字段拼接：
-// 洛谷的 AtCoder 题号形如 AT_abc123_4，拼接会得到 1234，使它在
-// AT_abc124（124）之后；这里放宽 parse_pid_parts「字母前缀后必须紧接数字」
-// 的限制，前缀里允许下划线等字符，只取第一段数字。
-// 题号不含数字时返回 0（旧实现返回 -1，同样排在最前）。
-// 数字溢出时封顶到 ULLONG_MAX：畸形缓存里的超长数字不回绕，且所有溢出题号
-// 归到同一档，排序仍是全序。
+// 题号排序用的数字：只取第一段连续数字（P1001→1001、AT_abc123_4→123，不能拼接
+// 所有数字段），无数字返回 0；溢出封顶 ULLONG_MAX，畸形缓存下排序仍是全序。
 unsigned long long pid_number(const std::string &pid)
 {
     const unsigned long long kMax =
@@ -144,11 +136,11 @@ unsigned long long pid_number(const std::string &pid)
     bool overflow = false;
     size_t i = 0;
     while (i < pid.size() && !std::isdigit(static_cast<unsigned char>(pid[i])))
-        ++i; // 跳过前缀
+        ++i;
     for (; i < pid.size() && std::isdigit(static_cast<unsigned char>(pid[i])); ++i)
     {
         if (overflow)
-            continue; // 已封顶：其余数字只是后缀的一部分
+            continue;
         const unsigned long long d =
             static_cast<unsigned long long>(pid[i] - '0');
         if (n > (kMax - d) / 10)
@@ -161,19 +153,16 @@ unsigned long long pid_number(const std::string &pid)
     return overflow ? kMax : n;
 }
 
-// ---- 原始文本快速预筛 -------------------------------------------------
-// 目标：跳过“确定不可能命中筛选条件”的行，避免为它们构造完整 JSON DOM。
-// 原则：只有能严格证明不命中时才跳过；任何不确定情况一律返回“可能命中”，
-// 交给后面的完整 JSON 解析与精确筛选，保证筛选结果与原来完全一致。
+// 原始文本快速预筛：只有能严格证明不命中时才跳过（省去构造完整 JSON DOM），
+// 任何不确定情况一律放行，交给后续精确筛选，保证筛选结果与原来完全一致。
 
 inline bool is_json_ws(char c)
 {
     return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-// 扫描整行的 "key" 键值对：只要任一出现处的整数值命中 allowed[0..allowed_max]
-// 就返回 true；键未出现或所有值都不命中返回 false。
-// 值带小数点/指数（如 1.0、1e0，nlohmann 不会当作整数）或无法解析时保守返回 true。
+// 行内任一 "key" 的整数值命中 allowed 即返回 true，确定不命中才返回 false；
+// 值带小数点/指数（如 1.0、1e0，nlohmann 不当作整数）或无法解析时保守放行。
 bool raw_int_value_match(std::string_view line, const char *key,
                          const bool *allowed, int allowed_max)
 {
@@ -205,24 +194,22 @@ bool raw_int_value_match(std::string_view line, const char *key,
             {
                 v = v * 10 + (line[q] - '0');
                 if (v > allowed_max)
-                    v = static_cast<long>(allowed_max) + 1; // 超出范围即无需精确值
+                    v = static_cast<long>(allowed_max) + 1;
                 ++q;
             }
-            // 浮点形式不会被当作整数，但无法可靠判断，保守交给完整解析
+            // 浮点形式不会命中整数比较，但无法可靠判断，保守放行
             if (q < line.size() && (line[q] == '.' || line[q] == 'e' || line[q] == 'E'))
                 return true;
             const long value = neg ? -v : v;
             if (value >= 0 && value <= allowed_max && allowed[static_cast<size_t>(value)])
                 return true;
         }
-        // null / 字符串等类型或值不在允许集合内：继续找下一个同名字段
         pos = q;
     }
     return false;
 }
 
-// 扫描整行的 "key" 键值对：只要任一出现处的字符串值（不区分大小写）命中
-// allowed 之一就返回 true；键未出现或所有值都不命中返回 false。
+// 行内任一 "key" 的字符串值（不区分大小写）命中 allowed 之一即返回 true；
 // 值含转义或无法解析时保守返回 true。
 bool raw_string_value_match(std::string_view line, const char *key,
                             const char *const *allowed, size_t allowed_count)
@@ -244,7 +231,7 @@ bool raw_string_value_match(std::string_view line, const char *key,
             ++q;
         if (q >= line.size() || line[q] != '"')
         {
-            pos = q; // null / 数字等非字符串值：不命中
+            pos = q;
             continue;
         }
         ++q;
@@ -265,11 +252,11 @@ bool raw_string_value_match(std::string_view line, const char *key,
             }
         }
         if (q >= line.size())
-            return true; // 字符串未闭合，保守
+            return true;
         const std::string_view value = line.substr(value_start, q - value_start);
         ++q;
         if (has_escape)
-            return true; // 含转义无法可靠比较，保守
+            return true;
 
         for (size_t i = 0; i < allowed_count; ++i)
         {
@@ -294,15 +281,14 @@ bool raw_string_value_match(std::string_view line, const char *key,
     return false;
 }
 
-// 跳过从 q 开始的 JSON token（对象/数组/普通值），返回其后的位置。
-// 用于在 tags 数组里跳过对象元素，避免误把对象字符串里的 ']' 当成数组结束。
+// 跳过从 q 开始的整个 JSON token：避免把对象/数组内部字符串里的 ']' 当成数组结束。
 size_t skip_json_token(std::string_view line, size_t q)
 {
     if (q >= line.size())
         return q;
     const char open_c = line[q];
     if (open_c == '"')
-        return q; // 字符串由调用方处理
+        return q;
     const char close_c = (open_c == '{') ? '}' : ((open_c == '[') ? ']' : '\0');
     if (!close_c)
     {
@@ -311,7 +297,7 @@ size_t skip_json_token(std::string_view line, size_t q)
         return q;
     }
 
-    ++q; // 跳过开括号
+    ++q;
     int depth = 1;
     while (q < line.size() && depth > 0)
     {
@@ -348,8 +334,7 @@ size_t skip_json_token(std::string_view line, size_t q)
     return q;
 }
 
-// 把 JSON 字符串 token（引号内的原始字节）解码成 UTF-8 后与 name 比较。
-// 返回 1=匹配，0=确定不匹配，-1=含无法可靠解码的内容（调用方应保守放行）。
+// JSON 字符串 token 解码后与 name 比较：1=匹配、0=不匹配、-1=无法可靠解码（保守放行）。
 int json_string_token_match(std::string_view raw, const std::string &name)
 {
     static const char kBom[] = "\xEF\xBB\xBF";
@@ -372,7 +357,7 @@ int json_string_token_match(std::string_view raw, const std::string &name)
             ++i;
             continue;
         }
-        ++i; // 跳过反斜杠
+        ++i;
         if (i >= raw.size())
             return -1;
         const char e = raw[i];
@@ -442,7 +427,7 @@ int json_string_token_match(std::string_view raw, const std::string &name)
             }
             else if (cp >= 0xDC00 && cp <= 0xDFFF)
             {
-                return -1; // 孤立的低代理
+                return -1;
             }
 
             if (cp < 0x80)
@@ -468,7 +453,7 @@ int json_string_token_match(std::string_view raw, const std::string &name)
             break;
         }
         default:
-            return -1; // 未知转义：不确定
+            return -1;
         }
     }
 
@@ -477,9 +462,8 @@ int json_string_token_match(std::string_view raw, const std::string &name)
     return decoded == name ? 1 : 0;
 }
 
-// 检查整行里是否存在包含全部 filter_tags 的 "tags" 数组。
-// 每个标签在数组里以“名字字符串”（去 BOM 后比较）或“数字 ID”任一种形式
-// 出现都算命中；返回 false 表示确定不命中，true 表示可能命中或无法可靠判断。
+// 整行的 "tags" 数组里，每个待筛标签以“名字字符串”（去 BOM 比较）或“数字 ID”
+// 任一种形式出现都算命中；false 只在确定不命中时返回，标签数 >64 时也一律放行。
 bool raw_tags_match(std::string_view line,
                     const std::vector<std::string> &names,
                     const std::vector<long> &ids)
@@ -487,7 +471,7 @@ bool raw_tags_match(std::string_view line,
     if (names.empty())
         return true;
     if (names.size() > 64)
-        return true; // 数量过多时保守处理，直接完整解析
+        return true;
     const uint64_t need = (names.size() == 64)
                               ? ~uint64_t{0}
                               : ((uint64_t{1} << names.size()) - 1);
@@ -509,11 +493,10 @@ bool raw_tags_match(std::string_view line,
             ++q;
         if (q >= line.size() || line[q] != '[')
         {
-            // tags 不是数组（如 null）：这一处不命中，继续找其它同名键
             pos = q;
             continue;
         }
-        ++q; // 进入数组
+        ++q;
 
         uint64_t found = 0;
         while (q < line.size())
@@ -521,7 +504,7 @@ bool raw_tags_match(std::string_view line,
             while (q < line.size() && is_json_ws(line[q]))
                 ++q;
             if (q >= line.size())
-                return true; // 数组未闭合，保守
+                return true;
             if (line[q] == ']')
                 break;
 
@@ -543,7 +526,7 @@ bool raw_tags_match(std::string_view line,
                     }
                 }
                 if (q >= line.size())
-                    return true; // 字符串未闭合，保守
+                    return true;
                 std::string_view tok = line.substr(tok_start, q - tok_start);
                 ++q;
                 for (size_t i = 0; i < names.size(); ++i)
@@ -552,7 +535,7 @@ bool raw_tags_match(std::string_view line,
                     if (m == 1)
                         found |= (uint64_t{1} << i);
                     else if (m == -1)
-                        return true; // 无法可靠解码：保守交给完整解析
+                        return true;
                 }
             }
             else if (line[q] >= '0' && line[q] <= '9')
@@ -571,7 +554,7 @@ bool raw_tags_match(std::string_view line,
             }
             else
             {
-                q = skip_json_token(line, q); // 对象等其它元素
+                q = skip_json_token(line, q);
             }
 
             if (q < line.size() && line[q] == ',')
@@ -581,26 +564,23 @@ bool raw_tags_match(std::string_view line,
             return true;
         if (q < line.size() && line[q] == ']')
             ++q;
-        pos = q; // 继续找其它 "tags" 键
+        pos = q;
     }
     return false;
 }
 
-// ---- --pid / --pid-range 相关辅助 -------------------------------------
-
-// 已解析的 --pid-range 区间（端点已规范化为大写，且两端属于同一题库）
+// 已解析的 --pid-range 区间：端点已大写，两端同题库（校验后 hi_prefix == lo_prefix）。
 struct PidRange
 {
-    std::string lo_prefix;  // 题库前缀（如 "P" / "B"），两端相同
+    std::string lo_prefix;
     unsigned long long lo_num = 0;
     std::string lo_suffix;
-    std::string hi_prefix;  // 恒等于 lo_prefix（仅用于校验时暂存）
+    std::string hi_prefix;
     unsigned long long hi_num = 0;
     std::string hi_suffix;
 };
 
-// 从一行原始 JSON 文本中提取第一个 "pid" 字符串值（不解码转义；
-// 值含反斜杠或格式异常时保守返回 false，交由完整 JSON 解析处理）。
+// 取一行原始 JSON 里第一个 "pid" 字符串值（不解码转义）；含转义或格式异常返回 false。
 bool raw_pid_value(std::string_view line, std::string &out)
 {
     static constexpr std::string_view kKey = "\"pid\"";
@@ -628,11 +608,11 @@ bool raw_pid_value(std::string_view line, std::string &out)
         while (q < line.size() && line[q] != '"')
         {
             if (line[q] == '\\')
-                return false; // 含转义：无法可靠比较
+                return false;
             ++q;
         }
         if (q >= line.size())
-            return false; // 字符串未闭合
+            return false;
         out.assign(line.substr(value_start, q - value_start));
         return true;
     }
@@ -657,13 +637,9 @@ bool pid_in_ranges(const std::string &pid, const std::vector<PidRange> &ranges)
     return false;
 }
 
-// 综合预筛：确定不可能被导出的行返回 false。
-// 筛选语义（与 select_problems 一致）：
-// - --pid 是「额外追加」：命中的题目无条件保留，不要求满足其它筛选条件；
-// - 其余条件（难度/类型/标签/题号范围）之间取「且」，任一在原始文本上确定
-//   不满足即排除；
-// - 只给出 --pid 时，未命中的行排除；没有 --pid 也没有其它条件时全部保留。
-// 题号在原始文本上无法可靠提取时一律保守放行（可能命中 --pid，交给完整解析）。
+// 综合预筛：确定不可能被导出的行返回 false，语义与 select_problems 一致。
+// --pid 是「额外追加」，命中的题目无条件保留；其余条件（难度/类型/标签/题号范围）
+// 取「且」，任一确定不满足即排除；无条件时全部保留，不确定的一律放行。
 bool raw_may_match(std::string_view line,
                    const std::vector<int> &difficulties,
                    const std::vector<std::string> &filter_tags,
@@ -676,7 +652,6 @@ bool raw_may_match(std::string_view line,
     const bool have_pid = raw_pid_value(line, raw_pid);
     const std::string pid_upper = have_pid ? to_upper_ascii(raw_pid) : std::string();
 
-    // --pid 命中：无论其它条件是否满足都保留
     if (have_pid && pids.count(pid_upper) != 0)
         return true;
 
@@ -684,7 +659,6 @@ bool raw_may_match(std::string_view line,
                                    !filter_tags.empty() || !pid_ranges.empty();
     if (has_other_filters)
     {
-        // 其它条件是否可能命中（任一步确定不满足即不可能）
         bool other_possible = true;
         if (!difficulties.empty())
         {
@@ -720,11 +694,10 @@ bool raw_may_match(std::string_view line,
     }
     else if (pids.empty())
     {
-        return true; // 没有任何筛选条件：全部保留
+        return true;
     }
 
-    // 到这里：其它条件确定不满足，或只给出了 --pid。题号无法可靠提取时保守
-    // 放行（这一行可能是 --pid 的命中项）；能确定题号时说明它不在 --pid 中。
+    // 到这里：其它条件确定不满足，或只给出了 --pid。题号提取不到时保守放行
     return !have_pid;
 }
 
@@ -737,8 +710,7 @@ std::string luogu::bilibili_video_url(const std::string &url)
     if (url.compare(0, kScheme.size(), kScheme) != 0)
         return "";
 
-    // 拆出 id 与查询串（?page=4&t=82）：分 P 与起始播放位置由查询串表达，
-    // 补全后的网页 URL 原样保留，不做数值换算
+    // 拆出 id 与查询串（?page=4&t=82）：分 P 与起始位置由查询串表达，原样保留
     std::string id = url.substr(kScheme.size());
     std::string query;
     const size_t q = id.find_first_of("?#");
@@ -759,28 +731,25 @@ std::string luogu::bilibili_video_url(const std::string &url)
     const std::string low = to_lower_ascii(id);
     if (low.rfind("bv", 0) == 0)
     {
-        // BV 号：BV + 字母数字串
         if (!is_all(id, 2, std::isalnum))
             return "";
     }
     else if (low.rfind("av", 0) == 0)
     {
-        // av 号：av + 数字
         if (!is_all(id, 2, std::isdigit))
             return "";
     }
     else if (is_all(id, 0, std::isdigit))
     {
-        // 省略了 av 前缀的 av 号
         id = "av" + id;
     }
     else
     {
-        return ""; // 既不是 BV 号也不是 av 号
+        return "";
     }
 
-    // 查询串只允许 URL 中常见且不会破坏 LaTeX/Markdown 输出的字符，
-    // 避免把 } { \ " 等注入到 \url{} / \href{}（Markdown 的 ]( ) 同理）
+    // 查询串只允许 URL 常见字符，避免把 } { \ " 等注入到 \url{} / \href{}
+    // （Markdown 的 ]( ) 同理）
     static const std::string kQueryExtra = "-._~=&%?#+/:";
     for (char c : query)
     {
@@ -793,12 +762,9 @@ std::string luogu::bilibili_video_url(const std::string &url)
 
 std::string luogu::markdown_bilibili_links(const std::string &markdown)
 {
-    // 洛谷的视频写法在 Markdown 里是指向 bilibili: 伪协议的坏图，
-    // 改写为 [文字](https://www.bilibili.com/video/...)：
-    // - 图片语法 ![文字](bilibili:...)：文字非空时作为链接文字，为空时用完整 URL；
-    // - 普通链接语法 [文字](bilibili:...)：保留原有链接文字；
-    // - 自动链接 <bilibili:...>：用完整 URL 作为链接文字。
-    // 围栏代码块与行内代码里的内容原样保留（见函数末尾的逐行处理）。
+    // 洛谷的视频写法是指向 bilibili: 伪协议的坏图，改写为
+    // [文字](https://www.bilibili.com/video/...)：图片/链接语法取原文字（为空或用
+    // 完整 URL），自动链接用完整 URL；围栏代码块与行内代码原样保留。
     static const std::regex kImage(R"(!\[([^\]]*)\]\(\s*(bilibili:[^\s)]+)\s*\))");
     static const std::regex kLink(R"(\[([^\]]*)\]\(\s*(bilibili:[^\s)]+)\s*\))");
     static const std::regex kAutolink(R"(<(bilibili:[^>\s]+)>)");
@@ -806,7 +772,7 @@ std::string luogu::markdown_bilibili_links(const std::string &markdown)
     auto expand = [](const std::string &label, const std::string &raw) -> std::string {
         const std::string full = luogu::bilibili_video_url(raw);
         if (full.empty())
-            return ""; // 不是可识别的视频伪链接：保留原文
+            return ""; // 非可识别视频链接：保留原文
         // 文字含会破坏 Markdown 链接语法的字符时，改用完整 URL 作链接文字
         const bool label_ok =
             !label.empty() && label.find_first_of("[]()\\") == std::string::npos;
@@ -828,8 +794,7 @@ std::string luogu::markdown_bilibili_links(const std::string &markdown)
         return out;
     };
 
-    // 三种语法按顺序改写：图片语法必须最先处理，否则内层 [..](..) 会被
-    // 链接规则先匹配到
+    // 图片语法必须最先改写，否则内层 [..](..) 会被链接规则先匹配到
     auto rewrite_plain = [&](const std::string &s) {
         std::string r = rewrite(s, kImage, [&expand](const std::smatch &m) {
             return expand(m[1].str(), m[2].str());
@@ -842,7 +807,7 @@ std::string luogu::markdown_bilibili_links(const std::string &markdown)
         });
     };
 
-    // 行内代码（`...`）是题面里的示例内容，原样保留
+    // 行内代码（`...`）是示例内容，原样保留
     auto rewrite_line = [&rewrite_plain](const std::string &line) {
         std::string out;
         size_t i = 0;
@@ -861,7 +826,6 @@ std::string luogu::markdown_bilibili_links(const std::string &markdown)
             const size_t close = line.find(ticks, open + run);
             if (close == std::string::npos)
             {
-                // 没有配对的结束反引号：按普通内容处理
                 out += rewrite_plain(line.substr(i));
                 break;
             }
@@ -872,8 +836,7 @@ std::string luogu::markdown_bilibili_links(const std::string &markdown)
         return out;
     };
 
-    // 逐行改写，跳过围栏代码块（``` / ~~~）：代码块是题面里的示例内容，
-    // 里面的文本应原样保留
+    // 逐行改写，围栏代码块（``` / ~~~）里的示例内容原样保留
     std::string out;
     bool in_fence = false;
     size_t pos = 0;
@@ -907,17 +870,14 @@ bool luogu::select_problems(const ExportFilter &filter,
     if (resolved_tags)
         resolved_tags->clear();
 
-    // 1. 标签缓存（-U 生成：ID <-> 名称，以及标签分类 type）
-    //    复用进程内共享缓存，tags.json 只读取一次
+    // 标签缓存（-U 生成的 ID <-> 名称与分类）复用进程内共享缓存，只读取一次
     const tagcache::Cache &tag_cache = tagcache::shared_cache();
     const bool has_tag_map = tagcache::shared_cache_loaded();
 
-    // 2. 解析 --tag 参数
     std::vector<std::string> filter_tags;
     for (const auto &raw : filter.tags)
     {
-        // 含空格的参数先整体匹配已知标签名（如 "NOIP 普及组"）：命中就按一个标签，
-        // 否则按空格拆成多个标签（如 --tag "模拟 贪心"），保持原有写法。
+        // 参数先整体匹配已知标签名（如 "NOIP 普及组"），未命中再按空格拆成多个标签
         const std::string raw_stripped = tagcache::strip_bom(raw);
         if (raw_stripped.find_first_of(" \t") != std::string::npos &&
             has_tag_map &&
@@ -941,10 +901,8 @@ bool luogu::select_problems(const ExportFilter &filter,
     if (resolved_tags)
         *resolved_tags = filter_tags;
 
-    // 2.5 --pid / --pid-range 的题号规范化与区间解析
-    // pids_set：大写题号集合（--pid，精确匹配）；
-    // wanted_pids：需要存在性检查的题号（--pid 值与 --pid-range 两端点）；
-    // pid_ranges：已解析的闭区间（多组取“或”）
+    // 题号统一转大写：pids_set 为 --pid 精确匹配集合，wanted_pids 为需做存在性
+    // 检查的题号（含 --pid-range 两端点），pid_ranges 为已解析闭区间（多组取或）
     std::set<std::string> pids_set;
     std::set<std::string> wanted_pids;
     std::vector<PidRange> pid_ranges;
@@ -974,7 +932,6 @@ bool luogu::select_problems(const ExportFilter &filter,
         wanted_pids.insert(hi);
     }
 
-    // 3. 打开题目缓存
     std::filesystem::path ndjson_path = crawler::get_cache_dir() / "latest.ndjson";
     FILE *in = luogu::compat::fopen(ndjson_path, "rb");
     if (!in)
@@ -983,8 +940,8 @@ bool luogu::select_problems(const ExportFilter &filter,
         return false;
     }
 
-    // 3.5 --pid / --pid-range：先在题目列表缓存中查找题号是否存在，
-    //     不存在时指出具体题号并停止执行（原始文本扫描，避免整份缓存做 JSON 解析）
+    // --pid / --pid-range：先在缓存中确认题号存在（原始文本扫描，不做 JSON 解析），
+    // 不存在时列出具体题号并停止
     if (!wanted_pids.empty())
     {
         std::set<std::string> found;
@@ -1024,8 +981,7 @@ bool luogu::select_problems(const ExportFilter &filter,
         }
     }
 
-    // 4. 逐行扫描并筛选（统一用 Problem 结构承载题目）
-    // 预计算每个 --tag 名字对应的数字 ID，供原始文本快速预筛使用（-1 表示查不到）
+    // 预计算 --tag 名字对应的数字 ID，供原始文本快速预筛使用（-1 表示查不到）
     std::vector<long> filter_tag_ids;
     filter_tag_ids.reserve(filter_tags.size());
     for (const auto &name : filter_tags)
@@ -1036,15 +992,13 @@ bool luogu::select_problems(const ExportFilter &filter,
                                      : -1L);
     }
 
-    // 用跨平台 read_line 替代 POSIX getline（MSVC 没有 getline），
-    // 语义一致：读入一行（不含末尾换行），EOF 且无内容时返回 -1
+    // compat::read_line：读入一行（不含末尾换行），EOF 且无内容时返回 -1；MSVC 无 getline
     std::string line;
     while (luogu::compat::read_line(in, line) >= 0)
     {
         if (line.empty())
             continue;
 
-        // 快速预筛：原始文本上就确定不可能命中的行，跳过 JSON 解析
         if (!raw_may_match(std::string_view(line),
                            filter.difficulties, filter_tags, filter_tag_ids,
                            filter.types, pids_set, pid_ranges))
@@ -1057,14 +1011,13 @@ bool luogu::select_problems(const ExportFilter &filter,
         }
         catch (...)
         {
-            continue; // 跳过损坏行
+            continue;
         }
 
         try
         {
-            // 其它筛选条件（--pid 以外）是否命中：
-            // 难度（多个取“或”）、类型（多个取“或”，B / P 不区分大小写）、
-            // 题号范围（落在任一闭区间）、标签（多个取“且”）
+            // 其它条件是否命中：难度/类型（多个取或，类型不区分大小写）、
+            // 题号范围（落在任一闭区间）、标签（多个取且）
             auto matches_other_filters = [&](const json &item,
                                              const problem::Problem &p) -> bool {
                 if (!filter.difficulties.empty())
@@ -1107,11 +1060,10 @@ bool luogu::select_problems(const ExportFilter &filter,
                 return true;
             };
 
-            // 构造 Problem（标签名称、题面、样例、时空限制、多语言都在这里解析）
+            // Problem 构造负责解析标签名称、题面、样例、时空限制与多语言
             problem::Problem p(data, &tag_cache.id_to_name);
             const std::string pid_upper = to_upper_ascii(p.pid);
 
-            // --pid 是「额外追加」：命中的题目无论是否满足其它条件都要导出
             const bool pid_hit = !pids_set.empty() && pids_set.count(pid_upper) != 0;
             const bool has_pid_filter = !pids_set.empty();
             const bool has_other_filter = !filter.difficulties.empty() ||
@@ -1123,7 +1075,7 @@ bool luogu::select_problems(const ExportFilter &filter,
             if (!selected && has_other_filter)
                 selected = matches_other_filters(data, p);
             if (!selected && !has_pid_filter && !has_other_filter)
-                selected = true; // 没有任何筛选条件：导出全部题目
+                selected = true;
             if (!selected)
                 continue;
 
@@ -1131,14 +1083,11 @@ bool luogu::select_problems(const ExportFilter &filter,
         }
         catch (...)
         {
-            continue; // 字段类型异常时跳过该题
+            continue;
         }
     }
-    // 5. 校验 --tag 名称确实存在。与难度/类型筛选解耦：
-    //    - 首选官方标签表 tags.json（O(1) 查找）；
-    //    - 标签不在表中（tags.json 缺失，或名称只出现在题目缓存，如个别
-    //      年份/旧版标签）时，独立全量扫描题目缓存收集全部标签再比对，
-    //      避免“标签存在于缓存、只是不满足难度/类型条件”时被误报不存在
+    // 校验 --tag 名称确实存在：先查 tags.json；不在表中（缺失或只出现在题目缓存，
+    // 如个别年份/旧版标签）时独立全量扫描题目缓存收集全部标签再比对，避免误报
     std::vector<std::string> not_found;
     {
         std::set<std::string> not_found_lower;
@@ -1211,12 +1160,8 @@ bool luogu::select_problems(const ExportFilter &filter,
         return false;
     }
 
-    // 6. 排序：按题号从小到大（数字部分升序，前缀字母与后缀作为次级排序）。
-    // 数字部分取题号的第一段连续数字（与 parse_pid_parts 的 num 一致，
-    // AT_abc123_4 → 123 而不是 1234），数字相同时比较题号原文。
-    // 严格弱序：数字是题号的纯函数，比较等价于按 (数字, 题号原文) 做字典序
-    // 比较（题号原文本身就是全序），因此任意两个题号都有确定次序，
-    // std::sort 不会因比较不满足严格弱序而 UB。
+    // 排序：题号数字部分升序（取法见 pid_number），相同则比较题号原文；
+    // (数字, 原文) 构成全序，满足严格弱序，std::sort 不会因比较不合法而 UB
     std::sort(problems.begin(), problems.end(), [](const problem::Problem &a, const problem::Problem &b) {
         const unsigned long long na = pid_number(a.pid);
         const unsigned long long nb = pid_number(b.pid);
@@ -1234,8 +1179,7 @@ std::string luogu::describe_filter(const ExportFilter &filter,
     const bool use_en = (filter.lang == "en");
 
     std::vector<std::string> conds;
-    // --pid 是「额外追加」：与其它筛选条件同时给出时，命中的题目会追加到
-    // 其它条件筛选出的题目之外；只有一个条件时按普通筛选描述
+    // --pid 是「额外追加」：与其它条件同时给出时描述为追加，单独给出时按普通筛选
     const bool pid_appends = !filter.pids.empty() &&
                              (!filter.pid_ranges.empty() ||
                               !resolved_tags.empty() ||
@@ -1264,8 +1208,7 @@ std::string luogu::describe_filter(const ExportFilter &filter,
         conds.push_back("类型为 " + join_strings(filter.types, "、"));
     if (use_en)
         conds.push_back("题面语言为英文（缺失时回退中文）");
-    // 显示设置（--show-difficulty-tags / --show-algorithm-tags /
-    // --no-show-source-tags）：只记录「不显示」的项，默认设置下说明更简洁
+    // 显示设置只记录「不显示」的项，默认设置下说明更简洁
     if (!display.difficulty)
         conds.push_back("不显示难度");
     if (!display.algorithm_tags)
@@ -1274,8 +1217,6 @@ std::string luogu::describe_filter(const ExportFilter &filter,
         conds.push_back("不显示来源类标签");
     return join_strings(conds, "；");
 }
-
-// ---- 题解导出：标题、锚点（设计 §十）----
 
 std::string luogu::truncate_utf8(const std::string &text, size_t max_chars)
 {
@@ -1294,7 +1235,7 @@ std::string luogu::truncate_utf8(const std::string &text, size_t max_chars)
         else if ((c & 0xF8) == 0xF0)
             len = 4;
         if (i + len > text.size())
-            break; // 截断在多字节序列中间：直接丢弃该残片
+            break; // 末尾残片不完整：丢弃，避免输出非法 UTF-8
         ++chars;
         if (chars > max_chars)
             return text.substr(0, i) + "…";
@@ -1350,7 +1291,7 @@ std::string luogu::strip_article_title_prefix(const std::string &title)
         while (j < title.size() && (title[j] == ' ' || title[j] == '\t'))
             ++j;
         if (j >= title.size())
-            return title; // 只有前缀：保持原样，避免空标题
+            return title;
         return title.substr(j);
     }
     return title;
@@ -1369,13 +1310,10 @@ std::string luogu::article_heading(const std::string &title)
 namespace
 {
 
-// 锚点片段的字符白名单化。锚点会被写进 LaTeX 的
-// \hypertarget{...} / \pdfbookmark{...}{...} 与 Markdown 的 <a id="...">，
-// 而题号来自题目列表缓存（problem.cpp 只过滤控制字符，不校验形状），
-// 含 # % \ { } " 换行等字符时会破坏结构甚至注入命令。这里只保留字母、
-// 数字与 - _ . 三种安全符号，其余字节替换成 '_'；发生替换时再追加原文的
-// 哈希后缀，避免两个不同题号（如 P1#2 与 P1_2）得到同一个锚点。
-// 正常题号（只含字母数字下划线）原样返回，锚点与旧版本完全一致。
+// 锚点片段白名单化：锚点会写进 LaTeX 的 \hypertarget / \pdfbookmark 与
+// Markdown 的 <a id="...">，而题号来自题目列表缓存（只过滤控制字符、不校验形状），
+// 含 # % \ { } " 换行等字符会破坏结构甚至注入命令。这里只保留字母、数字与 - _ .，
+// 其余替换为 '_' 并追加原文哈希后缀（避免 P1#2 与 P1_2 撞同一锚点）。
 std::string anchor_safe_segment(const std::string &raw)
 {
     static const char kHex[] = "0123456789abcdef";
@@ -1395,8 +1333,7 @@ std::string anchor_safe_segment(const std::string &raw)
     if (!replaced)
         return out;
 
-    // FNV-1a 32 位（与 crawler 的缓存文件名哈希同族）：只用于在被替换过的
-    // 片段之间保持区分度，同一原文每次得到同一个后缀
+    // FNV-1a 32 位：只用于区分被替换过的片段，同一原文得到同一后缀
     uint32_t hash = 2166136261u;
     for (unsigned char c : raw)
     {
@@ -1411,7 +1348,7 @@ std::string anchor_safe_segment(const std::string &raw)
 
 } // namespace
 
-// 供其它模块（如 latex.cpp 的 \pdfbookmark 标签）复用同一套白名单化
+// 供 latex.cpp 的 \pdfbookmark 标签等其它模块复用同一套白名单化
 std::string luogu::anchor_segment(const std::string &raw)
 {
     return anchor_safe_segment(raw);

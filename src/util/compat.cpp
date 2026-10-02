@@ -77,7 +77,7 @@ gzFile gzopen(const std::filesystem::path &path, const char *mode)
 #ifdef _WIN32
 namespace
 {
-    // Windows: 把 UTF-8 字符串转成宽字符串（转换失败时返回空串）
+    // UTF-8 转宽字符；转换失败（含非法字节序列）返回空串
     std::wstring utf8_to_wide(const std::string &utf8)
     {
         if (utf8.empty())
@@ -93,7 +93,6 @@ namespace
         return out;
     }
 
-    // Windows: 把宽字符串转成 UTF-8
     std::string wide_to_utf8(const wchar_t *wide, size_t len)
     {
         if (len == 0)
@@ -109,11 +108,7 @@ namespace
         return out;
     }
 
-    // Windows: 按 CreateProcessW / CommandLineToArgvW（CRT 的 argv 解析）规则给
-    // 单个参数加引号，保证子进程拿到的参数与传入的字符串完全一致：
-    // - 参数内部的反斜杠只在「紧邻引号」或「位于参数末尾」时需要翻倍，
-    //   否则会把后面的引号转义掉；
-    // - 参数内部的引号写成 \" （前面的反斜杠按上面的规则翻倍）。
+    // 按 CommandLineToArgvW 规则加引号，保证子进程还原一致：反斜杠仅在紧邻引号或末尾时翻倍
     std::wstring quote_windows_argument(const std::wstring &arg)
     {
         std::wstring out = L"\"";
@@ -128,7 +123,6 @@ namespace
             }
             if (i == arg.size())
             {
-                // 参数末尾的反斜杠：翻倍，避免转义掉收尾的引号
                 out.append(backslashes * 2, L'\\');
                 break;
             }
@@ -156,13 +150,12 @@ std::vector<std::string> get_argv_utf8(int argc, char **argv)
     out.reserve(static_cast<size_t>(argc));
 #ifdef _WIN32
     (void)argv;
-    // 用 GetCommandLineW 拿到原始宽字符命令行再按 Windows 规则拆分，
-    // 避免 main(char**) 参数被 ANSI 代码页转换破坏 UTF-8 字节
+    // 取宽字符原始命令行：main(char**) 的 argv 已被 ANSI 代码页转换，UTF-8 字节会被破坏
     int wargc = 0;
     LPWSTR *wargv = CommandLineToArgvW(GetCommandLineW(), &wargc);
     if (!wargv)
     {
-        // 极少数失败场景：退回逐参数转换（可能乱码，但不会崩溃）
+        // 极少见的失败：退回逐参数转换（可能乱码）
         for (int i = 0; i < argc; ++i)
         {
             std::string utf8;
@@ -171,8 +164,7 @@ std::vector<std::string> get_argv_utf8(int argc, char **argv)
             {
                 std::wstring wide(static_cast<size_t>(need), L'\0');
                 MultiByteToWideChar(CP_ACP, 0, argv[i], -1, wide.data(), need);
-                // need 含结尾的 L'\0'：只转换到它之前，否则 UTF-8 结果末尾会
-                // 多出一个内嵌的 '\0'（std::string 里多一个不可见字节）
+                // need 含结尾 L'\0'：只转到它之前，否则结果末尾多一个内嵌 '\0'
                 utf8 = wide_to_utf8(wide.c_str(), std::wcslen(wide.c_str()));
             }
             out.push_back(utf8);
@@ -182,8 +174,7 @@ std::vector<std::string> get_argv_utf8(int argc, char **argv)
     for (int i = 0; i < wargc; ++i)
         out.push_back(wide_to_utf8(wargv[i], std::wcslen(wargv[i])));
     LocalFree(wargv);
-    // GetCommandLineW 无法区分空字符串参数，且引号规则与 CRT 略有差异；
-    // 但解析出的参数数量/内容与 argc/argv 不一致时退回 CRT 的 argv
+    // GetCommandLineW 无法区分空串参数、引号规则也与 CRT 略有差异：参数个数不一致时退回 argv
     if (static_cast<int>(out.size()) != argc)
     {
         out.clear();
@@ -257,10 +248,8 @@ int run_command_utf8(const std::vector<std::string> &argv, std::string &error)
         return -1;
     }
 #ifdef _WIN32
-    // 自行拼命令行后调用 CreateProcessW（不经 cmd.exe）：每个参数都按
-    // CommandLineToArgvW 的规则加引号，%VAR% / & / | / ` 等不会被解释。
-    // 注意：CreateProcessW 不像 cmd.exe 那样按 PATHEXT 解析 .bat/.cmd/.pl，
-    // 目标必须是一个可执行文件（TeX Live / MiKTeX 提供的 latexmk 是 .exe）。
+    // 自行拼命令行调用 CreateProcessW（不经 cmd.exe）：参数按 CommandLineToArgvW 规则加
+    // 引号，%VAR% / & / | / ` 不被解释；但它不按 PATHEXT 解析 .bat/.cmd，目标须是可执行文件
     std::wstring command_line;
     for (const auto &arg : argv)
     {
@@ -274,8 +263,7 @@ int run_command_utf8(const std::vector<std::string> &argv, std::string &error)
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     PROCESS_INFORMATION process{};
-    // 第五个参数 bInheritHandles = TRUE：让子进程继承标准输入/输出，
-    // 编译过程的输出与以前走 _wsystem 时一样直接显示在控制台上
+    // bInheritHandles = TRUE：子进程继承 stdin/stdout，编译输出直接显示在控制台
     if (!CreateProcessW(nullptr, buffer.data(), nullptr, nullptr, TRUE, 0, nullptr,
                         nullptr, &startup, &process))
     {
@@ -301,15 +289,14 @@ int run_command_utf8(const std::vector<std::string> &argv, std::string &error)
         cargv.push_back(const_cast<char *>(arg.c_str()));
     cargv.push_back(nullptr);
 
-    // 子进程 exec 失败时把 errno 写回管道（写端设为 CLOEXEC，exec 成功后自动
-    // 关闭），父进程据此返回 -1 并给出具体原因；exec 成功则按退出码/信号返回。
+    // exec 失败时把 errno 写回管道（写端 CLOEXEC，exec 成功后自动关闭），父进程据此报出原因
     int pipefd[2];
     if (::pipe(pipefd) != 0)
     {
         error = std::strerror(errno);
         return -1;
     }
-    // 设置失败时直接失败返回：否则 exec 成功后写端仍然打开，父进程会一直阻塞
+    // 设置失败必须直接返回：否则 exec 成功后写端仍打开，父进程会永久阻塞
     if (::fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) != 0)
     {
         error = std::strerror(errno);
@@ -328,13 +315,12 @@ int run_command_utf8(const std::vector<std::string> &argv, std::string &error)
     }
     if (pid == 0)
     {
-        // 子进程：不经过 shell，直接 execvp（因此参数不会被 shell 解释）
+        // 子进程：execvp 不经 shell，参数不会被 shell 解释
         ::close(pipefd[0]);
         ::execvp(cargv[0], cargv.data());
         const int exec_errno = errno;
-        // 只做异步信号安全的调用：write + _exit（_exit 不刷新父进程的 stdio 缓冲）。
-        // write 可能被信号打断而只写出一部分，这里重试到写完，否则父进程会把
-        // 「只收到 2 字节」当成没有 exec 错误，只报 127 而说不出原因
+        // 只做异步信号安全的调用（write + _exit，后者不刷新 stdio 缓冲）；write 可能
+        // 被信号打断而部分写入，必须重试写完，否则父进程会当成没有 exec 错误
         const char *p = reinterpret_cast<const char *>(&exec_errno);
         size_t left = sizeof(exec_errno);
         while (left > 0)
@@ -372,7 +358,6 @@ int run_command_utf8(const std::vector<std::string> &argv, std::string &error)
     }
     if (got == static_cast<ssize_t>(sizeof(exec_errno)))
     {
-        // exec 失败：子进程已经退出并被回收，返回 -1 与 exec 失败的原因
         error = std::strerror(exec_errno);
         return -1;
     }
@@ -398,7 +383,7 @@ long long read_line(FILE *in, std::string &out)
             return static_cast<long long>(out.size());
         }
     }
-    // 文件结束：最后一行为内容但无换行符时，返回该行
+    // 文件结束：末行无换行符时仍返回其内容；完全没有内容则返回 -1
     return out.empty() ? -1 : static_cast<long long>(out.size());
 }
 
@@ -408,9 +393,8 @@ std::string strip_control_chars(std::string s)
     for (size_t r = 0; r < s.size(); ++r)
     {
         const unsigned char c = static_cast<unsigned char>(s[r]);
-        // 0x7F（DEL）同属控制字符：它不是 UTF-8 多字节序列的任何一部分
-        // （续字节是 0x80~0xBF），删除不会破坏字符编码，但留在文本里会让
-        // LaTeX 报「invalid character」、也可能干扰终端显示
+        // 0x7F（DEL）也按控制字符删除：它不是 UTF-8 多字节序列的一部分（续字节为
+        // 0x80~0xBF），删掉不破坏编码，但留下会让 LaTeX 报 invalid character
         if ((c >= 0x20 && c != 0x7F) || c == '\t' || c == '\n' || c == '\r')
             s[w++] = s[r];
     }
@@ -443,9 +427,8 @@ bool atomic_replace(const std::filesystem::path &from,
 {
     error.clear();
 #ifdef _WIN32
-    // MoveFileExW 默认不覆盖已存在的目标：必须显式给出 REPLACE_EXISTING，
-    // 才能与 POSIX rename() 的语义一致（MinGW-w64 的 std::filesystem::rename
-    // 走 _wrename，目标存在时直接失败）
+    // MoveFileExW 默认不覆盖已存在的目标，必须显式给 REPLACE_EXISTING 才与 POSIX
+    // rename() 一致（MinGW-w64 的 std::filesystem::rename 走 _wrename，会直接失败）
     if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_REPLACE_EXISTING))
         return true;
     const DWORD code = GetLastError();
@@ -497,11 +480,8 @@ void sleep_ms(long ms)
 #ifndef _WIN32
 namespace
 {
-    // POSIX 终端默认是规范模式（行缓冲）：单个按键要等到回车才会交给进程，
-    // 「按 S 立即停止」就无从谈起。这里在每次按键轮询期间临时切到 cbreak
-    // 模式（关掉 ICANON 与 ECHO，保留 ISIG 让 Ctrl+C 仍然是中断信号），
-    // 离开作用域立刻还原。作用域只有一次 200 毫秒的轮询，异常路径由
-    // 析构函数兜底；不注册信号处理器。
+    // POSIX 终端默认规范模式（行缓冲），单键要等回车，无法「按 S 立即停止」：轮询期间临时
+    // 切到 cbreak（关 ICANON/ECHO、保留 ISIG 让 Ctrl+C 仍中断），由析构函数还原
     class CbreakGuard
     {
     public:
@@ -536,12 +516,8 @@ namespace
 
 namespace
 {
-    // 非阻塞读取一个按键（只识别 ASCII 单字符）。
-    // 没有待处理输入时返回 false。stdin 非 TTY 时始终返回 false。
-    //
-    // POSIX 下一次 read 可能一次拿到多个字节（用户连按或提前输入），
-    // 只取首字节会把其余字节丢掉（可能拆散一行预输入的文本），
-    // 因此把多读到的字节留在内部缓冲里，逐字节返回。
+    // 非阻塞取一个按键（只认 ASCII；无输入或 stdin 非 TTY 时返回 false）。
+    // POSIX 一次 read 可能拿到多个字节，多余字节留在内部缓冲逐字节返回，避免丢预输入
     bool read_key_async(char &out)
     {
         // auto 模式下有两条通道并行等待，可能同时轮询按键：加锁串行化
@@ -553,7 +529,7 @@ namespace
         const int ch = _getch();
         if (ch == 0 || ch == 224)
         {
-            // 功能键/方向键会先给出 0 或 224，再给出扫描码：两个字节都丢掉
+            // 方向键/功能键先给 0 或 224 再给扫描码：两个字节都丢掉
             if (_kbhit())
                 _getch();
             return false;
@@ -567,7 +543,7 @@ namespace
 
         if (pending_pos < pending_len)
         {
-            // 多字节 UTF-8 输入：只取首字节（不解析中文，确认只认 ASCII 单字符）
+            // 多字节 UTF-8 输入只取首字节（按键只认 ASCII）
             out = static_cast<char>(pending[pending_pos++] & 0x7F);
             return true;
         }
@@ -606,15 +582,13 @@ bool sleep_interruptible_ms(long ms, const std::function<bool(char)> &on_key)
     {
         const long chunk = remaining < kStepMs ? remaining : kStepMs;
 #ifndef _WIN32
-        // 轮询期间临时切到 cbreak，让单键（S / C）无需回车即可被读到
         CbreakGuard cbreak;
 #endif
         sleep_ms(chunk);
         remaining -= chunk;
         char key = 0;
-        // 一次可能积累多个按键：逐个消费，任一命中即中断。
-        // 上限 32 个/轮：输入被重定向或被人为灌入时（如 `yes |`），
-        // 无上限的消费循环会一直有数据可读而永不返回
+        // 一次可能积累多个按键，逐个消费，任一命中即中断；上限 32 个/轮，避免输入
+        // 被灌入（如 `yes |`）时消费循环一直有数据可读而永不返回
         int consumed = 0;
         while (consumed < 32 && read_key_async(key))
         {
@@ -629,8 +603,7 @@ bool sleep_interruptible_ms(long ms, const std::function<bool(char)> &on_key)
 void init_console()
 {
 #ifdef _WIN32
-    // 启用虚拟终端处理：让传统 Windows 控制台正确渲染 ANSI 转义序列。
-    // stdout 与 stderr 分别处理（彩色错误信息走 stderr）。
+    // 启用虚拟终端处理让传统 Windows 控制台渲染 ANSI 转义序列（stdout/stderr 各设一次）
     for (const DWORD id : {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE})
     {
         const HANDLE handle = GetStdHandle(id);
@@ -642,7 +615,7 @@ void init_console()
         mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
         SetConsoleMode(handle, mode);
     }
-    // 控制台代码页设为 UTF-8：程序内所有输出（含中文）都是 UTF-8 字节
+    // 代码页设为 UTF-8：程序内所有输出（含中文）都是 UTF-8 字节
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
 #else

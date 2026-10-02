@@ -41,8 +41,8 @@ std::string ctex_package_options();
 // 字体名称直接作为名称参数；字体文件地址拆成 Path/Extension/文件名。
 std::string font_argument(const std::string &spec);
 
-// 输出默认字体、用户指定的 --set-font-* 字体、标签徽章字体等全部
-// 字体设置命令。调用前需已加载 ctex / fontspec / xeCJK 与 xcolor。
+// 输出默认字体、--set-font-* 指定字体与标签徽章字体等全部字体设置命令；
+// 调用前需已加载 ctex / fontspec / xeCJK 与 xcolor
 void write_font_setup(FILE *out, const Options &opt);
 } // namespace latex
 
