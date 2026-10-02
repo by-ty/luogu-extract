@@ -23,6 +23,7 @@
 
 #include <cstring>
 #include <cerrno>
+#include <cstdlib>
 #include <mutex>
 #include <cwchar>
 #include <thread>
@@ -33,10 +34,12 @@
 #endif
 #include <windows.h>
 #include <conio.h>
+#include <process.h>
 #include <io.h>
 #include <shellapi.h>
 #else
 #include <poll.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <unistd.h>
 #endif
@@ -73,6 +76,22 @@ gzFile gzopen(const std::filesystem::path &path, const char *mode)
 #ifdef _WIN32
 namespace
 {
+    // Windows: 把 UTF-8 字符串转成宽字符串（转换失败时返回空串）
+    std::wstring utf8_to_wide(const std::string &utf8)
+    {
+        if (utf8.empty())
+            return L"";
+        const int need = MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                                             static_cast<int>(utf8.size()),
+                                             nullptr, 0);
+        if (need <= 0)
+            return std::wstring();
+        std::wstring out(static_cast<size_t>(need), L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                            static_cast<int>(utf8.size()), out.data(), need);
+        return out;
+    }
+
     // Windows: 把宽字符串转成 UTF-8
     std::string wide_to_utf8(const wchar_t *wide, size_t len)
     {
@@ -165,6 +184,25 @@ std::string getenv_utf8(const char *name)
 #else
     const char *value = std::getenv(name);
     return value ? value : "";
+#endif
+}
+
+int system_utf8(const std::string &command)
+{
+#ifdef _WIN32
+    const std::wstring wide = utf8_to_wide(command);
+    if (wide.empty())
+        return -1;
+    return ::_wsystem(wide.c_str());
+#else
+    const int status = std::system(command.c_str());
+    if (status == -1)
+        return -1;
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status);
+    if (WIFSIGNALED(status))
+        return 128 + WTERMSIG(status);
+    return status;
 #endif
 }
 

@@ -11,6 +11,7 @@
   - `-C, --clean-all`：清空整个 luogu-extract 缓存文件夹（题目列表、标签、图片与字体缓存一并删除）；
   - `-CIMG, --clean-images`：清除 `luogu-extract/images/` 下的图片缓存；
   - `-CP, --clean-problems`：清除题面缓存（`latest.ndjson` 与 `latest.ndjson.gz`）；
+  - `-CF, --clean-fonts`：清除字体缓存（`luogu-extract/fonts/`）；
   - `-CS, --clean-solutions`：清除题解列表缓存（`solutions.ndjson`）；
   - `-CA, --clean-articles`：清除题解正文缓存（`articles/`）。
 - **按条件筛选题目**：
@@ -132,9 +133,10 @@ luogu-extract -L -RD --pid P1001 P1002 --output 指定题目.tex
 luogu-extract -C                    # 清空整个 luogu-extract 缓存文件夹
 luogu-extract -CIMG                 # 只清除 images/ 下的图片缓存
 luogu-extract -CP                   # 只清除题面缓存（latest.ndjson 与 latest.ndjson.gz）
+luogu-extract -CF                   # 只清除字体缓存（fonts/）
 luogu-extract -CS                   # 只清除题解列表缓存（solutions.ndjson）
 luogu-extract -CA                   # 只清除题解正文缓存（articles/）
-luogu-extract -CIMG -CP -CS -CA      # 一次清除图片、题面、题解列表与题解正文缓存
+luogu-extract -CIMG -CP -CF -CS -CA  # 一次清除图片、题面、字体、题解列表与题解正文缓存
 
 # 16. 下载题解：最简写法（12 道题，每题 1 篇，题解统一放在文档最后；
 #     双向按钮与目录条目默认开启。来源默认 auto：缓存优先，未命中的在
@@ -174,6 +176,11 @@ luogu-extract -L --tag 动态规划 --paginate --output 分页题册.tex
 luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
     --with-solutions --solution-placement per-problem \
     --paginate --output 分页题册.tex
+
+# 25. 导出后自动编译：等价于再手动执行
+#     latexmk --xelatex 题册.tex && latexmk -c 题册.tex
+#     （PDF 落在 .tex 旁边，中间文件编译完自动清理）
+luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 ```
 
 ### 参数说明
@@ -184,9 +191,11 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 | `-M, --markdown` | 筛选并导出 Markdown（默认输出 `problems.md`） |
 | `-L, --latex` | 筛选并导出 LaTeX（默认输出 `problems.tex`） |
 | `-RD, --new-download` | 仅 `-L` 有效：下载题目时不使用之前缓存的图片，而是重新下载图片 |
-| `-C, --clean-all` | 清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）。清除类参数（`-C` / `-CIMG` / `-CP` / `-CS` / `-CA`）只能彼此组合使用，不能与其他参数同时使用 |
+| `--compile` | 仅 `-L` 有效：LaTeX 文档导出成功后自动在输出文件所在目录执行 `latexmk --xelatex <输出文件名>.tex`，等编译结束后再执行 `latexmk -c <输出文件名>.tex` 清理中间文件（PDF 保留）；编译失败时提示退出码并以非零状态码结束 |
+| `-C, --clean-all` | 清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）。清除类参数（`-C` / `-CIMG` / `-CP` / `-CF` / `-CS` / `-CA`）只能彼此组合使用，不能与其他参数同时使用 |
 | `-CIMG, --clean-images` | 清除 `<缓存目录>/images/` 下的图片缓存。清除类参数只能彼此组合使用 |
 | `-CP, --clean-problems` | 清除题面缓存（`latest.ndjson` 与 `latest.ndjson.gz`）。清除类参数只能彼此组合使用 |
+| `-CF, --clean-fonts` | 清除字体缓存（`<缓存目录>/fonts/`，即 `--set-font-*` 传入无扩展名字体文件时复制的副本）。清除类参数只能彼此组合使用 |
 | `-CS, --clean-solutions` | 清除题解列表缓存（`<缓存目录>/solutions.ndjson`）。清除类参数只能彼此组合使用 |
 | `-CA, --clean-articles` | 清除文章缓存（`<缓存目录>/articles/`）。清除类参数只能彼此组合使用 |
 | `--tags` | 按官方分类打印标签 ID 对照表（可与 `-h` 组合） |
@@ -243,6 +252,7 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 - **系统已安装的字体名称**：直接填字体名，如 `"Noto Sans CJK SC"`、`"SimSun"`；
 - **字体文件地址**：填字体文件的路径（支持相对路径与绝对路径），如 `fonts/source-han-serif.ttc`、`/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc`；程序会校验该文件是否存在，存在时在生成的 `.tex` 中引用其绝对路径；
 - 含路径分隔符或以 `.ttf`/`.otf`/`.ttc` 等常见字体扩展名结尾的值一律按**字体文件地址**处理，文件不存在时会报错并拒绝执行；其余值按**字体名称**处理；
+- 传入**无扩展名**的字体文件时，程序会按文件头识别格式后复制到 `<缓存目录>/fonts/` 并补全扩展名（`-CF, --clean-fonts` 可清除这些副本）；
 - `--set-font-*` 系列参数的优先级最高：只要传入对应参数，生成的 `.tex` 就会用参数指定的字体覆盖 ctex fontset 中的默认值；未传入的参数一律使用上述 ctex fontset / 代码字体回退链的默认方案；
 - 不传 `--set-font-body-codes` 时，代码块西文与正文黑体部分的西文按 `Consolas` → `Menlo` → `DejaVu Sans Mono` 回退；三种字体都不可用时保留 fontspec 默认等宽字体；
 - 不传 `--set-font-body-zh-CN` / `--set-font-title-zh-CN` 等参数时，正文与标题直接使用 ctex fontset 预设的中西文字体，不再额外指定 `SimHei` 或等宽标题字体。
@@ -404,6 +414,7 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 | `-C, --clean-all` | 缓存目录 `luogu-extract` 本身（相当于删除整个缓存文件夹） |
 | `-CIMG, --clean-images` | `luogu-extract/images/` 目录及其中的全部图片 |
 | `-CP, --clean-problems` | `luogu-extract/latest.ndjson` 与 `luogu-extract/latest.ndjson.gz`（以及更新中断时可能残留的 `latest.ndjson.tmp.*` 临时文件） |
+| `-CF, --clean-fonts` | `luogu-extract/fonts/` 目录及其中的全部字体文件 |
 | `-CS, --clean-solutions` | `luogu-extract/solutions.ndjson`（全部题解列表缓存） |
 | `-CA, --clean-articles` | `luogu-extract/articles/` 目录及其中的全部题解正文缓存 |
 
@@ -443,7 +454,7 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 | 标签字体 | 跟随正文中西文字体，随 `--set-font-body-zh-CN` / `--set-font-body-en-US` 一起变化 |
 
 > [!IMPORTANT]
-> LaTex 导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译。
+> LaTex 导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译；加上 `--compile` 可由程序在导出成功后自动执行该命令，并接着执行 `latexmk -c` 清理中间文件。
 
 ## 参数错误处理
 
@@ -452,7 +463,8 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 - 字体类参数（`--set-font-*`）后未接字体名称或字体文件地址；
 - 字体类参数被识别为字体文件地址，但对应文件不存在；
 - 选择了 `-M`（Markdown）导出，却使用了仅 `-L`（LaTeX）支持的设置参数；
-- 清除缓存的参数（`-C` / `-CIMG` / `-CP` / `-CS` / `-CA`）只能彼此组合使用，与非清除类参数（含 `-h`、`--tags`、`-U`、`-M`、`-L` 等）或多余的位置参数同时出现即拒绝执行；
+- `--compile` 未与 `-L` 同用（如只给 `-M`、`-U`、`--articles-only-download` 或单独使用）；
+- 清除缓存的参数（`-C` / `-CIMG` / `-CP` / `-CF` / `-CS` / `-CA`）只能彼此组合使用，与非清除类参数（含 `-h`、`--tags`、`-U`、`-M`、`-L` 等）或多余的位置参数同时出现即拒绝执行；
 - `-V` / `--version` 与其他参数（含 `-h`、`--tags`、`-M`、`-L` 等）或多余的位置参数同时使用（该参数必须单独使用）；
 - 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）；
 - 题解相关参数（`--cookie`、`--cookie-string`、`--article-source`、`--solution-*`、`--max-solutions`、`--refresh-*`、`--no-solution-*`、`--yes` 等）在未启用 `--with-solutions`（或 `--solutions-only` / `--articles-only-download`）时，报「缺少 `--with-solutions`」；
@@ -462,7 +474,6 @@ luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
 - `--solution-ttl` / `--article-ttl` 小于 0、`--rate-limit-wait < 0`、`--max-solutions` 既不是正整数也不是 `all`；
 - `--solution-placement` 不是 `document-end` / `per-problem`，或 `--article-source` 不是 `official` / `save`；
 - `--solutions-only` 与 `--articles-only-download` 同时给出；
-- `-CS` / `--clean-solutions`、`-CA` / `--clean-articles` 与其他参数同时使用；
 - 非交互终端（管道、重定向）下仍需风险确认时**拒绝执行**并说明原因。
 
 ## 待添加功能

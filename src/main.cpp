@@ -68,6 +68,7 @@ struct Options
     bool clean_all = false;      // -C, --clean-all：清空整个缓存文件夹
     bool clean_images = false;   // -CIMG, --clean-images：清空图片缓存
     bool clean_problems = false; // -CP, --clean-problems：清空题目列表缓存
+    bool clean_fonts = false;    // -CF, --clean-fonts：清空字体缓存
 
     // ---- 下载设置参数 ----
     // -RD, --new-download：下载题面图片时不使用之前缓存的图片，而是重新下载
@@ -75,6 +76,8 @@ struct Options
     bool new_download = false;
 
     // ---- 导出设置参数 ----
+    // --compile：-L 导出 LaTeX 成功后自动执行 latexmk --xelatex <输出文件名>.tex
+    bool compile_latex = false;
     bool no_toc_links = false;      // --no-toc-links：目录条目不带跳转超链接（仅 -L）
     bool toc_backlinks = false;     // --toc-backlinks：页码为跳回目录的超链接（仅 -L）
     bool no_bilibili_link = false;  // --no-bilibili-link：bilibili URL 输出为普通文本（仅 -L）
@@ -156,7 +159,9 @@ enum
     OPT_CLEAN_ALL,
     OPT_CLEAN_IMAGES,
     OPT_CLEAN_PROBLEMS,
+    OPT_CLEAN_FONTS,
     OPT_NEW_DOWNLOAD,
+    OPT_COMPILE,
     OPT_COOKIE,
     OPT_COOKIE_STRING,
     OPT_WITH_SOLUTIONS,
@@ -251,12 +256,17 @@ const char *kUsage =
     "                        （-M 与 -L 不能同时使用）\n"
     "  -RD, --new-download   下载题目时不使用之前缓存的图片，而是重新下载图片\n"
     "                        （仅在使用 -L 时有效）\n"
+    "      --compile         导出 LaTeX 完成后自动执行\n"
+    "                        latexmk --xelatex <输出文件名>.tex，等编译结束后\n"
+    "                        再执行 latexmk -c 清理中间文件（仅在使用 -L 时有效）\n"
     "  -C, --clean-all       清空 luogu-extract 缓存文件夹（含题目列表、标签、图片\n"
     "                        与字体缓存）\n"
     "  -CIMG, --clean-images\n"
     "                        清除 luogu-extract/images/ 下的图片缓存\n"
     "  -CP, --clean-problems\n"
     "                        清除题面缓存（latest.ndjson 与 latest.ndjson.gz）\n"
+    "  -CF, --clean-fonts\n"
+    "                        清除字体缓存（<缓存目录>/fonts/）\n"
     "  -CS, --clean-solutions\n"
     "                        清除题解列表缓存（<缓存目录>/solutions.ndjson）\n"
     "  -CA, --clean-articles\n"
@@ -460,6 +470,7 @@ inline void expand_multichar_short_options(std::vector<std::string> &args_utf8)
         {"-CIMG", "--clean-images"},
         {"-CS", "--clean-solutions"},
         {"-CA", "--clean-articles"},
+        {"-CF", "--clean-fonts"},
         {"-CP", "--clean-problems"},
         {"-RD", "--new-download"},
     };
@@ -922,6 +933,77 @@ SolutionRun run_solutions(const Options &options,
     return run;
 }
 
+// --compile：-L 导出 LaTeX 成功后自动执行
+// `latexmk --xelatex <输出文件名>.tex`，等它编译结束再执行
+// `latexmk -c <输出文件名>.tex` 清掉中间文件（.aux/.log/.toc/…，PDF 保留）。
+// - 工作目录切到 .tex 所在目录后再执行：与手动执行这两条命令一致，生成的
+//   PDF 落在 .tex 旁边（图片与字体在 .tex 里都是绝对路径，切目录不影响编译）；
+// - 命令串按 UTF-8 交给 compat::system_utf8（Windows 下走 _wsystem，
+//   含中文的路径不会乱码）；
+// - 返回程序退出码：0 表示编译成功（清理失败只提示，不影响退出码）。
+int compile_latex_document(const std::filesystem::path &tex_path)
+{
+    const std::filesystem::path dir =
+        tex_path.has_parent_path() ? tex_path.parent_path()
+                                   : std::filesystem::path(".");
+    std::error_code ec;
+    const std::filesystem::path old_cwd = std::filesystem::current_path(ec);
+    const bool have_old_cwd = !ec;
+    ec.clear();
+    std::filesystem::current_path(dir, ec);
+    if (ec)
+    {
+        printError("参数 --compile：无法切换到输出文件所在目录 '" +
+                   luogu::compat::path_to_utf8(dir) + "'：" + ec.message());
+        return 1;
+    }
+
+    const std::string file_name = luogu::compat::path_to_utf8(tex_path.filename());
+    const std::string command = "latexmk --xelatex \"" + file_name + "\"";
+    std::printf("正在编译 LaTeX 文档：%s\n", command.c_str());
+    std::fflush(stdout);
+    const int status = luogu::compat::system_utf8(command);
+
+    // 编译结束后（无论成功与否）再执行 latexmk -c 清理中间文件：
+    // -c 只删可再生的中间文件，保留 .pdf 与 .tex
+    const std::string clean_command = "latexmk -c \"" + file_name + "\"";
+    std::printf("清理中间文件：%s\n", clean_command.c_str());
+    std::fflush(stdout);
+    const int clean_status = luogu::compat::system_utf8(clean_command);
+
+    if (have_old_cwd)
+    {
+        std::error_code restore_ec;
+        std::filesystem::current_path(old_cwd, restore_ec); // 恢复工作目录（尽力而为）
+    }
+
+    if (status != 0)
+    {
+        printError("latexmk 编译失败" +
+                   (status > 0 ? "（退出码 " + std::to_string(status) + "）" : "") +
+                   "；请确认已安装 LaTeX 与 latexmk；中间文件已按 --compile 的约定"
+                   "用 latexmk -c 清理，如需保留编译日志请手动执行：" + command);
+        return 1;
+    }
+
+    if (clean_status != 0)
+    {
+        // 编译已成功、PDF 已生成：清理失败只提示，不改变退出码
+        printError("latexmk -c 清理中间文件失败" +
+                   (clean_status > 0 ? "（退出码 " + std::to_string(clean_status) + "）" : "") +
+                   "；可手动执行：" + clean_command);
+    }
+
+    std::filesystem::path pdf_path = tex_path;
+    pdf_path.replace_extension(".pdf");
+    std::error_code pdf_ec;
+    if (std::filesystem::exists(pdf_path, pdf_ec) && !pdf_ec)
+        printSuccess("已生成 PDF：" + luogu::compat::path_to_utf8(pdf_path));
+    else
+        printSuccess("latexmk 编译完成");
+    return 0;
+}
+
 // --tags：按官方分类（type）打印标签 ID 对照表
 inline bool print_tag_list()
 {
@@ -1022,7 +1104,9 @@ int main(int argc, char *argv[])
         {"clean-all",            no_argument,       nullptr, OPT_CLEAN_ALL},
         {"clean-images",         no_argument,       nullptr, OPT_CLEAN_IMAGES},
         {"clean-problems",       no_argument,       nullptr, OPT_CLEAN_PROBLEMS},
+        {"clean-fonts",          no_argument,       nullptr, OPT_CLEAN_FONTS},
         {"new-download",         no_argument,       nullptr, OPT_NEW_DOWNLOAD},
+        {"compile",              no_argument,       nullptr, OPT_COMPILE},
         {"cookie",               required_argument, nullptr, OPT_COOKIE},
         {"cookie-string",        required_argument, nullptr, OPT_COOKIE_STRING},
         {"with-solutions",       no_argument,       nullptr, OPT_WITH_SOLUTIONS},
@@ -1064,8 +1148,8 @@ int main(int argc, char *argv[])
     {
         ++option_count;
         if (opt != 'C' && opt != OPT_CLEAN_ALL && opt != OPT_CLEAN_IMAGES &&
-            opt != OPT_CLEAN_PROBLEMS && opt != OPT_CLEAN_SOLUTIONS &&
-            opt != OPT_CLEAN_ARTICLES)
+            opt != OPT_CLEAN_PROBLEMS && opt != OPT_CLEAN_FONTS &&
+            opt != OPT_CLEAN_SOLUTIONS && opt != OPT_CLEAN_ARTICLES)
             ++non_clean_option_count;
         switch (opt)
         {
@@ -1160,8 +1244,14 @@ int main(int argc, char *argv[])
         case OPT_CLEAN_PROBLEMS:
             options.clean_problems = true;
             break;
+        case OPT_CLEAN_FONTS:
+            options.clean_fonts = true;
+            break;
         case OPT_NEW_DOWNLOAD:
             options.new_download = true;
+            break;
+        case OPT_COMPILE:
+            options.compile_latex = true;
             break;
         case OPT_COOKIE:
             if (optarg == nullptr || optarg[0] == '\0')
@@ -1496,6 +1586,7 @@ int main(int argc, char *argv[])
         if (options.clean_all) used_clean.push_back("-C, --clean-all");
         if (options.clean_images) used_clean.push_back("-CIMG, --clean-images");
         if (options.clean_problems) used_clean.push_back("-CP, --clean-problems");
+        if (options.clean_fonts) used_clean.push_back("-CF, --clean-fonts");
         if (options.clean_solutions) used_clean.push_back("-CS, --clean-solutions");
         if (options.clean_articles) used_clean.push_back("-CA, --clean-articles");
         if (!used_clean.empty() &&
@@ -1505,9 +1596,9 @@ int main(int argc, char *argv[])
             for (size_t i = 0; i < used_clean.size(); ++i)
                 joined += (i ? "、" : "") + used_clean[i];
             printError("清除缓存的参数（" + joined +
-                       "）只能与其他清除缓存的参数（-C、-CIMG、-CP、-CS、-CA）"
+                       "）只能与其他清除缓存的参数（-C、-CIMG、-CP、-CF、-CS、-CA）"
                        "同时使用，不能与其它参数或多余的位置参数一起使用；"
-                       "正确用法：luogu-extract -CIMG -CP -CS -CA"
+                       "正确用法：luogu-extract -CIMG -CP -CF -CS -CA"
                        "（互相组合，一次清除多类缓存），或单独执行其中一个");
             return 1;
         }
@@ -1524,7 +1615,7 @@ int main(int argc, char *argv[])
 
     // 清除类参数只操作本地缓存，不访问网络、也不需要 libcurl：直接执行后退出
     if (options.clean_all || options.clean_images || options.clean_problems ||
-        options.clean_solutions || options.clean_articles)
+        options.clean_fonts || options.clean_solutions || options.clean_articles)
     {
         // 依次执行所有被指定的清除动作（可组合）：-C 会删掉整个缓存目录，
         // 其余动作随后按「目录不存在 = 已清空」正常返回
@@ -1539,6 +1630,7 @@ int main(int argc, char *argv[])
         run_clean(options.clean_all, crawler::clean_all);
         run_clean(options.clean_images, crawler::clean_images);
         run_clean(options.clean_problems, crawler::clean_problems);
+        run_clean(options.clean_fonts, crawler::clean_fonts);
         run_clean(options.clean_solutions, solcache::clean_solutions);
         run_clean(options.clean_articles, solcache::clean_articles);
         return clean_result == crawler::SUCCESS ? 0 : 1;
@@ -1621,6 +1713,7 @@ int main(int argc, char *argv[])
         if (options.no_solution_toc) latex_only.push_back("--no-solution-toc");
         // -RD 只在 -L 导出下载题面图片时才有意义（-M 不下载图片）
         if (options.new_download) latex_only.push_back("--new-download");
+        if (options.compile_latex) latex_only.push_back("--compile");
         if (!latex_only.empty())
         {
             std::string joined;
@@ -1630,6 +1723,16 @@ int main(int argc, char *argv[])
                        "请移除上述参数，或在命令行中加入 -L 导出 LaTeX");
             return 1;
         }
+    }
+
+    // --compile 只在 -L 导出 LaTeX 后有实际动作：与 -M、-U、
+    // --articles-only-download 等组合时拒绝执行（与上面 -M 的校验互补）
+    if (options.compile_latex && !options.latex)
+    {
+        printError("参数 --compile 仅在 -L（导出 LaTeX）时有效；"
+                   "请与 -L 一起使用（导出完成后会自动执行 "
+                   "latexmk --xelatex <输出文件名>.tex，随后执行 latexmk -c）");
+        return 1;
     }
 
     // --pid / --pid-range / --tag / --difficulty 支持「空格分隔多个值」的写法，
@@ -1834,6 +1937,11 @@ int main(int argc, char *argv[])
         {
             printError(error);
             result = 1;
+        }
+        else if (options.compile_latex)
+        {
+            // --compile：导出成功后自动执行 latexmk --xelatex <输出文件名>.tex
+            result = compile_latex_document(out_path);
         }
     }
 

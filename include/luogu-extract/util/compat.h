@@ -83,6 +83,13 @@ namespace compat
     // 其他平台直接 std::getenv。
     std::string getenv_utf8(const char *name);
 
+    // 执行外部命令（命令串为 UTF-8）。
+    // Windows 下把命令串转成宽字符后调用 _wsystem（system 按 ANSI 代码页解释
+    // 命令行，含中文的路径会乱码）；其他平台与 std::system 等价。
+    // 返回命令的退出码（已被信号终止时返回 128 + 信号编号；
+    // 无法执行命令时返回 -1）。
+    int system_utf8(const std::string &command);
+
     // 从 FILE* 读取一行（结果不含末尾换行符），替代 POSIX getline。
     // 返回读取到的字符数；文件结束且未读到任何内容时返回 -1。
     // 语义与 getline + 去掉末尾 '\n' 一致。

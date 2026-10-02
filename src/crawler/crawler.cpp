@@ -942,6 +942,26 @@ crawler::derror crawler::clean_images()
     return SUCCESS;
 }
 
+crawler::derror crawler::clean_fonts()
+{
+    const std::filesystem::path font_dir = crawler::get_cache_dir() / "fonts";
+    std::uintmax_t removed = 0;
+    std::string error;
+    if (!remove_cache_entry(font_dir, removed, error))
+    {
+        print_error("清空字体缓存目录 '" + luogu::compat::path_to_utf8(font_dir) +
+                    "' 失败：" + error);
+        return CANT_REMOVE_FILE;
+    }
+    if (removed == 0)
+        print_success("字体缓存目录 '" + luogu::compat::path_to_utf8(font_dir) +
+                      "' 不存在，无需清理");
+    else
+        print_success("已清空字体缓存目录 '" + luogu::compat::path_to_utf8(font_dir) +
+                      "'");
+    return SUCCESS;
+}
+
 crawler::derror crawler::clean_problems()
 {
     const std::filesystem::path cache_dir = crawler::get_cache_dir();

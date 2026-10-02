@@ -108,6 +108,12 @@ namespace crawler
     /// @return SUCCESS 或对应错误码
     derror clean_images();
 
+    /// 清空字体缓存：删除 <cache_dir>/fonts/ 目录及其中的全部字体文件
+    /// （--set-font-* 传入无扩展名的字体文件时会复制到该目录）。
+    /// 目录不存在时视为已清空。
+    /// @return SUCCESS 或对应错误码
+    derror clean_fonts();
+
     /// 清空题目列表缓存：删除 <cache_dir>/latest.ndjson 与
     /// <cache_dir>/latest.ndjson.gz，以及更新中断时可能残留的
     /// latest.ndjson.tmp.* 临时文件。文件不存在时视为已清空。
