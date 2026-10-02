@@ -77,8 +77,15 @@ namespace prompt
         long long problems = 0;        // 选中题目数
         int per_problem = 1;           // 每题篇数上限（all 时为 all_limit）
         bool per_problem_all = false;  // --max-solutions all
-        long long articles = 0;        // 本次实际待抓正文篇数 N（不含已命中缓存）
-        long long cached_articles = 0; // 已命中缓存的篇数
+        long long articles = 0;        // 本次实际待抓正文篇数 N（题解 + 文章，不含已命中缓存）
+        long long cached_articles = 0; // 已命中缓存的篇数（题解 + 文章）
+        // 其中题解正文部分的篇数（articles 减去下面的文章部分）
+        long long solution_to_fetch = 0;
+        long long cached_solutions = 0;
+        // --article 指定的文章（含命中缓存的篇目）；文章与题解共用同一套抓取规则
+        long long standalone_articles = 0;
+        long long standalone_to_fetch = 0;
+        long long cached_standalone = 0;
         long long list_requests = 0;   // 需要重新获取列表的题目数 P
         long long total_requests = 0;  // N + P
         double seconds_per_request = 0;// 生效延时均值（秒）

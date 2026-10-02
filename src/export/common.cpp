@@ -1319,6 +1319,37 @@ std::string luogu::solution_heading(const std::string &title)
     return "题解：" + truncate_utf8(name, 60);
 }
 
+std::string luogu::strip_article_title_prefix(const std::string &title)
+{
+    size_t i = 0;
+    while (i < title.size() && (title[i] == ' ' || title[i] == '\t'))
+        ++i;
+    static const char *kPrefixes[] = {"文章：", "文章:", "文章 "};
+    for (const char *prefix : kPrefixes)
+    {
+        const std::string p = prefix;
+        if (title.compare(i, p.size(), p) != 0)
+            continue;
+        size_t j = i + p.size();
+        while (j < title.size() && (title[j] == ' ' || title[j] == '\t'))
+            ++j;
+        if (j >= title.size())
+            return title; // 只有前缀：保持原样，避免空标题
+        return title.substr(j);
+    }
+    return title;
+}
+
+std::string luogu::article_heading(const std::string &title)
+{
+    std::string name = title.empty() ? "（无标题）"
+                                     : strip_article_title_prefix(title);
+    for (char &c : name)
+        if (c == '\n' || c == '\r' || c == '\t')
+            c = ' ';
+    return "文章：" + truncate_utf8(name, 60);
+}
+
 std::string luogu::problem_anchor(const std::string &pid)
 {
     return "sol-problem-" + pid;
@@ -1327,4 +1358,9 @@ std::string luogu::problem_anchor(const std::string &pid)
 std::string luogu::solution_anchor(const std::string &pid, const std::string &lid)
 {
     return "sol-" + pid + "-" + lid;
+}
+
+std::string luogu::article_anchor(const std::string &lid)
+{
+    return "sol-art-" + lid;
 }

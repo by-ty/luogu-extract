@@ -13,7 +13,7 @@
   - `-CP, --clean-problems`：清除题面缓存（`latest.ndjson` 与 `latest.ndjson.gz`）；
   - `-CF, --clean-fonts`：清除字体缓存（`luogu-extract/fonts/`）；
   - `-CS, --clean-solutions`：清除题解列表缓存（`solutions.ndjson`）；
-  - `-CA, --clean-articles`：清除题解正文缓存（`articles/`）。
+  - `-CA, --clean-articles`：清除文章缓存（`articles/`）。
 - **按条件筛选题目**：
   - 按**标签**筛选（多个标签取「且」，即题目必须同时包含所有标签）；
   - 按**难度**筛选（支持单个数字或闭区间 `1-4`，多个取「或」）；
@@ -45,6 +45,7 @@
   - Windows（MSVC / MinGW-w64）构建自动使用内置的 `getopt` 兼容实现（语义与 GNU getopt 一致，含长选项缩写与参数重排），macOS / Linux 使用系统 `getopt`。
 - **图片下载**：并行下载题面中的图片到本地缓存；导出 LaTeX 时图片引用会替换为缓存文件路径。加 `-RD, --new-download` 后不使用之前缓存的图片，而是重新下载图片。
 - **下载题解**（需提供 Cookies，存在风险）：按题目抓取题解的**列表**与**正文**。
+- **下载文章**：按文章编号下载任意文章。
 - **标签 ID 对照表**（`--tags`）：按官方分类打印标签名称与数字 ID。
 
 ## 依赖与构建
@@ -65,125 +66,7 @@ make
 
 构建产物为可执行文件 `luogu-extract`。
 
-### 示例
-
-```bash
-# 1. 首次使用先更新题目列表与标签缓存
-luogu-extract -U
-
-# 2. 导出全部题目为 Markdown（默认输出 problems.md）
-luogu-extract -M
-
-# 3. 按标签与难度筛选后导出
-luogu-extract -M --tag 模拟 贪心 --difficulty 3-5
-
-# 4. 按类型和语言筛选，导出为 LaTeX（默认输出 problems.tex）
-luogu-extract -L --type P --lang zh-CN --output 题册.tex
-
-# 5. 查看所有标签及其数字 ID
-luogu-extract --tags
-
-# 6. 定制 LaTeX 排版：目录不带超链接、页码可跳回目录、
-#    封面标题改为「算法竞赛题册」并指定字体（系统字体名称或字体文件均可）
-luogu-extract -L --no-toc-links --toc-backlinks \
-    --set-cover-title "算法竞赛题册" \
-    --set-font-cover-page "Noto Serif CJK SC" \
-    --set-font-body-zh-CN "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc" \
-    --set-font-body-en-US "TeX Gyre Pagella" \
-    --set-font-body-codes "JetBrains Mono" \
-    --set-font-title-zh-CN "Noto Sans CJK SC" \
-    --set-font-title-en-US "TeX Gyre Heros" \
-    --no-bilibili-link
-
-# 7. Markdown 导出时自定义一级标题
-luogu-extract -M --set-cover-title "洛谷竞赛题册（全量）"
-
-# 8. 按题号导出指定题目（可重复 --pid 或空格分隔；题号必须存在于缓存）
-luogu-extract -L --pid P1001 P1002 --pid P2000 --output 指定题目.tex
-
-# 8.1 --pid 与其它筛选参数同时使用：命中的题目追加到其它条件筛出的题目之外
-#     （下面导出「标签含 动态规划 且难度 3-5 的题目」+ P1001、P1002 两道题）
-luogu-extract -L --tag 动态规划 --difficulty 3-5 --pid P1001 P1002 \
-    --output 筛选并追加.tex
-
-# 9. 按题号范围导出（闭区间；可与标签/难度/类型组合）
-luogu-extract -L --pid-range P1000-P1999 --tag "动态规划 DP" --difficulty 3-5 \
-    --output 区间题册.tex
-
-# 10. 显示题目难度、算法标签，并让目录中的题目标题按难度着色
-luogu-extract -L --show-difficulty-tags --show-algorithm-tags \
-    --show-contents-difficulty-tags --output 题册.tex
-
-# 11. 只保留算法标签（隐藏来源、时间、区域、特殊题目标签）
-luogu-extract -L --no-show-source-tags --show-algorithm-tags --output 题册.tex
-
-# 12. Markdown 导出同样支持这三个显示开关（与 -L 语义一致）
-luogu-extract -M --show-difficulty-tags --show-algorithm-tags --output 题册.md
-luogu-extract -M --no-show-source-tags --output 仅题面.md
-
-# 13. 先更新缓存再导出（-U 与下载题目的参数一起使用时，先更新再下载，
-#     与参数位置无关；下面两条命令效果相同）
-luogu-extract -U -L --tag 模拟 --output 题册.tex
-luogu-extract -L --tag 模拟 --output 题册.tex -U
-
-# 14. 重新下载题面图片（不使用之前缓存的图片；下载失败时保留原有缓存）
-luogu-extract -L -RD --pid P1001 P1002 --output 指定题目.tex
-
-# 15. 清除缓存：清除类参数只可彼此组合使用（-C 覆盖全部，其余可叠加）
-luogu-extract -C                    # 清空整个 luogu-extract 缓存文件夹
-luogu-extract -CIMG                 # 只清除 images/ 下的图片缓存
-luogu-extract -CP                   # 只清除题面缓存（latest.ndjson 与 latest.ndjson.gz）
-luogu-extract -CF                   # 只清除字体缓存（fonts/）
-luogu-extract -CS                   # 只清除题解列表缓存（solutions.ndjson）
-luogu-extract -CA                   # 只清除题解正文缓存（articles/）
-luogu-extract -CIMG -CP -CF -CS -CA  # 一次清除图片、题面、字体、题解列表与题解正文缓存
-
-# 16. 下载题解：最简写法（12 道题，每题 1 篇，题解统一放在文档最后；
-#     双向按钮与目录条目默认开启。来源默认 auto：缓存优先，未命中的在
-#     原站与保存站之间轮流分配、并行抓取）
-luogu-extract -L --cookie cookies.txt --tag 动态规划 --with-solutions --output 题册.tex
-
-# 17. 题解紧跟题目之后
-luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
-    --with-solutions --solution-placement per-problem --output 题册.tex
-
-# 18. 抓取某题全部题解（会触发第 5 档警告，需 3 次确认）
-luogu-extract -L --cookie cookies.txt --pid P1001 \
-    --with-solutions --max-solutions all --output 单题题册.tex
-
-# 19. 离线囤货：只抓缓存不导出；延时放宽到 8~15 秒
-luogu-extract --cookie cookies.txt --pid-range P1000-P1099 \
-    --articles-only-download --request-delay 8-15
-
-# 20. 强制刷新题解正文后重新导出，但复用已缓存的题解列表
-luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
-    --refresh-articles --output 题册.tex
-
-# 21. 关闭跳转按钮与目录中的题解条目
-luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
-    --no-problem-to-solution-link --no-solution-to-problem-link \
-    --no-solution-toc --output 题册.tex
-
-# 22. 只用保存站（第三方镜像）获取题解正文；该来源不发送任何 Cookie
-luogu-extract -L --cookie cookies.txt --tag 贪心 --with-solutions \
-    --article-source save --output 题册.tex
-
-# 23. 分页排版：一道题目/文章结束后另起一页写下一篇
-#     （题解同样分页，目录与 PDF 书签不受影响）
-luogu-extract -L --tag 动态规划 --paginate --output 分页题册.tex
-
-# 24. 题解分页且紧跟各自题目
-luogu-extract -L --cookie cookies.txt --pid-range P1000-P1099 \
-    --with-solutions --solution-placement per-problem \
-    --paginate --output 分页题册.tex
-
-# 25. 导出后自动编译：等价于再手动执行
-#     latexmk --xelatex 题册.tex && latexmk -c 题册.tex
-#     （PDF 落在 .tex 旁边，中间文件编译完自动清理）
-luogu-extract -L --tag 动态规划 --compile --output 题册.tex
-```
-
-### 参数说明
+## 参数说明
 
 | 选项 | 含义 |
 | --- | --- |
@@ -222,25 +105,26 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 | `--no-bilibili-link` | 仅 `-L` 有效：题面中的 B 站视频补全为完整网址后输出为普通文本而非超链接（默认超链接） |
 | `--set-cover-title <title>` | 设置封面标题（`-L`，默认 `luogu extract`）或 Markdown 一级标题（`-M`，默认 `洛谷题目导出`） |
 | `--with-solutions` | 启用题解抓取与导出；需与 `-M` 或 `-L` 同用，题解与题面导出到同一个文件 |
+| `--article <文章编号>...` | 按文章编号下载指定的文章（编号为 6~32 位小写字母或数字，取自文章页地址 `/article/<编号>`，如 `p7fsb45w`；大写会自动转小写）；多个值可用空格分隔或重复 `--article`，重复编号只下载一次；导出的文章统一放在文档最后。需与 `-M` 或 `-L` 同用；未给出任何题目筛选参数且未启用题解功能时，文档只含这些文章 |
 | `--cookie <file>` | 需提供 Netscape 格式的 `cookies.txt`（含登录态）。题解列表接口需要登录态，该参数是启用题解功能的前提 |
 | `--cookie-string <k=v; ...>` | 直接传入 Cookie 串（与 `--cookie` 二选一） |
-| `--article-source <auto\|official\|save>` | 题解**正文**来源，默认 `auto`：缓存优先（两个来源都有时优先原站），未命中的在[洛谷原站](https://www.luogu.com.cn/)与[洛谷保存站](https://www.luogu.me/)之间**轮流分配、并行抓取**；`official` 只用原站；`save` 只用保存站。题解列表恒取洛谷原站 |
+| `--article-source <auto\|official\|save>` | 文章**正文**来源，默认 `auto`：缓存优先（两个来源都有时优先原站），未命中的在[洛谷原站](https://www.luogu.com.cn/)与[洛谷保存站](https://www.luogu.me/)之间**轮流分配、并行抓取**；`official` 只用原站；`save` 只用保存站。题解列表恒取洛谷原站 |
 | `--max-solutions <n\|all>` | 每题抓取篇数，默认 `1`，按列表顺序取最靠前的 `n` 篇；`all` 表示该题**全部**题解 |
 | `--request-delay <mean\|min-max>` | 请求的平均间隔秒数，默认 `5`（实际为均值 ±30% 均匀抖动，即 3.5~6.5 秒）；也支持显式区间（如 `8-15`）与小数（如 `2.5`）；单次间隔上限 300 秒 |
 | `--no-delay-auto-scale` | 关闭「随抓取量自动递增延时」与限流后的额外放大 |
 | `--solution-ttl <days>` | 题解**列表**缓存有效期天数：默认**无限**；`0` 表示每次都发 ETag 条件请求（`304` 时只刷新时间戳） |
-| `--article-ttl <days>` | 题解**正文**缓存有效期天数：语义同上，默认**无限**；`0` 表示每次都发 ETag 条件请求（`304` 时只刷新时间戳） |
+| `--article-ttl <days>` | 文章**正文**缓存有效期天数：默认**无限**；`0` 表示每次都发 ETag 条件请求（`304` 时只刷新时间戳） |
 | `--rate-limit-wait <seconds>` | 检测到限流后的等待时长，默认 `120`；`0` 表示检测到限流直接停止。等待期间可按 `S` 立即停止、按 `C` 确认后立即继续 |
-| `--allow-partial` | 允许导出正文不完整的题解（默认跳过并在结束时汇总） |
+| `--allow-partial` | 允许导出正文不完整的文章（默认跳过并在结束时汇总） |
 | `--refresh-solutions` | 强制重新获取题解列表（忽略有效期与 ETag） |
-| `--refresh-articles` | 强制重新获取题解正文（忽略有效期与 ETag） |
-| `--solutions-only` | 只导出题解，不导出题面（需与 `-M` 或 `-L` 同用） |
-| `--articles-only-download` | 只抓取并缓存题解，不导出任何文件（不需要 `-M` / `-L`） |
+| `--refresh-articles` | 强制重新获取文章正文（忽略有效期与 ETag） |
+| `--solutions-only` | 只导出题解，不导出题面（需与 `-M` 或 `-L` 同用；`--article` 的文章仍会导出在文档最后） |
+| `--articles-only-download` | 只抓取并缓存文章，不导出任何文件（不需要 `-M` / `-L`） |
 | `--solution-placement <document-end\|per-problem>` | 题解在文档中的位置，默认 `document-end`（统一置于文档最后）；`per-problem` 表示紧跟对应题目之后 |
 | `--no-problem-to-solution-link` | 关闭题目到题解的跳转（`-L` 为题目标题右侧的「查看题解」按钮，`-M` 为 Markdown 中的跳转链接） |
 | `--no-solution-to-problem-link` | 关闭题解到题目的跳转（`-L` 为题解标题右侧的「返回题目」按钮，`-M` 为 Markdown 中的跳转链接） |
-| `--no-solution-toc` | 仅 `-L` 有效：题解标题不进目录（默认进目录并注明所属题目） |
-| `--no-article-meta` | 不显示题解的来源与原文链接 |
+| `--no-solution-toc` | 仅 `-L` 有效：文章的标题不进目录（默认进目录，题解条目注明所属题目，普通文章条目只有标题） |
+| `--no-article-meta` | 不显示文章的来源与原文链接 |
 | `-y, --yes` | 把爬取风险的确认次数减少 1 次（减到 0 为止）；不能把第 5 档变为无需确认 |
 | `-h, --help` | 显示帮助（文本与上表内容一致） |
 | `-V, --version` | 显示项目简介、版本号、版权声明与项目仓库链接；版本号在编译期由 CMake 从 `CMakeLists.txt` 中的 `project(luogu-extract VERSION ...)` 取得；不能与其他参数同时使用 |
@@ -257,20 +141,31 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 - 不传 `--set-font-body-codes` 时，代码块西文与正文黑体部分的西文按 `Consolas` → `Menlo` → `DejaVu Sans Mono` 回退；三种字体都不可用时保留 fontspec 默认等宽字体；
 - 不传 `--set-font-body-zh-CN` / `--set-font-title-zh-CN` 等参数时，正文与标题直接使用 ctex fontset 预设的中西文字体，不再额外指定 `SimHei` 或等宽标题字体。
 
-## 题解下载（`--with-solutions`）
+## 题解与文章下载（`--with-solutions` / `--article`）
 
 ### 声明
 
-- 题解**著作权归原作者**，导出物**仅供个人离线阅读**，请勿再分发或用于商业用途；
+- 文章与题解**著作权归原作者**，导出物**仅供个人离线阅读**，请勿再分发或用于商业用途；
 - 抓取频率与请求总量由用户自行判断，若因抓取过快或过多导致被限流或封禁，**后果自负**；
 - 洛谷保存站（[luogu.me](https://www.luogu.me/)）为**第三方站点**；
 - 请遵守洛谷用户协议及相关法律法规。
 
 程序**不实现**账号密码/验证码登录，**不绕过**任何访问控制，也**不实现**任何规避风控的手段（不使用代理池、不伪造指纹、不绕验证码）。检测到限流时只会**等待**或**停止**。
 
+### 两个入口：题解列表与 `--article`
+
+本节描述的正文抓取规则对**所有文章**一致——题解是「与题目绑定的特殊文章」：
+
+| 入口 | 抓取对象 | 说明 |
+| --- | --- | --- |
+| `--with-solutions` | 题解（列表 → 正文） | 先按题目抓题解**列表**（需要登录态），再按列表抓正文 |
+| `--article <文章编号>...` | 任意文章正文 | 按文章编号直接抓正文，**没有列表这一步**，因此不需要登录态（`--cookie` 可选；需要权限的文章仍可提供 Cookie） |
+
+两者的正文来源（`--article-source`）、正文缓存（`articles/`）、缓存有效期（`--article-ttl`）、强制刷新（`--refresh-articles`）、完整性处理（`--allow-partial`）、请求延时（`--request-delay` 等）**完全共用**，导出的文章与题解正文也完全一致，只是文章没有题目跳转按钮、目录里不注明所属题目。
+
 ### 准备：导出 cookies.txt
 
-获取题解**列表**接口需要登录态（未带登录 Cookie 时返回 401），因此必须先准备 Netscape 格式的 `cookies.txt`：
+获取题解**列表**接口需要登录态（未带登录 Cookie 时返回 401），因此使用 `--with-solutions` 前必须先准备 Netscape 格式的 `cookies.txt`：
 
 1. 登录洛谷；
 2. 用浏览器扩展（如 `Get cookies.txt LOCALLY`）导出**Netscape 格式**的 cookies，或按该格式手写：
@@ -283,6 +178,8 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 
 3. 用 `--cookie cookies.txt` 指定。建议把文件权限设为 `600`（程序检测到同组/其他用户可读时会提示，但不会修改你的文件）。
 
+只用 `--article` 下载文章时可以**不提供** Cookie：文章接口通常无需登录态，程序会打印一行提示后继续；提供 Cookie 时同样只会附加到洛谷域名（适合需要权限的文章）。
+
 安全约定：Cookie **只**会附加到 `luogu.com.cn` / `luogu.org` 及其子域；`auto` 模式下的保存站请求与 `--article-source save` **不带 Cookie**；Cookie 不会打印、不会写入日志与缓存；重定向到其它域名时由 libcurl 的 Cookie 引擎按域匹配，不会外泄。
 
 ### 正文来源：`auto`（默认）
@@ -291,10 +188,10 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 
 | 情况 | 行为 |
 | --- | --- |
-| 缓存里已有该篇题解 | **直接用缓存**，不发请求；两个来源都有时**优先原站** |
+| 缓存里已有该篇文章 | **直接用缓存**，不发请求；两个来源都有时**优先原站** |
 | 缓存里没有 | 在**原站**与**保存站**之间**轮流分配**，两条通道**并行抓取** |
 | 某个站点被限流（或封禁） | 当前这一篇**临时转给另一个站点**；该站点按自己的限流等待计时，到期后继续重试本站点剩余任务 |
-| 某站点没有这篇题解或该请求失败 | **换另一个站点再试一次**（只改派一次）：保存站是第三方镜像，可能没有收录某篇题解；原站的文章也可能已被删除而镜像仍有副本 |
+| 某站点没有这篇文章或该请求失败 | **换另一个站点再试一次**（只改派一次）：保存站是第三方镜像，可能没有收录某篇文章；原站的文章也可能已被删除而镜像仍有副本 |
 | 某站点**连续被限流 3 次** | **放弃该站点**，剩余任务全部转给另一个站点（某次成功即清零连续计数） |
 | **两个站点都连续被限流 3 次** | **终止下载**（退出码 3，已抓缓存保留） |
 | 计划阶段获取题解列表 | 列表恒取原站，闸门内部仍会交互式等待/重试（列表没有备用站点） |
@@ -303,7 +200,7 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 
 ### 爬取风险分级提示
 
-程序在计划阶段（只读缓存、统计本次实际待抓篇数）后按规模给出 5 档提示，**以「实际待抓的正文篇数 N + 需要重新获取的列表数 P」定档**：
+程序在计划阶段（只读缓存、统计本次实际待抓篇数）后按规模给出 5 档提示，**以「实际待抓的文章篇数 N + 需要重新获取的列表数 P」定档**：
 
 | 档 | 计划请求数（N + P） | 提示等级 | 基础确认次数 | 加 `--yes` 后 |
 | --- | --- | --- | --- | --- |
@@ -322,7 +219,7 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 ### 延时、自动递增与耗时估算
 
 - `--request-delay 5` ⇒ 每次等待 `[3.5, 6.5]` 秒的随机值（均值 5 秒）；`--request-delay 8-15` 为显式闭区间；支持小数；单次上限 300 秒；
-- 题解请求**串行**，延时覆盖**题解列表接口**与**题解正文**；
+- 文章的请求**串行**，延时覆盖**题解列表接口**与**文章**（题解正文与 `--article` 的文章共用同一条通道与同一套延时）；
 - 延时按本次网络请求数 Np **一次性算定系数**（≤20→1.0；≤99→1.5；≤299→2.0；>299→3.0），单侧封顶 60 秒；`--no-delay-auto-scale` 关闭该机制；
 - 运行中出现限流后，本次运行剩余请求的系数**额外 ×1.5**；
 - 计划阶段会打印「预计网络请求次数 / 平均间隔 / 预计耗时」，便于当场决定是否缩小范围。
@@ -344,12 +241,12 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 
 ### 缓存、增量与断点续传
 
-题解缓存由两部分组成：
+题解与文章的缓存由两部分组成：
 
 | 文件 | 说明 |
 | --- | --- |
 | `solutions.ndjson` | 题解列表：一行一个题目，记录该题的题解列表、分页信息与抓取元信息（`pid` / `items` / `etag` / `fetched_at` 等） |
-| `articles/<文章编号>.<来源>.json` | 单篇题解正文 |
+| `articles/<文章编号>.<来源>.json` | 单篇文章正文：题解正文与 `--article` 下载的文章**共用**这一份按文章编号入键的缓存 |
 
 - 默认**优先读缓存**：列表的有效期由 `--solution-ttl`、正文的有效期由 `--article-ttl` 控制，两者默认都是**无限**——只要缓存里有就一律直接用，命中即**零请求**；只有显式指定天数后过期内容才会重取；
 - 指定了有效期且已过期时带 `If-None-Match` 发条件请求，命中 `304` 时只刷新时间戳；`--solution-ttl 0` / `--article-ttl 0` 表示每次都发条件请求；
@@ -357,26 +254,14 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 - 上次中断后重跑会跳过已缓存篇目（**断点续传**）；部分失败只缓存成功篇目，下次自动补抓；
 - 切换 `--article-source` 后另一来源视为未命中，两个来源分别缓存；
 - 缓存一律「同目录临时文件 + `fsync` + 原子替换」写入：写入失败或进程被杀时原缓存保持不变，最多残留 `.tmp.*`（启动时清理超过 1 小时的残留）；
-- 结束时打印题解缓存占用；`-CS, --clean-solutions` 只清除题解列表缓存，`-CA, --clean-articles` 只清除题解正文缓存。
-
-### 输出形态
-
-**位置模式**（`--solution-placement`，默认 `document-end`）：
-
-| 模式 | LaTeX 结构 | Markdown 结构 |
-| --- | --- | --- |
-| `document-end`（默认） | 题面各题依次 `\section`；另起一页后每题一组 `\section*{<PID> <题目名>}` → 该题各篇 `\subsection*{题解：…}`（同题题解连续排列，**不再单独生成与目录同级的一级标题**） | 文末 `# 题解` → `## <PID> <题目名>` → `### 题解：…` |
-| `per-problem` | 每题 `\section` → 题面 → 紧随该题的各篇 `\subsection*{题解：…}` | `# <PID> <题目名>` → 题面 → `### 题解：…` |
-
-- 两种模式下题解与题面都在**同一个文件**，不产生额外文件；
-- 题解标题统一格式 `题解：<题解标题>`，过长时截断为 60 字符加 `…`，避免目录与书签被超长标题撑爆。
+- 结束时打印缓存占用；`-CS, --clean-solutions` 只清除题解列表缓存，`-CA, --clean-articles` 只清除文章缓存。
 
 ### 错误与汇总
 
-- **需要登录态但无 Cookie（401 / 跳登录）**：中止并提示「需要登录态；请登录洛谷后导出 cookies.txt，并用 `--cookie <file>` 指定」；
+- **需要登录态但无 Cookie（401 / 跳登录）**：中止并提示「需要登录态；请登录洛谷后导出 cookies.txt，并用 `--cookie <file>` 指定」（只下载文章时 Cookie 可选，不会因此中止）；
 - **Cookie 过期**：中止并提示重新导出；
 - **429 / 403 / 风控页**：走上文的暂停流程；
-- **单篇 404 / 无权限 / 付费**：跳过并汇总「N 篇不可访问（已删除或无权限）」；
+- **单篇 404 / 无权限**：跳过并汇总「N 篇不可访问（已删除或无权限）」，文章不可访问时打印「文章 <编号> 不可访问……已跳过」；
 - **正文不完整（`contentFull=false`）**：默认跳过并汇总「N 篇正文不完整（可用 `--allow-partial` 导出）」，加 `--allow-partial` 后导出并在文档中标注；
 - **列表接口结构异常**：中止并提示排查；
 - **该题确无题解**：正常继续，打印「<PID> 暂无题解」，不生成按钮与小节；
@@ -403,7 +288,7 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 | `images/` | 图片缓存目录：文件名 = 完整 URL 的双种子 FNV-1a 128 位哈希（32 位十六进制）+ 白名单扩展名 |
 | `fonts/` | 字体缓存目录：无扩展名的字体文件按格式识别后复制到此并补全扩展名 |
 | `solutions.ndjson` | 题解列表缓存：一行一个题目（`{"pid": ..., "items": [...], "etag": ..., "fetched_at": ...}`），写入时替换该题目那一行 |
-| `articles/` | 题解正文缓存目录：`<文章编号>.<来源>.json` |
+| `articles/` | 文章正文缓存目录：`<文章编号>.<来源>.json`（题解正文与按 `--article` 下载的文章共用；`pid` 为空表示该文章不与题目绑定） |
 
 图片文件名仅包含哈希值与扩展名：对完整 URL 分别以官方偏移基数（`0xcbf29ce484222325`）与官方素数（`0x100000001b3`）为种子计算两路 64 位 FNV-1a，拼成 128 位后输出 32 位十六进制作为文件名主体（不含 URL 原文，避免不同图床的同名图片互相覆盖）；扩展名取自 URL 路径并做白名单清洗，非法/超长扩展名丢弃。已存在的文件会跳过。下载时按 CPU 核心数并行，洛谷图床（`luogu.com.cn`）的图片会串行下载并保持 0.5~3 秒随机间隔，避免请求过快。加 `-RD, --new-download` 时已有图片不再跳过：新图片先下载到同目录的临时文件，校验通过后再原子替换缓存中的同名图片，下载失败或内容无效时只删除临时文件，原有缓存保持不变。
 
@@ -416,7 +301,7 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 | `-CP, --clean-problems` | `luogu-extract/latest.ndjson` 与 `luogu-extract/latest.ndjson.gz`（以及更新中断时可能残留的 `latest.ndjson.tmp.*` 临时文件） |
 | `-CF, --clean-fonts` | `luogu-extract/fonts/` 目录及其中的全部字体文件 |
 | `-CS, --clean-solutions` | `luogu-extract/solutions.ndjson`（全部题解列表缓存） |
-| `-CA, --clean-articles` | `luogu-extract/articles/` 目录及其中的全部题解正文缓存 |
+| `-CA, --clean-articles` | `luogu-extract/articles/` 目录及其中的全部文章缓存 |
 
 缓存目录或文件不存在时按「已清空」处理并正常退出；删除失败（如权限不足）时输出错误信息并以非零状态码退出。
 
@@ -426,12 +311,12 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 
 | 项目 | 说明 |
 | --- | --- |
-| 文件头 | 题目总数与筛选条件（含「不显示难度 / 不显示算法类标签 / 不显示来源类标签」等显示设置说明） |
+| 文件头 | 题目总数与筛选条件（含「不显示难度 / 不显示算法类标签 / 不显示来源类标签」等显示设置说明）；同时导出题解 / 文章时标题里一并注明「M 篇题解 / K 篇文章」，`--solutions-only`（不导出题面）时只统计题解与文章 |
 | 题目分节 | 每道题以 `---` 分隔，以 `# <题号> <标题>` 作为章节标题 |
 | 单题内容 | 标签、时空限制，以及题目背景、题目描述、输入格式、输出格式、输入输出样例、说明/提示 |
 | 难度 | 默认不显示；加 `--show-difficulty-tags` 后在标题下方显示「难度：<难度>」 |
 | 标签 | 默认显示算法标签以外的标签（来源、时间、区域、特殊等，保持缓存中的原顺序）；加 `--show-algorithm-tags` 后连同算法标签一起显示；加 `--no-show-source-tags` 后不显示算法标签以外的标签；两类标签都不显示时没有「标签」一栏 |
-| 一级标题 | 可用 `--set-cover-title` 自定义（默认 `洛谷题目导出`） |
+| 一级标题 | 可用 `--set-cover-title` 自定义（默认 `洛谷题目导出`）；同时导出题解与文章时，标题会注明「共 N 道题，M 篇题解，K 篇文章」 |
 
 ### LaTeX（`-L`）
 
@@ -467,7 +352,8 @@ luogu-extract -L --tag 动态规划 --compile --output 题册.tex
 - 清除缓存的参数（`-C` / `-CIMG` / `-CP` / `-CF` / `-CS` / `-CA`）只能彼此组合使用，与非清除类参数（含 `-h`、`--tags`、`-U`、`-M`、`-L` 等）或多余的位置参数同时出现即拒绝执行；
 - `-V` / `--version` 与其他参数（含 `-h`、`--tags`、`-M`、`-L` 等）或多余的位置参数同时使用（该参数必须单独使用）；
 - 出现了程序没有的未知参数（提示使用 `-h, --help` 查看帮助）；
-- 题解相关参数（`--cookie`、`--cookie-string`、`--article-source`、`--solution-*`、`--max-solutions`、`--refresh-*`、`--no-solution-*`、`--yes` 等）在未启用 `--with-solutions`（或 `--solutions-only` / `--articles-only-download`）时，报「缺少 `--with-solutions`」；
+- 题解与文章相关参数（`--cookie`、`--cookie-string`、`--article-source`、`--solution-*`、`--article-ttl`、`--max-solutions`、`--refresh-*`、`--no-solution-*`、`--no-article-meta`、`--yes` 等）在未启用 `--with-solutions` / `--article`（或 `--solutions-only` / `--articles-only-download`）时，报「缺少 `--with-solutions`」；
+- `--article` 后未接文章编号、编号不符合规则（须为 6~32 位小写字母或数字，大写会自动转小写）、或 `--article` 未与 `-M` / `-L` 同用（`--articles-only-download` 例外）；
 - `--with-solutions` / `--solutions-only` 未与 `-M` 或 `-L` 同用（`--articles-only-download` 例外，它不需要导出模式）；
 - 启用题解功能但未提供 `--cookie` / `--cookie-string`（题解列表接口需要登录态），或两者同时给出；
 - `--request-delay` 非正数、区间不满足 `0 < min ≤ max`、或单次间隔超过 300 秒；

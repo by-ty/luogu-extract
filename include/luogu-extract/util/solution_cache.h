@@ -19,16 +19,17 @@
 // License for more details.
 
 // include/luogu-extract/util/solution_cache.h
-// 题解缓存：
+// 文章（题解属于与题目一一绑定的特殊文章）缓存：
 //   <cache_dir>/solutions.ndjson                  所有已获取到的题解列表
 //                                                 （一行一个题目）
-//   <cache_dir>/articles/<lid>.<source>.json      单篇题解正文
+//   <cache_dir>/articles/<lid>.<source>.json      单篇文章正文（题解正文同理）
 //
 // - 题解列表集中在 solutions.ndjson 里：读取时按 pid 找对应行，写入时替换
 //   该行后整体原子替换，一个题目一行、不会重复；
 // - 正文直接按文章编号入键（不再按题目分目录；文章编号全局唯一），
 //   并按来源分别入键（official / save）：两个来源的正文可能不一致，
-//   切换来源时另一来源视为未命中；
+//   切换来源时另一来源视为未命中；按文章下载（--article）与按题解下载
+//   共用同一份缓存，同一篇文章不会重复保存；
 // - 一律「临时文件（同目录）+ fsync + 原子替换」，写入失败或中断时
 //   原缓存保持不变，进程被杀最多残留 .tmp.*，不会产生半截 JSON；
 // - 读取时校验 JSON 结构与字段类型，非法即视为未命中并重抓。
@@ -57,7 +58,9 @@ namespace solcache
         std::vector<solution::Summary> items;
     };
 
-    /// 单篇题解正文缓存（<cache_dir>/articles/<lid>.<source>.json）
+    /// 单篇文章正文缓存（<cache_dir>/articles/<lid>.<source>.json）。
+    /// 题解正文与按 --article 下载的文章共用同一结构：pid 为空表示
+    /// 「按文章下载」（该文章不与题目绑定）
     struct DocEntry
     {
         int version = 1;
@@ -74,7 +77,7 @@ namespace solcache
         std::string url;   // 原文地址（来源为保存站时指向保存站）
     };
 
-    /// <cache_dir>/articles/
+    /// 文章正文缓存目录 <cache_dir>/articles/（存放 <lid>.<source>.json）
     std::filesystem::path articles_dir();
 
     /// <cache_dir>/solutions.ndjson
@@ -91,11 +94,12 @@ namespace solcache
     /// 其余行原样保留，整体原子替换）；失败时原缓存保持不变
     bool store_list(const ListEntry &entry, std::string &error);
 
-    /// 读取正文缓存（pid 只用于校验缓存里的题目编号是否一致）
+    /// 读取正文缓存（pid 只用于校验缓存里的题目编号是否一致；
+    /// pid 为空表示按文章下载，不校验所属题目）
     bool load_doc(const std::string &pid, const std::string &lid,
                   solution::Source src, DocEntry &out);
 
-    /// 写入正文缓存（原子替换）
+    /// 写入正文缓存（原子替换；entry.pid 可为空，表示按文章下载）
     bool store_doc(const DocEntry &entry, std::string &error);
 
     /// 时间戳是否在 TTL 内。
@@ -114,8 +118,8 @@ namespace solcache
     /// 文件不存在时视为已清空
     crawler::derror clean_solutions();
 
-    /// -CA, --clean-articles：删除题解正文缓存目录 <cache_dir>/articles/；
-    /// 目录不存在时视为已清空
+    /// -CA, --clean-articles：删除文章正文缓存目录 <cache_dir>/articles/
+    /// （题解正文与按 --article 下载的文章都在其中）；目录不存在时视为已清空
     crawler::derror clean_articles();
 } // namespace solcache
 

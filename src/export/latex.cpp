@@ -4633,40 +4633,27 @@ std::string latex::article_to_latex(const article::Article &a)
 
 namespace
 {
-// 把一篇题解渲染为 LaTeX（设计 §10.1 / §10.2 / §10.3）：
-// - 标题统一格式「题解：<题解标题>」（超过 60 字符截断，避免撑爆目录与书签）；
-// - \luogotocsolution 负责锚点、目录条目（注明所属题目）与正文标题；
-// - 「返回题目」按钮放在标题行右侧（\hfill），不进入目录与书签。
-std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
-                              const luogu::SolutionView &view,
-                              const luogu::SolutionExportOptions &sol_opt)
+// 一篇题解 / 文章共用的 LaTeX 正文渲染（设计 §10.1 / §10.2 / §10.3）：
+// 题解是与题目一一绑定的特殊文章，两者除「返回题目」按钮与目录中注明
+// 所属题目外完全一致。
+// - \luogotocsolution 负责锚点、目录条目与正文标题；
+// - heading_plain 为纯文本标题（页眉用），heading_latex 为正文标题；
+// - toc_text 为目录与 PDF 书签文字（空串表示不进目录）；
+// - button 为标题行右侧的跳转按钮（没有可跳转的题目时为空）。
+std::string article_body_to_latex(const std::string &heading_plain,
+                                  const std::string &heading_latex,
+                                  const std::string &toc_text,
+                                  const std::string &anchor,
+                                  const std::string &button,
+                                  const luogu::SolutionView &view,
+                                  const luogu::SolutionExportOptions &sol_opt)
 {
-    const std::string title = luogu::truncate_utf8(
-        view.title.empty() ? std::string("（无标题）")
-                           : luogu::strip_solution_title_prefix(view.title),
-        60);
-    const std::string heading_plain = "题解：" + title;
-    const std::string heading_latex = "题解：" + inline_to_latex(title);
-
-    // 目录与书签文字：注明所属题目（PID + 题目名），保持黑色（不随难度着色）
-    std::string toc_text = escape_latex(heading_plain) + "（" +
-                           escape_latex(set.pid + " " + set.problem_title) + "）";
-    if (!sol_opt.article_toc)
-        toc_text.clear();
-
-    const std::string anchor = luogu::solution_anchor(set.pid, view.lid);
-
-    std::string button;
-    if (sol_opt.article_to_problem_link && !sol_opt.articles_only)
-        button = "\\hfill\\luogosolutionlink{" +
-                 luogu::problem_anchor(set.pid) + "}{返回题目}";
-
     std::string out;
     out += "\\luogotocsolution{" + toc_text + "}{" + heading_latex + "}{" + anchor +
            "}{" + button + "}\n\n";
-    // 页眉：每篇题解都把自己的标题写进 \rightmark，逻辑与题目页一致
+    // 页眉：每篇题解 / 文章都把自己的标题写进 \rightmark，逻辑与题目页一致
     // （题目由 \section 设置页眉）。页眉取「本页第一个 \markright」并在
-    // 无标记的续页沿用，因此题解页显示的是这一篇题解的标题，而不是题面
+    // 无标记的续页沿用，因此文章页显示的是这一篇的标题，而不是前面题面
     // 最后一道题或所属题目的题目名；同一页上开始多篇时显示最先开始的那篇。
     // \rightmark 是纯文本页眉：标题与题目页眉一样做「转义 + 去数学」处理
     // （页眉里不放公式）；\markright 不写 \addcontentsline、也不生成书签，
@@ -4701,6 +4688,60 @@ std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
         out += render_markdown(view.content, 0) + "\n";
     return out;
 }
+
+// 把一篇题解渲染为 LaTeX（设计 §10.1 / §10.2 / §10.3）：
+// - 标题统一格式「题解：<题解标题>」（超过 60 字符截断，避免撑爆目录与书签）；
+// - \luogotocsolution 负责锚点、目录条目（注明所属题目）与正文标题；
+// - 「返回题目」按钮放在标题行右侧（\hfill），不进入目录与书签。
+std::string solution_to_latex(const luogu::ProblemSolutionSet &set,
+                              const luogu::SolutionView &view,
+                              const luogu::SolutionExportOptions &sol_opt)
+{
+    const std::string title = luogu::truncate_utf8(
+        view.title.empty() ? std::string("（无标题）")
+                           : luogu::strip_solution_title_prefix(view.title),
+        60);
+    const std::string heading_plain = "题解：" + title;
+    const std::string heading_latex = "题解：" + inline_to_latex(title);
+
+    // 目录与书签文字：注明所属题目（PID + 题目名），保持黑色（不随难度着色）
+    std::string toc_text = escape_latex(heading_plain) + "（" +
+                           escape_latex(set.pid + " " + set.problem_title) + "）";
+    if (!sol_opt.article_toc)
+        toc_text.clear();
+
+    const std::string anchor = luogu::solution_anchor(set.pid, view.lid);
+
+    std::string button;
+    if (sol_opt.article_to_problem_link && !sol_opt.articles_only)
+        button = "\\hfill\\luogosolutionlink{" +
+                 luogu::problem_anchor(set.pid) + "}{返回题目}";
+
+    return article_body_to_latex(heading_plain, heading_latex, toc_text, anchor,
+                                 button, view, sol_opt);
+}
+
+// 把一篇按文章编号下载的文章（--article）渲染为 LaTeX：
+// 级别与题解正文完全相同（目录层级、页眉、元信息、正文渲染），
+// 只是没有题目跳转按钮，目录条目里也不注明所属题目
+std::string standalone_article_to_latex(const luogu::SolutionView &view,
+                                        const luogu::SolutionExportOptions &sol_opt)
+{
+    const std::string title = luogu::truncate_utf8(
+        view.title.empty() ? std::string("（无标题）")
+                           : luogu::strip_article_title_prefix(view.title),
+        60);
+    const std::string heading_plain = "文章：" + title;
+    const std::string heading_latex = "文章：" + inline_to_latex(title);
+
+    std::string toc_text = escape_latex(heading_plain);
+    if (!sol_opt.article_toc)
+        toc_text.clear();
+
+    return article_body_to_latex(heading_plain, heading_latex, toc_text,
+                                 luogu::article_anchor(view.lid), std::string(),
+                                 view, sol_opt);
+}
 } // namespace
 
 bool latex::export_latex(const luogu::ExportFilter &filter,
@@ -4730,8 +4771,10 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     }
     const std::vector<problem::Problem> &problems = local_problems;
 
-    // ---- 题解导出（设计 §十）----
+    // ---- 题解与文章导出（设计 §十）----
     const bool export_solutions = opt.solutions != nullptr && opt.solution_export.enabled;
+    // --article 的文章：与题解同文件、同级别，统一放在文档最后
+    const bool export_articles = opt.articles != nullptr && !opt.articles->items.empty();
     const bool articles_only = export_solutions && opt.solution_export.articles_only;
     const bool per_problem = export_solutions && !opt.solution_export.document_end;
     if (export_solutions && articles_only &&
@@ -4752,9 +4795,9 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     {
         std::set<std::string> seen_missing;
         std::error_code ec;
-        // 题面与题解正文中引用的图片一并处理（题解图片同样走现有的
-        // 图片下载通道：洛谷图床串行 + 0.5~3 秒随机间隔，不受
-        // --request-delay 影响）
+        // 题面、题解正文与文章正文中引用的图片一并处理（题解与文章的图片
+        // 同样走现有的图片下载通道：洛谷图床串行 + 0.5~3 秒随机间隔，
+        // 不受 --request-delay 影响）
         std::vector<std::string> candidate_urls;
         for (const auto &p : problems)
             for (const auto &url : p.image_urls())
@@ -4765,6 +4808,12 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
                 for (const auto &view : item.solutions)
                     for (const auto &url : image_util::extract_urls(view.content))
                         candidate_urls.push_back(url);
+        }
+        if (export_articles)
+        {
+            for (const auto &view : opt.articles->items)
+                for (const auto &url : image_util::extract_urls(view.content))
+                    candidate_urls.push_back(url);
         }
         for (const auto &url : candidate_urls)
         {
@@ -4985,7 +5034,7 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         std::fputs("  \\endgroup}\n", out);
     }
 
-    // ---- 题解导出用的宏（设计 §10.2 / §10.3）----
+    // ---- 题解与文章导出用的宏（设计 §10.2 / §10.3）----
     // \luogosolutionlink{<锚点>}{<文字>}：蓝底白字的跳转按钮，外观与
     // \luogotag 完全一致（白字 + \colorbox[HTML]，\vphantom{涵} 与 \smash
     // 固定高度与深度，多个按钮完全等高）。文字是编译期常量（查看题解 /
@@ -5000,14 +5049,16 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     //
     // \luogotocsolution{#1}{#2}{#3}{#4}：
     //   #1 = 目录与 PDF 书签的文字（纯文本，已转义；空串表示不进目录）
-    //   #2 = 正文标题（题解：<标题>，已做行内转换）
-    //   #3 = 锚点名 sol-<PID>-<lid>
-    //   #4 = 标题行右侧的按钮（可为空）
+    //   #2 = 正文标题（题解：<标题> / 文章：<标题>，已做行内转换）
+    //   #3 = 锚点名（题解 sol-<PID>-<lid>，文章 sol-art-<lid>）
+    //   #4 = 标题行右侧的按钮（可为空；文章没有可跳转的题目，恒为空）
     // 说明：这里只用 \addcontentsline 而不额外调用 \pdfbookmark ——
     // hyperref 会为 \addcontentsline 的条目自动补一个同层级书签，
     // 两者同时使用会产生重复书签（已实测）。
-    if (opt.solutions != nullptr && opt.solution_export.enabled)
+    if (export_solutions || export_articles)
     {
+        // --article 单独使用时没有题解，但文章与题解共用这一套宏
+        // （文章正是「不与题目绑定的文章」）
         std::fputs("\\newcommand{\\luogosolutionlink}[2]{%\n", out);
         std::fputs("  \\hyperlink{#1}{\\textcolor{white}{\\colorbox[HTML]{3498db}{"
                    "\\normalfont\\tagsfonts\\small\\vphantom{涵}\\smash{#2}}}}\n", out);
@@ -5405,6 +5456,28 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         }
         std::fputs("\n", out);
     }
+
+    // ---- --article：文章统一置于文档最后（题解之后）----
+    // 级别与题解正文完全相同（目录层级、页眉、元信息、正文渲染），
+    // 只是没有题目跳转按钮，目录条目里也不注明所属题目
+    if (export_articles)
+    {
+        if (body_started)
+            std::fputs("\\clearpage\n", out); // 前面写过题面 / 题解：另起一页
+        // \clearpage 之后已经是一张新页：第一篇不必再换一次页；
+        // 文档里原本什么都没有时（--article 单独使用）目录末尾已经
+        // \newpage 换过页，同样不必再插入换页
+        body_started = false;
+        for (const auto &view : opt.articles->items)
+        {
+            page_break(); // 上一篇文章（或题解区）结束后另起一页
+            if (!write_body(standalone_article_to_latex(view, opt.solution_export)))
+                return false;
+            body_started = true;
+        }
+        std::fputs("\n", out);
+    }
+
     // total == 0 时输出固定的完成提示（不计算百分比）
     if (total > 0)
         std::printf("\r正在导出：%3d %% (%d/%d)，完成。\n", cnt * 100 / total, cnt, total);

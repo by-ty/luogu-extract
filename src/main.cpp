@@ -99,10 +99,13 @@ struct Options
 
     luogu::ExportFilter filter; // -M / -L 共用的筛选条件
 
-    // ---- 题解抓取与导出（--with-solutions 等，设计 §十二）----
+    // ---- 题解与文章抓取与导出（--with-solutions / --article 等，设计 §十二）----
     bool with_solutions = false;          // --with-solutions
     bool solutions_only = false;          // --solutions-only
     bool articles_only_download = false; // --articles-only-download
+    // --article：按文章编号单独下载的文章（已规范化为小写并按顺序去重）；
+    // 与题解正文共用来源、TTL、刷新等控制选项，统一放在文档最后
+    std::vector<std::string> articles;
     std::string cookie_file;              // --cookie
     std::string cookie_string;            // --cookie-string
     std::string article_source;          // --article-source（空 = auto）
@@ -118,7 +121,7 @@ struct Options
     bool refresh_solutions = false;       // --refresh-solutions
     bool refresh_articles = false;        // --refresh-articles
     bool clean_solutions = false;         // -CS, --clean-solutions（题解列表缓存）
-    bool clean_articles = false;          // -CA, --clean-articles（题解正文缓存）
+    bool clean_articles = false;          // -CA, --clean-articles（文章缓存）
     std::string solution_placement = "document-end"; // --solution-placement
     bool no_problem_to_solution_link = false; // --no-problem-to-solution-link
     bool no_solution_to_problem_link = false; // --no-solution-to-problem-link
@@ -126,7 +129,8 @@ struct Options
     bool no_article_meta = false;        // --no-article-meta
     bool yes = false;                     // --yes
 
-    // 题解相关参数是否被显式给出（用于「缺少 --with-solutions」校验）
+    // 题解 / 文章相关参数是否被显式给出（用于「缺少 --with-solutions」校验：
+    // --article 自己就能启用文章下载，不算在内）
     bool solution_option_used = false;
 };
 
@@ -165,6 +169,7 @@ enum
     OPT_COOKIE,
     OPT_COOKIE_STRING,
     OPT_WITH_SOLUTIONS,
+    OPT_ARTICLE,
     OPT_ARTICLE_SOURCE,
     OPT_MAX_SOLUTIONS,
     OPT_REQUEST_DELAY,
@@ -203,6 +208,7 @@ inline const char *option_name_for(int code)
     case OPT_FONT_TITLE_ZH: return "--set-font-title-zh-CN";
     case OPT_FONT_TITLE_EN: return "--set-font-title-en-US";
     case OPT_COVER_TITLE: return "--set-cover-title";
+    case OPT_ARTICLE: return "--article";
     case OPT_COOKIE: return "--cookie";
     case OPT_COOKIE_STRING: return "--cookie-string";
     case OPT_ARTICLE_SOURCE: return "--article-source";
@@ -232,47 +238,49 @@ inline std::string option_argument_hint(const std::string &token)
     if (token == "--set-cover-title") return "封面标题";
     if (token == "--pid") return "题号（如 P1001，可多个，空格分隔或重复 --pid）";
     if (token == "--pid-range") return "题号范围（如 P1001-P1010，可多组，空格分隔或重复 --pid-range）";
+    if (token == "--article") return "文章编号（如 p7fsb45w，可多个，空格分隔或重复 --article）";
     if (token == "--cookie") return "Netscape 格式的 cookies.txt 路径";
     if (token == "--cookie-string") return "Cookie 串（形如 \"k=v; k2=v2\"）";
-    if (token == "--article-source") return "题解正文来源（auto / official / save）";
+    if (token == "--article-source") return "文章正文来源（auto / official / save）";
     if (token == "--max-solutions") return "每题抓取的题解篇数（正整数或 all）";
     if (token == "--request-delay") return "请求间隔秒数（如 5 或 8-15）";
     if (token == "--solution-ttl") return "题解列表缓存有效期天数（0 表示只用 ETag）";
-    if (token == "--article-ttl") return "题解正文缓存有效期天数（0 表示只用 ETag）";
+    if (token == "--article-ttl") return "文章正文缓存有效期天数（0 表示只用 ETag）";
     if (token == "--rate-limit-wait") return "限流等待秒数（0 表示检测到限流直接停止）";
     if (token == "--solution-placement") return "题解位置（document-end 或 per-problem）";
     return "";
 }
 
-// -h, --help 的帮助信息
+// -h, --help 的帮助信息（与 README「参数说明」表中的说明保持一致）
 const char *kUsage =
     "用法：luogu-extract [选项]\n"
     "\n"
     "选项：\n"
-    "  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）；\n"
-    "                        可与 -M / -L 一同使用，此时先更新缓存再下载题目\n"
+    "  -U, --update          更新题目列表缓存（latest.ndjson）与标签缓存（tags.json）。\n"
+    "                        可与 -M / -L 一同使用：同时给出时先更新缓存再下载题目；\n"
+    "                        更新失败时不继续执行后续操作\n"
     "  -M, --markdown        筛选并导出 Markdown（默认输出 problems.md）\n"
     "  -L, --latex           筛选并导出 LaTeX（默认输出 problems.tex）\n"
-    "                        （-M 与 -L 不能同时使用）\n"
-    "  -RD, --new-download   下载题目时不使用之前缓存的图片，而是重新下载图片\n"
-    "                        （仅在使用 -L 时有效）\n"
-    "      --compile         导出 LaTeX 完成后自动执行\n"
-    "                        latexmk --xelatex <输出文件名>.tex，等编译结束后\n"
-    "                        再执行 latexmk -c 清理中间文件（仅在使用 -L 时有效）\n"
-    "  -C, --clean-all       清空 luogu-extract 缓存文件夹（含题目列表、标签、图片\n"
-    "                        与字体缓存）\n"
+    "                        （-M 与 -L 不能同时使用；需要两种格式时请分两次执行）\n"
+    "  -RD, --new-download   仅 -L 有效：下载题目时不使用之前缓存的图片，而是重新下载图片\n"
+    "      --compile         仅 -L 有效：LaTeX 文档导出成功后自动在输出文件所在目录执行\n"
+    "                        latexmk --xelatex <输出文件名>.tex，等编译结束后再执行\n"
+    "                        latexmk -c <输出文件名>.tex 清理中间文件（PDF 保留）；\n"
+    "                        编译失败时提示退出码并以非零状态码结束\n"
+    "  -C, --clean-all       清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）\n"
     "  -CIMG, --clean-images\n"
-    "                        清除 luogu-extract/images/ 下的图片缓存\n"
+    "                        清除 <缓存目录>/images/ 下的图片缓存\n"
     "  -CP, --clean-problems\n"
     "                        清除题面缓存（latest.ndjson 与 latest.ndjson.gz）\n"
     "  -CF, --clean-fonts\n"
-    "                        清除字体缓存（<缓存目录>/fonts/）\n"
+    "                        清除字体缓存（<缓存目录>/fonts/，即 --set-font-* 传入\n"
+    "                        无扩展名字体文件时复制的副本）\n"
     "  -CS, --clean-solutions\n"
     "                        清除题解列表缓存（<缓存目录>/solutions.ndjson）\n"
     "  -CA, --clean-articles\n"
-    "                        清除题解正文缓存（<缓存目录>/articles/）\n"
+    "                        清除文章缓存（<缓存目录>/articles/）\n"
     "  （以上清除缓存的参数只能彼此组合使用，不能与其他参数同时使用）\n"
-    "      --tags            按官方分类打印标签 ID 对照表（可与 -h 组合使用）\n"
+    "      --tags            按官方分类打印标签 ID 对照表（可与 -h 组合）\n"
     "      --tag <name|ID>...\n"
     "                        按标签筛选；多个值可用空格分隔或重复 --tag，题目须包含全部标签；\n"
     "                        引号整体恰好等于已知标签名（如 \"NOIP 普及组\"）时按一个标签处理\n"
@@ -280,15 +288,15 @@ const char *kUsage =
     "                        按难度（0~8）筛选；支持区间写法（如 1-4），多组值可用空格\n"
     "                        分隔或重复 --difficulty\n"
     "      --type <B|P>      按题目类型筛选（可重复，空表示全部类型）\n"
-    "      --pid <pid>...    按题号精确筛选；多个值可用空格分隔或重复 --pid。\n"
-    "                        与其它筛选参数（--tag、--difficulty、--type、\n"
-    "                        --pid-range）同时给出时，命中的题目会追加到其它\n"
-    "                        条件筛选出的题目之外（命中的题目不要求满足其它条件）\n"
+    "      --pid <pid>...    按题号精确筛选；多个值可用空格分隔或重复 --pid。每个题号必须\n"
+    "                        存在于题目列表缓存中。可与其它筛选参数（--tag、--difficulty、\n"
+    "                        --type、--pid-range）同时使用：命中的题目会追加到其它条件筛选\n"
+    "                        出的题目之外（并集），命中的题目不要求满足其它条件（已经符合\n"
+    "                        筛选条件时不会重复导出）\n"
     "      --pid-range <a>-<b>\n"
-    "                        按题号闭区间筛选；多组值可用空格分隔或重复 --pid-range。\n"
-    "                        一组范围两端必须为同一题库（如都为 P 题库或都为 B 题库，\n"
-    "                        多组范围间可不为同一题库），且两端点均须存在于缓存中。\n"
-    "                        可与 --tag、--difficulty、--type 同时使用\n"
+    "                        按题号闭区间筛选；多组值可用空格分隔或重复 --pid-range。一组\n"
+    "                        范围两端必须为同一题库（如都为 P 题库或都为 B 题库，多组范围间\n"
+    "                        可不为同一题库）。可与 --tag、--difficulty、--type、--pid 同时使用\n"
     "      --lang <zh-CN|en> 题面语言（默认 zh-CN；en 缺失时回退中文）\n"
     "      --output <file>   输出文件路径（默认 problems.md / problems.tex）\n"
     "\n"
@@ -298,15 +306,15 @@ const char *kUsage =
     "      --show-algorithm-tags\n"
     "                        显示算法标签（默认不显示）\n"
     "      --show-difficulty-tags\n"
-    "                        显示题目难度（默认不显示）\n"
+    "                        显示难度（默认不显示）\n"
     "\n"
-    "LaTeX 排版选项（仅在使用 -L 时有效）：\n"
+    "LaTeX 排版选项（仅 -L 有效）：\n"
     "      --no-toc-links    目录条目不带跳转到对应题目页的超链接（默认带超链接）\n"
     "      --toc-backlinks   每页页眉处的页码为跳回目录页的超链接（默认无超链接）\n"
     "      --show-contents-difficulty-tags\n"
-    "                        目录中的题目标题按题目难度着色\n"
-    "      --paginate        题目与题解各自从新的一页开始（默认连续排版；\n"
-    "                        不影响目录与 PDF 书签）\n"
+    "                        目录中的题目标题按难度着色\n"
+    "      --paginate        题目与题解（文章）之间分页，每道题、每篇文章都从新的一页开始\n"
+    "                        （默认连续排版）\n"
     "      --set-font-cover-page <font>\n"
     "                        设置封面标题字体；<font> 为系统已安装的字体名称或字体文件地址\n"
     "      --set-font-body-zh-CN <font>\n"
@@ -330,59 +338,62 @@ const char *kUsage =
     "                        设置封面标题（-L，默认 luogu extract）或 Markdown 一级标题\n"
     "                        （-M，默认 洛谷题目导出）\n"
     "\n"
-    "题解下载选项（需先登录洛谷并导出 cookies.txt）：\n"
-    "      --with-solutions  启用题解抓取与导出；\n"
-    "                        需与 -M 或 -L 同用，题解与题面导出到同一个文件\n"
-    "      --cookie <file>   Netscape 格式的 cookies.txt（含登录态）；题解列表\n"
-    "                        接口需要登录态，该参数是启用题解功能的前提\n"
+    "题解与文章下载选项：\n"
+    "      --with-solutions  启用题解抓取与导出；需与 -M 或 -L 同用，\n"
+    "                        题解与题面导出到同一个文件\n"
+    "      --article <文章编号>...\n"
+    "                        按文章编号下载指定的文章（编号为 6~32 位小写字母或数字，取自\n"
+    "                        文章页地址 /article/<编号>，如 p7fsb45w；大写会自动转小写）；\n"
+    "                        多个值可用空格分隔或重复 --article，重复编号只下载一次；导出的\n"
+    "                        文章统一放在文档最后。需与 -M 或 -L 同用；未给出任何题目筛选\n"
+    "                        参数且未启用题解功能时，文档只含这些文章\n"
+    "      --cookie <file>   需提供 Netscape 格式的 cookies.txt（含登录态）。题解列表接口\n"
+    "                        需要登录态，该参数是启用题解功能的前提\n"
     "      --cookie-string <k=v; ...>\n"
     "                        直接传入 Cookie 串（与 --cookie 二选一）\n"
     "      --article-source <auto|official|save>\n"
-    "                        题解正文来源，默认 auto：缓存里已有的题解一律优先\n"
-    "                        使用（两个来源都有时优先原站），未命中的在原站与\n"
-    "                        保存站之间轮流分配并**并行**抓取（两个站点各自计算\n"
-    "                        延时；某一站点被限流时任务暂时转给另一站点，连续\n"
-    "                        被限流 3 次则放弃该站点，两个站点都放弃则终止）。\n"
-    "                        official 只用洛谷原站，save 只用第三方镜像洛谷保存站\n"
-    "                        题解列表恒取洛谷原站\n"
+    "                        文章正文来源，默认 auto：缓存优先（两个来源都有时优先原站），\n"
+    "                        未命中的在洛谷原站与洛谷保存站之间轮流分配、并行抓取；\n"
+    "                        official 只用原站；save 只用保存站。题解列表恒取洛谷原站\n"
     "      --max-solutions <n|all>\n"
     "                        每题抓取篇数，默认 1，按列表顺序取最靠前的 n 篇；\n"
     "                        all 表示该题全部题解\n"
     "      --request-delay <mean|min-max>\n"
     "                        请求的平均间隔秒数，默认 5（实际为均值 ±30% 均匀抖动，\n"
-    "                        即 3.5~6.5 秒）；也支持显式区间（如 8-15）与小数；\n"
-    "                        单次间隔上限 300 秒。图片下载不受该参数影响\n"
+    "                        即 3.5~6.5 秒）；也支持显式区间（如 8-15）与小数（如 2.5）；\n"
+    "                        单次间隔上限 300 秒\n"
     "      --no-delay-auto-scale\n"
     "                        关闭「随抓取量自动递增延时」与限流后的额外放大\n"
     "      --solution-ttl <days>\n"
-    "                        题解列表缓存有效期天数；默认无限；0 表示每次都发\n"
-    "                        ETag 条件请求（304 时只刷新时间戳）\n"
+    "                        题解列表缓存有效期天数：默认无限；0 表示每次都发 ETag 条件\n"
+    "                        请求（304 时只刷新时间戳）\n"
     "      --article-ttl <days>\n"
-    "                        题解正文缓存有效期天数，语义同上，默认无限\n"
+    "                        文章正文缓存有效期天数：默认无限；0 表示每次都发 ETag 条件\n"
+    "                        请求（304 时只刷新时间戳）\n"
     "      --rate-limit-wait <seconds>\n"
-    "                        检测到限流后的等待时长，默认 120；0 表示检测到限流\n"
-    "                        直接停止（等待期间可按 S 立即停止、按 C 确认后继续）\n"
-    "      --allow-partial   允许导出正文不完整的题解（默认跳过并汇总）\n"
+    "                        检测到限流后的等待时长，默认 120；0 表示检测到限流直接停止。\n"
+    "                        等待期间可按 S 立即停止、按 C 确认后立即继续\n"
+    "      --allow-partial   允许导出正文不完整的文章（默认跳过并在结束时汇总）\n"
     "      --refresh-solutions\n"
-    "                        强制重新获取题解列表（忽略 TTL 与 ETag）\n"
+    "                        强制重新获取题解列表（忽略有效期与 ETag）\n"
     "      --refresh-articles\n"
-    "                        强制重新获取题解正文（忽略 TTL 与 ETag）\n"
-
-    "      --solutions-only 只导出题解，不导出题面（需与 -M 或 -L 同用）\n"
+    "                        强制重新获取文章正文（忽略有效期与 ETag）\n"
+    "      --solutions-only  只导出题解，不导出题面（需与 -M 或 -L 同用；\n"
+    "                        --article 的文章仍会导出在文档最后）\n"
     "      --articles-only-download\n"
-    "                        只抓取并缓存题解，不导出任何文件（不需要 -M / -L）\n"
+    "                        只抓取并缓存文章，不导出任何文件（不需要 -M / -L）\n"
     "      --solution-placement <document-end|per-problem>\n"
-    "                        题解在文档中的位置，默认 document-end（统一置于文档\n"
-    "                        最后）；per-problem 表示紧跟对应题目之后\n"
+    "                        题解在文档中的位置，默认 document-end（统一置于文档最后）；\n"
+    "                        per-problem 表示紧跟对应题目之后\n"
     "      --no-problem-to-solution-link\n"
-    "                        关闭题目到题解的跳转（-L 为题目标题右侧的「查看题解」\n"
-    "                        按钮，-M 为 Markdown 中的跳转链接）\n"
+    "                        关闭题目到题解的跳转（-L 为题目标题右侧的「查看题解」按钮，\n"
+    "                        -M 为 Markdown 中的跳转链接）\n"
     "      --no-solution-to-problem-link\n"
-    "                        关闭题解到题目的跳转（-L 为题解标题右侧的「返回题目」\n"
-    "                        按钮，-M 为 Markdown 中的跳转链接）\n"
-    "      --no-solution-toc 题解标题不进目录（仅 -L；默认进目录并注明所属题目）\n"
-    "      --no-article-meta\n"
-    "                        不显示题解的来源与原文链接\n"
+    "                        关闭题解到题目的跳转（-L 为题解标题右侧的「返回题目」按钮，\n"
+    "                        -M 为 Markdown 中的跳转链接）\n"
+    "      --no-solution-toc 仅 -L 有效：文章的标题不进目录（默认进目录，题解条目注明\n"
+    "                        所属题目，普通文章条目只有标题）\n"
+    "      --no-article-meta 不显示文章的来源与原文链接\n"
     "  -y, --yes             把爬取风险的确认次数减少 1 次（减到 0 为止）；\n"
     "                        不能把第 5 档变为无需确认\n"
     "  -h, --help            显示帮助\n"
@@ -390,9 +401,9 @@ const char *kUsage =
     "                        （不能与其他参数同时使用）\n"
     "\n"
     "声明：\n"
-    "  题解著作权归原作者，导出物仅供个人离线阅读，请勿再分发或用于商业用途；\n"
-    "  抓取频率与请求总量由你自行判断，后果自负；保存站 luogu.me 为第三方站点；\n"
-    "  请遵守洛谷用户协议及相关法律法规。\n";
+    "  文章（含题解）著作权归原作者，导出物仅供个人离线阅读，请勿再分发或用于\n"
+    "  商业用途；抓取频率与请求总量由你自行判断，后果自负；保存站 luogu.me 为\n"
+    "  第三方站点；请遵守洛谷用户协议及相关法律法规。\n";
 
 void printUsage()
 {
@@ -715,8 +726,9 @@ inline bool parse_pid_range_arg(const std::string &spec,
     return true;
 }
 
-// 题解抓取的整体流程（设计 §四 / §五 / §六 / §八）：
+// 题解 / 文章抓取的整体流程（设计 §四 / §五 / §六 / §八）：
 // 计划（只读缓存）→ 延时与系数 → 风险分级确认 → 逐题串行抓取。
+// --article 的文章与题解共用同一套计划、确认与抓取流程。
 // 返回值即进程退出码；proceed 为 false 表示不要再导出（取消或中止）。
 struct SolutionRun
 {
@@ -727,9 +739,15 @@ struct SolutionRun
 SolutionRun run_solutions(const Options &options,
                           const luogu::ProblemSelection &selection,
                           luogu::SolutionBundle &bundle,
-                          solution::CrawlStats &stats)
+                          luogu::ArticleBundle &articles,
+                          solution::CrawlStats &stats,
+                          bool need_cookie)
 {
     SolutionRun run;
+    // 只下载文章（--article，没有题解功能参与）：文案与登录态要求都按文章处理
+    const bool articles_only_run = !options.articles.empty() &&
+                                   !options.with_solutions && !options.solutions_only;
+    const char *subject = articles_only_run ? "文章" : "题解";
 
     // ---- 凭据通道：Cookie 只在洛谷原站请求上使用（保存站一律不带）----
     std::string cookie_error;
@@ -760,15 +778,24 @@ SolutionRun run_solutions(const Options &options,
         std::fputs(cookie_warnings.c_str(), stdout);
     if (!crawler::gate_has_cookies())
     {
-        printError("题解列表接口需要登录态；请登录洛谷后导出 cookies.txt，"
-                   "并用 --cookie <file> 指定（或使用 --cookie-string）");
-        run.exit_code = 1;
-        run.proceed = false;
-        return run;
+        if (need_cookie)
+        {
+            printError("题解列表接口需要登录态；请登录洛谷后导出 cookies.txt，"
+                       "并用 --cookie <file> 指定（或使用 --cookie-string）");
+            run.exit_code = 1;
+            run.proceed = false;
+            return run;
+        }
+        // 只下载文章：Cookie 可选（文章接口通常无需登录态）
+        std::printf("未提供 Cookie：文章接口通常无需登录态；"
+                    "若某篇文章不可访问（需要权限），可用 --cookie 指定登录态\n");
     }
-    std::printf("已载入 %zu 条 Cookie（来源：%s；Cookie 不会用于保存站等第三方域名）\n",
-                crawler::gate_cookie_count(),
-                crawler::gate_cookie_file_hint().c_str());
+    else
+    {
+        std::printf("已载入 %zu 条 Cookie（来源：%s；Cookie 不会用于保存站等第三方域名）\n",
+                    crawler::gate_cookie_count(),
+                    crawler::gate_cookie_file_hint().c_str());
+    }
 
     // ---- 抓取参数 ----
     solution::TaskOptions task;
@@ -779,6 +806,7 @@ SolutionRun run_solutions(const Options &options,
         task.source = solution::Source::Official;
     else
         task.source = solution::Source::Auto;
+    task.article_lids = options.articles; // --article：按文章编号下载
     task.max_articles = options.max_solutions;
     task.list_ttl_days = options.solution_ttl;
     task.article_ttl_days = options.article_ttl;
@@ -787,13 +815,13 @@ SolutionRun run_solutions(const Options &options,
     task.allow_partial = options.allow_partial;
 
     if (task.source == solution::Source::Save)
-        std::printf("题解正文来源：洛谷保存站（第三方镜像，内容可能滞后或缺失；"
-                    "该来源不发送任何 Cookie）\n");
+        std::printf("%s正文来源：洛谷保存站（第三方镜像，内容可能滞后或缺失；"
+                    "该来源不发送任何 Cookie）\n", subject);
     else if (task.source == solution::Source::Official)
-        std::printf("题解正文来源：洛谷原站\n");
+        std::printf("%s正文来源：洛谷原站\n", subject);
     else
-        std::printf("题解正文来源：auto（缓存优先；未命中的在原站与保存站之间"
-                    "轮流分配、并行抓取；保存站为第三方镜像，内容可能滞后或缺失）\n");
+        std::printf("%s正文来源：auto（缓存优先；未命中的在原站与保存站之间轮流分配、并行抓取）\n",
+                    subject);
 
     crawler::GateConfig gate_config;
     if (!options.request_delay.empty() &&
@@ -876,6 +904,12 @@ SolutionRun run_solutions(const Options &options,
     risk.per_problem_all = options.max_solutions < 0;
     risk.articles = plan.articles_to_fetch;
     risk.cached_articles = plan.cached_articles;
+    risk.solution_to_fetch = plan.solution_to_fetch;
+    risk.cached_solutions = plan.cached_solutions;
+    risk.standalone_articles =
+        static_cast<long long>(plan.standalone_articles.size());
+    risk.standalone_to_fetch = plan.standalone_to_fetch;
+    risk.cached_standalone = plan.cached_standalone;
     risk.list_requests = plan.list_requests;
     risk.total_requests = plan.total_requests;
     risk.seconds_per_request = crawler::gate_effective_delay_seconds();
@@ -899,7 +933,7 @@ SolutionRun run_solutions(const Options &options,
 
     // ---- 抓取阶段 ----
     std::string crawl_error;
-    if (!solution::crawl(plan, task, bundle, stats, crawl_error))
+    if (!solution::crawl(plan, task, bundle, articles, stats, crawl_error))
     {
         printError(crawl_error);
         run.exit_code = 1;
@@ -907,12 +941,18 @@ SolutionRun run_solutions(const Options &options,
         return run;
     }
 
-    printSuccess("题解抓取完成：" + solution::describe_crawl_stats(stats));
+    printSuccess(std::string(subject) + "抓取完成：" +
+                 solution::describe_crawl_stats(stats));
     const std::uintmax_t used = solcache::cache_size();
-    std::printf("题解缓存占用：%.2f MB（%s 与 %s）\n",
-                static_cast<double>(used) / (1024.0 * 1024.0),
-                luogu::compat::path_to_utf8(solcache::articles_dir()).c_str(),
-                luogu::compat::path_to_utf8(solcache::solutions_index_path()).c_str());
+    if (articles_only_run)
+        std::printf("文章缓存占用：%.2f MB（%s）\n",
+                    static_cast<double>(used) / (1024.0 * 1024.0),
+                    luogu::compat::path_to_utf8(solcache::articles_dir()).c_str());
+    else
+        std::printf("题解缓存占用：%.2f MB（%s 与 %s）\n",
+                    static_cast<double>(used) / (1024.0 * 1024.0),
+                    luogu::compat::path_to_utf8(solcache::articles_dir()).c_str(),
+                    luogu::compat::path_to_utf8(solcache::solutions_index_path()).c_str());
 
     if (stats.stopped_by_rate_limit)
     {
@@ -1110,6 +1150,7 @@ int main(int argc, char *argv[])
         {"cookie",               required_argument, nullptr, OPT_COOKIE},
         {"cookie-string",        required_argument, nullptr, OPT_COOKIE_STRING},
         {"with-solutions",       no_argument,       nullptr, OPT_WITH_SOLUTIONS},
+        {"article",              required_argument, nullptr, OPT_ARTICLE},
         {"article-source",      required_argument, nullptr, OPT_ARTICLE_SOURCE},
         {"max-solutions",       required_argument, nullptr, OPT_MAX_SOLUTIONS},
         {"request-delay",        required_argument, nullptr, OPT_REQUEST_DELAY},
@@ -1142,6 +1183,11 @@ int main(int argc, char *argv[])
     // 与位置参数（optind）一起判断是否属于参数使用错误
     int option_count = 0;
     int non_clean_option_count = 0;
+    // 最后给出的「多值选项」：1 = --pid，2 = --pid-range，3 = --article。
+    // 空格分隔的多个值（如 "--pid P1001 P1002"、"--article a b"）里，
+    // 多余的裸参数按最后给出的那个选项处理：同时给出 --pid 与 --article 时
+    // 不会互相抢对方的后续值。
+    int last_multi_option = 0;
     // 短选项串以 ':' 开头：getopt 出错时不打印英文提示，
     // 由下面的 '?' / ':' 分支输出统一的中文错误信息
     while ((opt = getopt_long(arg_count, arg_vector, ":UMLhVCy", kLongOptions, nullptr)) != -1)
@@ -1275,6 +1321,38 @@ int main(int argc, char *argv[])
         case OPT_WITH_SOLUTIONS:
             options.with_solutions = true;
             break;
+        case OPT_ARTICLE:
+        {
+            // 支持空格分隔的多个文章编号（如 --article p7fsb45w a1b2c3d4）；
+            // 空值视为参数缺失，后续裸参数在下方统一并入 --article
+            const std::vector<std::string> tokens =
+                split_whitespace(optarg ? optarg : "");
+            if (tokens.empty() || (optarg && optarg[0] == '-'))
+            {
+                printError("参数 '--article' 后缺少文章编号；"
+                           "正确用法：--article <文章编号>（如 p7fsb45w，可多个，"
+                           "空格分隔或重复 --article）");
+                return 1;
+            }
+            for (const auto &tok : tokens)
+            {
+                // 文章编号一律按小写处理（洛谷文章页地址里就是小写字母+数字）
+                const std::string lid = to_lower_ascii(tok);
+                if (!solution::valid_lid(lid))
+                {
+                    printError("参数 '--article' 的值 '" + tok +
+                               "' 不是合法的文章编号；文章编号为 6~32 位小写字母或"
+                               "数字（如 p7fsb45w），可在文章页地址 /article/<编号> "
+                               "中找到");
+                    return 1;
+                }
+                if (std::find(options.articles.begin(), options.articles.end(),
+                              lid) == options.articles.end())
+                    options.articles.push_back(lid); // 重复编号只下载一次
+            }
+            last_multi_option = 3; // 后续裸参数按 --article 处理
+            break;
+        }
         case OPT_SOLUTIONS_ONLY:
             options.solutions_only = true;
             break;
@@ -1504,6 +1582,7 @@ int main(int argc, char *argv[])
             }
             for (const auto &tok : tokens)
                 options.filter.pids.push_back(tok);
+            last_multi_option = 1; // 后续裸参数按 --pid 处理
             break;
         }
         case OPT_PID_RANGE:
@@ -1529,6 +1608,7 @@ int main(int argc, char *argv[])
                 }
                 options.filter.pid_ranges.push_back(std::move(range));
             }
+            last_multi_option = 2; // 后续裸参数按 --pid-range 处理
             break;
         }
         case 'h':
@@ -1644,9 +1724,16 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // ---- 题解功能：参数使用校验（设计 §十二）----
+    // ---- 题解与文章功能：参数使用校验（设计 §十二）----
     const bool solutions_enabled = options.with_solutions || options.solutions_only ||
                                    options.articles_only_download;
+    // --article：按文章编号单独下载；文章与题解正文共用同一套控制选项，
+    // 因此它自己就能让这些选项合法（不需要 --with-solutions）
+    const bool articles_enabled = !options.articles.empty();
+    // 只抓文章（没有题解功能参与）：不导出题面，也不需要题解列表的登录态
+    const bool articles_only_run = articles_enabled && !options.with_solutions &&
+                                   !options.solutions_only;
+    const bool download_enabled = solutions_enabled || articles_enabled;
     if (options.solutions_only && options.articles_only_download)
     {
         printError("参数 --solutions-only 与 --articles-only-download 不能同时使用；"
@@ -1654,14 +1741,14 @@ int main(int argc, char *argv[])
                    "--articles-only-download 只抓取并缓存、不导出任何文件");
         return 1;
     }
-    if (!solutions_enabled && options.solution_option_used)
+    if (!download_enabled && options.solution_option_used)
     {
-        printError("题解相关参数（--cookie、--cookie-string、--solution-*、"
-                   "--max-solutions、--refresh-*、--no-solution-*、-y/--yes 等）"
-                   "需要与 --with-solutions（或 --solutions-only / "
-                   "--articles-only-download）一起使用；正确用法："
+        printError("题解与文章相关参数（--cookie、--cookie-string、--solution-*、"
+                   "--article-*、--max-solutions、--refresh-*、--no-solution-*、"
+                   "-y/--yes 等）需要与 --with-solutions（或 --solutions-only / "
+                   "--articles-only-download / --article）一起使用；正确用法："
                    "luogu-extract -L --cookie cookies.txt --with-solutions ..."
-                   "（未启用题解功能时程序完全不碰题解）");
+                   "（未启用题解与文章功能时程序完全不碰它们）");
         return 1;
     }
     if (solutions_enabled)
@@ -1675,20 +1762,32 @@ int main(int argc, char *argv[])
                        "请改用 --articles-only-download");
             return 1;
         }
-        if (options.cookie_file.empty() && options.cookie_string.empty())
-        {
-            printError("题解列表接口需要登录态；请登录洛谷后导出 cookies.txt，"
-                       "并用 --cookie <file> 指定（或使用 --cookie-string）。"
-                       "题解功能必须带登录态，未提供 Cookie 时无法启用");
-            return 1;
-        }
-        if (!options.cookie_file.empty() && !options.cookie_string.empty())
-        {
-            printError("参数 --cookie 与 --cookie-string 不能同时使用；"
-                       "请只保留其中一个（--cookie 指定 Netscape 格式的 cookies.txt，"
-                       "--cookie-string 直接给出 Cookie 串）");
-            return 1;
-        }
+    }
+    if (articles_enabled && !options.articles_only_download &&
+        !options.markdown && !options.latex &&
+        !(options.with_solutions || options.solutions_only))
+    {
+        // 只下载文章时也必须有一个导出格式（--articles-only-download 例外）
+        printError("参数 --article 需要与 -M（导出 Markdown）或 -L（导出 LaTeX）"
+                   "一起使用；若只想抓取并缓存文章，请改用 --articles-only-download");
+        return 1;
+    }
+    // 题解列表接口需要登录态；只下载文章时 Cookie 可选（文章接口通常无需登录，
+    // 但提供 Cookie 可以访问需要权限的文章）
+    const bool need_cookie = solutions_enabled && !articles_only_run;
+    if (need_cookie && options.cookie_file.empty() && options.cookie_string.empty())
+    {
+        printError("题解列表接口需要登录态；请登录洛谷后导出 cookies.txt，"
+                   "并用 --cookie <file> 指定（或使用 --cookie-string）。"
+                   "题解功能必须带登录态，未提供 Cookie 时无法启用");
+        return 1;
+    }
+    if (!options.cookie_file.empty() && !options.cookie_string.empty())
+    {
+        printError("参数 --cookie 与 --cookie-string 不能同时使用；"
+                   "请只保留其中一个（--cookie 指定 Netscape 格式的 cookies.txt，"
+                   "--cookie-string 直接给出 Cookie 串）");
+        return 1;
     }
 
     // 仅 -L 支持的参数与 -M 一起使用属于参数填用错误：拒绝执行并提示正确用法
@@ -1740,7 +1839,8 @@ int main(int argc, char *argv[])
     // （--articles-only-download 只抓缓存、不需要 -M/-L）才允许这样写
     const bool bare_args_allowed = options.markdown || options.latex ||
                                    options.with_solutions || options.solutions_only ||
-                                   options.articles_only_download;
+                                   options.articles_only_download ||
+                                   !options.articles.empty();
     if (optind < arg_count)
     {
         if (!bare_args_allowed)
@@ -1753,12 +1853,34 @@ int main(int argc, char *argv[])
         }
 
         // -M/-L 模式下剩余裸参数的处理：
+        // - 最后给出的是 --article 时按文章编号并入 --article
+        //   （支持 "--article p7fsb45w a1b2c3d4"；与 --pid 同用时也不会
+        //    互相抢对方的后续值）；
         // - 使用过 --pid 时按题号并入 --pid（支持 "--pid P1001 P1002"）；
         // - 使用过 --pid-range 时按题号范围并入 --pid-range
         //   （支持 "--pid-range P1001-P1010 P2000-P2010"）；
         // - 否则保持原行为：按难度解析，解析不了则当作 --tag 的后续值
         //   （支持 "--difficulty 1 2 3" 与 "--tag 模拟 贪心" 两种写法）
-        if (!options.filter.pids.empty())
+        if (last_multi_option == 3 && !options.articles.empty())
+        {
+            for (int i = optind; i < arg_count; ++i)
+            {
+                const std::string lid = to_lower_ascii(arg_vector[i]);
+                if (!solution::valid_lid(lid))
+                {
+                    printError("参数 '--article' 的值 '" +
+                               std::string(arg_vector[i]) +
+                               "' 不是合法的文章编号；文章编号为 6~32 位小写字母或"
+                               "数字（如 p7fsb45w），可在文章页地址 /article/<编号> "
+                               "中找到");
+                    return 1;
+                }
+                if (std::find(options.articles.begin(), options.articles.end(),
+                              lid) == options.articles.end())
+                    options.articles.push_back(lid);
+            }
+        }
+        else if (!options.filter.pids.empty())
         {
             for (int i = optind; i < arg_count; ++i)
                 options.filter.pids.push_back(arg_vector[i]);
@@ -1805,7 +1927,7 @@ int main(int argc, char *argv[])
     {
         printError("未指定任何操作；请至少使用 -U（更新缓存）、-M（导出 Markdown）、"
                    "-L（导出 LaTeX）、-C（清空缓存）、--tags（查看标签对照表）或 "
-                   "--articles-only-download（只抓取题解缓存）之一，"
+                   "--articles-only-download（只抓取题解与文章缓存）之一，"
                    "并可用 -h, --help 查看帮助信息");
         return 1;
     }
@@ -1839,35 +1961,53 @@ int main(int argc, char *argv[])
         }
     }
 
-    // ---- 题解抓取（--with-solutions / --solutions-only / --articles-only-download）----
+    // ---- 题解与文章抓取（--with-solutions / --solutions-only /
+    //      --articles-only-download / --article）----
     // 先按筛选条件选中题目（与后面导出共用同一份结果，避免重复解析题目缓存），
-    // 再走「计划 → 风险确认 → 抓取」，最后与题面一起导出到同一份文件
+    // 再走「计划 → 风险确认 → 抓取」，最后与题面一起导出到同一份文件。
+    // --article 单独使用（未给任何题目筛选参数）时不导出题面：
+    // 「若无其他下载的内容，则仅下载文章并导出」
+    const bool no_problem_filters = options.filter.tags.empty() &&
+                                    options.filter.difficulties.empty() &&
+                                    options.filter.types.empty() &&
+                                    options.filter.pids.empty() &&
+                                    options.filter.pid_ranges.empty();
+    const bool article_only_document = articles_enabled && no_problem_filters &&
+                                       !options.with_solutions && !options.solutions_only;
+
     luogu::ProblemSelection selection;
     luogu::SolutionBundle solution_bundle;
+    luogu::ArticleBundle article_bundle;
     solution::CrawlStats solution_stats;
     luogu::SolutionExportOptions solution_export;
-    if (solutions_enabled)
+    if (solutions_enabled || articles_enabled)
     {
-        std::string select_error;
-        if (!luogu::select_problems(options.filter, selection.problems,
-                                    &selection.resolved_tags, select_error))
+        // 只导出文章时不必读取题目列表缓存：没有筛选条件就没有题目要导出
+        if (!article_only_document)
         {
-            printError(select_error);
-            curl_global_cleanup();
-            return 1;
+            std::string select_error;
+            if (!luogu::select_problems(options.filter, selection.problems,
+                                        &selection.resolved_tags, select_error))
+            {
+                printError(select_error);
+                curl_global_cleanup();
+                return 1;
+            }
         }
 
-        const SolutionRun run =
-            run_solutions(options, selection, solution_bundle, solution_stats);
+        const SolutionRun run = run_solutions(options, selection, solution_bundle,
+                                              article_bundle, solution_stats,
+                                              need_cookie);
         if (!run.proceed)
         {
             curl_global_cleanup();
             return run.exit_code;
         }
 
-        solution_export.enabled = true;
+        solution_export.enabled = solutions_enabled;
         solution_export.document_end = (options.solution_placement != "per-problem");
         solution_export.articles_only = options.solutions_only;
+        solution_export.export_problems = !article_only_document;
         solution_export.problem_to_article_link = !options.no_problem_to_solution_link;
         solution_export.article_to_problem_link = !options.no_solution_to_problem_link;
         solution_export.article_toc = !options.no_solution_toc;
@@ -1881,6 +2021,10 @@ int main(int argc, char *argv[])
             return 0;
         }
     }
+    // 有文章要导出时把文章包装进导出选项（没有文章则为 nullptr，
+    // 生成的文档与不含 --article 时完全一致）
+    const luogu::ArticleBundle *articles_ptr =
+        articles_enabled ? &article_bundle : nullptr;
 
     if (options.markdown)
     {
@@ -1892,9 +2036,16 @@ int main(int argc, char *argv[])
                                       options.cover_title, display,
                                       solutions_enabled ? &solution_bundle : nullptr,
                                       solution_export,
-                                      solutions_enabled ? &selection : nullptr))
-            printSuccess("已把筛选出的题目导出到 '" +
-                         luogu::compat::path_to_utf8(out_path) + "'");
+                                      (solutions_enabled || articles_enabled)
+                                          ? &selection
+                                          : nullptr,
+                                      articles_ptr))
+            printSuccess(std::string("已把") +
+                         (article_only_document
+                              ? "下载的文章"
+                              : (articles_enabled ? "筛选出的题目与文章"
+                                                  : "筛选出的题目")) +
+                         "导出到 '" + luogu::compat::path_to_utf8(out_path) + "'");
         else
         {
             printError(error);
@@ -1915,7 +2066,7 @@ int main(int argc, char *argv[])
         latex_opt.bilibili_links = !options.no_bilibili_link;
         latex_opt.display = display;
         latex_opt.toc_difficulty = options.show_contents_difficulty_tags;
-        // --paginate：题目之间、文章（题解）之间分页
+        // --paginate：题目之间、文章（题解 / --article）之间分页
         latex_opt.paginate = options.paginate;
         // -RD, --new-download：下载题面图片时忽略已有缓存，全部重新下载
         // （新图片原子替换缓存中的同名图片，下载失败时保留原有缓存）
@@ -1929,11 +2080,14 @@ int main(int argc, char *argv[])
         latex_opt.cover_title = options.cover_title;
 
         latex_opt.solutions = solutions_enabled ? &solution_bundle : nullptr;
+        latex_opt.articles = articles_ptr;
         latex_opt.solution_export = solution_export;
 
         std::string error;
         if (!latex::export_latex(options.filter, out_path, error, latex_opt,
-                                 solutions_enabled ? &selection : nullptr))
+                                 (solutions_enabled || articles_enabled)
+                                     ? &selection
+                                     : nullptr))
         {
             printError(error);
             result = 1;

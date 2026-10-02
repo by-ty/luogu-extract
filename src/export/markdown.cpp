@@ -86,25 +86,25 @@ std::vector<std::string> visible_tags(const std::vector<std::string> &tags,
 }
 
 
-// 输出一篇题解（Markdown 侧，设计 §10.4）：
+// 输出一篇题解或文章（Markdown 侧，设计 §10.4）：
 // - 显式 HTML 锚点：中文标题的自动锚点在不同渲染器下不一致，必须显式指定；
 // - 题解 → 题目 的「返回题目」与 题目 → 题解 的「查看题解」两个开关独立；
+//   按文章下载的文章（--article）不与题目绑定，没有「返回题目」链接；
 // - 元信息块（来源 / 原文）由 --no-article-meta 关闭；
 // - 正文按洛谷 Markdown 原文输出（Markdown 侧既有语义）。
-bool write_markdown_solution(FILE *out,
-                             const std::function<bool(const std::string &)> &write_str,
-                             const std::function<bool()> &fail_write,
-                             const std::string &pid, const std::string &problem_title,
-                             const luogu::SolutionView &view,
-                             const luogu::SolutionExportOptions &opt)
+bool write_markdown_article(FILE *out,
+                            const std::function<bool(const std::string &)> &write_str,
+                            const std::function<bool()> &fail_write,
+                            const std::string &heading, const std::string &anchor,
+                            const std::string &problem_pid,
+                            const luogu::SolutionView &view,
+                            const luogu::SolutionExportOptions &opt)
 {
-    (void)problem_title;
-    std::fprintf(out, "<a id=\"%s\"></a>\n\n",
-                 luogu::solution_anchor(pid, view.lid).c_str());
-    std::fprintf(out, "### %s\n\n", luogu::solution_heading(view.title).c_str());
-    if (opt.article_to_problem_link)
+    std::fprintf(out, "<a id=\"%s\"></a>\n\n", anchor.c_str());
+    std::fprintf(out, "### %s\n\n", heading.c_str());
+    if (!problem_pid.empty() && opt.article_to_problem_link)
         std::fprintf(out, "<a href=\"#%s\">返回题目</a>\n\n",
-                     luogu::problem_anchor(pid).c_str());
+                     luogu::problem_anchor(problem_pid).c_str());
     if (opt.article_meta)
     {
         std::fprintf(out, "> 来源：%s\n", view.source_name.c_str());
@@ -134,7 +134,8 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
                                const luogu::DisplayOptions &display,
                                const luogu::SolutionBundle *solutions,
                                const luogu::SolutionExportOptions &solution_export,
-                               const luogu::ProblemSelection *preselected)
+                               const luogu::ProblemSelection *preselected,
+                               const luogu::ArticleBundle *articles)
 {
     error.clear();
 
@@ -185,6 +186,8 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
 
     // 题解导出相关（设计 §十）：题解与题面同文件，默认统一置于文档最后
     const bool with_solutions = solutions != nullptr && solution_export.enabled;
+    // --article 的文章（与题解同文件，统一放在文档最后）
+    const bool with_articles = articles != nullptr && !articles->items.empty();
     size_t solution_total = 0;
     if (with_solutions)
         for (const auto &item : solutions->items)
@@ -192,19 +195,49 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
 
     // 一级标题：--set-cover-title 指定时使用指定标题，否则用默认标题
     const std::string cover = cover_title.empty() ? "洛谷题目导出" : cover_title;
-    if (with_solutions)
-        std::fprintf(out, "# %s（共 %zu 道题，%zu 篇题解）\n\n", cover.c_str(),
-                     problems.size(), solution_total);
+    std::string header_count;
+    if (solution_export.articles_only)
+    {
+        // --solutions-only：文档里没有题面，只统计题解与文章
+        header_count = "共 " + std::to_string(solution_total) + " 篇题解";
+        if (with_articles)
+            header_count += "，" + std::to_string(articles->items.size()) + " 篇文章";
+    }
+    else if (solution_export.export_problems)
+    {
+        header_count = "共 " + std::to_string(problems.size()) + " 道题";
+        if (with_solutions)
+            header_count += "，" + std::to_string(solution_total) + " 篇题解";
+        if (with_articles)
+            header_count += "，" + std::to_string(articles->items.size()) + " 篇文章";
+    }
     else
-        std::fprintf(out, "# %s（共 %zu 道题）\n\n", cover.c_str(), problems.size());
+    {
+        // --article 单独使用：文档只含文章
+        header_count = "共 " +
+                       std::to_string(with_articles ? articles->items.size() : 0) +
+                       " 篇文章";
+    }
+    std::fprintf(out, "# %s（%s）\n\n", cover.c_str(), header_count.c_str());
 
-    const std::string conds = luogu::describe_filter(filter, resolved_tags, display);
+    std::string conds = luogu::describe_filter(filter, resolved_tags, display);
+    if (!solution_export.export_problems)
+        conds = "无（未指定题目筛选条件，仅导出文章）";
+    else if (solution_export.articles_only && conds.empty())
+        conds = "无（未指定题目筛选条件，仅导出题解）";
+    else if (conds.empty())
+        conds = "无（导出全部题目）";
     std::fputs("筛选条件：", out);
-    if (!write_str(conds.empty() ? "无（导出全部题目）" : conds))
+    if (!write_str(conds))
         return fail_write();
     std::fputs("\n\n", out);
 
-    for (const auto &p : problems)
+    // 渲染一道题的题面（难度 / 标签 / 时空限制 + 背景 / 描述 / 输入输出格式 /
+    // 样例 / 说明提示）。--solutions-only 只导出题解与文章、不导出题面，这时
+    // 不调用本函数（题解仍按题目顺序单独输出，见下方 per-problem 分支）。
+    // sol_set 为该题的题解（题面处的「查看题解」链接用），可为 nullptr。
+    auto write_problem = [&](const problem::Problem &p,
+                             const luogu::ProblemSolutionSet *sol_set) -> bool
     {
         // 题面语言：英文优先取 translations，缺失时回退中文
         std::string title = p.name;
@@ -243,8 +276,6 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
 
         // 题面处的「查看题解」链接：目标为文末该题第一篇题解的显式锚点
         // （中文标题的自动锚点在不同 Markdown 渲染器下不一致，必须显式指定）
-        const luogu::ProblemSolutionSet *sol_set =
-            with_solutions ? solutions->find(p.pid) : nullptr;
         if (with_solutions && solution_export.problem_to_article_link && sol_set &&
             !sol_set->solutions.empty())
         {
@@ -341,14 +372,28 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
                 return fail_write();
             std::fputs("\n\n", out);
         }
+        return true;
+    };
+
+    for (const auto &p : problems)
+    {
+        const luogu::ProblemSolutionSet *sol_set =
+            with_solutions ? solutions->find(p.pid) : nullptr;
+
+        // --solutions-only：只导出题解与文章、不导出题面（与 -L 一致）
+        if (!solution_export.articles_only && !write_problem(p, sol_set))
+            return false;
 
         // --solution-placement per-problem：该题的题解紧跟题面之后
         if (with_solutions && !solution_export.document_end && sol_set)
         {
             for (const auto &view : sol_set->solutions)
             {
-                if (!write_markdown_solution(out, write_str, fail_write, p.pid,
-                                             title, view, solution_export))
+                if (!write_markdown_article(
+                        out, write_str, fail_write,
+                        luogu::solution_heading(view.title),
+                        luogu::solution_anchor(p.pid, view.lid), p.pid, view,
+                        solution_export))
                     return false;
             }
         }
@@ -367,11 +412,28 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
                          item.problem_title.c_str());
             for (const auto &view : item.solutions)
             {
-                if (!write_markdown_solution(out, write_str, fail_write, item.pid,
-                                             item.problem_title, view,
-                                             solution_export))
+                if (!write_markdown_article(
+                        out, write_str, fail_write,
+                        luogu::solution_heading(view.title),
+                        luogu::solution_anchor(item.pid, view.lid), item.pid, view,
+                        solution_export))
                     return false;
             }
+        }
+    }
+
+    // --article：文章统一置于文档最后（同时下载题解与文章时，文章在题解之后）。
+    // 文章不与题目绑定，因此没有题目分组标题，也没有「返回题目」链接
+    if (with_articles)
+    {
+        std::fputs("---\n\n# 文章\n\n", out);
+        for (const auto &view : articles->items)
+        {
+            if (!write_markdown_article(out, write_str, fail_write,
+                                        luogu::article_heading(view.title),
+                                        luogu::article_anchor(view.lid),
+                                        std::string(), view, solution_export))
+                return false;
         }
     }
 

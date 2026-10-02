@@ -78,10 +78,13 @@ namespace latex
         // 封面标题文字（--set-cover-title；空串表示默认 "luogu extract"）
         std::string cover_title;
 
-        // ---- 题解导出（设计 §十）----
+        // ---- 题解与文章导出（设计 §十）----
         // 题解包（nullptr 表示不导出题解）；题解与题面在同一文件内，
         // 位置由 solution_export.document_end 决定
         const luogu::SolutionBundle *solutions = nullptr;
+        // --article 按文章编号下载的文章（nullptr 表示没有）；文章统一放在
+        // 文档最后（题解之后），级别与题解相同，只是没有题目跳转按钮
+        const luogu::ArticleBundle *articles = nullptr;
         luogu::SolutionExportOptions solution_export;
     };
 

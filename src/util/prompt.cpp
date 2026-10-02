@@ -171,26 +171,70 @@ prompt::RiskInfo prompt::plan_risk(long long total_requests, bool yes)
 
 prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
 {
+    // 「题解 / 文章」篇数的中文描述：只有题解时就是「N 篇题解」，
+    // 只有文章（--article 单独使用）时只说文章，两者都有时并列。
+    // 注意：题解为 0 篇但确实在抓题解（题目选了、题解全命中缓存）时仍按题解描述
+    const bool has_solutions = info.solution_to_fetch > 0 ||
+                               info.cached_solutions > 0 ||
+                               info.standalone_articles == 0;
+    auto count_phrase = [&](long long solutions, long long articles) {
+        std::string phrase;
+        if (has_solutions)
+            phrase = std::to_string(solutions) + " 篇题解";
+        if (info.standalone_articles > 0)
+        {
+            if (!phrase.empty())
+                phrase += "与";
+            phrase += std::to_string(articles) + " 篇文章";
+        }
+        return phrase;
+    };
+
     // ---- 预计 0 次网络请求（全部命中缓存）：一行精简提示，不做任何确认 ----
     if (info.total_requests <= 0)
     {
-        print_warning("[提示] " + std::to_string(info.problems) + " 道题的 " +
-                      std::to_string(info.cached_articles) +
-                      " 篇题解全部命中缓存，本次无需网络请求。");
+        std::string cached_line;
+        if (has_solutions && info.problems > 0)
+            cached_line = std::to_string(info.problems) + " 道题的 " +
+                          std::to_string(info.cached_solutions) + " 篇题解";
+        if (info.standalone_articles > 0)
+        {
+            if (!cached_line.empty())
+                cached_line += "与 ";
+            cached_line += std::to_string(info.cached_standalone) + " 篇文章";
+        }
+        if (cached_line.empty())
+            cached_line = std::to_string(info.cached_articles) + " 篇内容";
+        print_warning("[提示] " + cached_line +
+                      "全部命中缓存，本次无需网络请求。");
         return ConfirmResult::Proceed;
     }
 
     // ---- 规模与耗时：三要素与估算，先给出便于用户当场决定 ----
     std::string scale_line = "即将抓取：";
-    scale_line += std::to_string(info.problems) + " 道题 × 每题 ";
-    scale_line += info.per_problem_all ? std::string("all（全部）")
-                                       : std::to_string(info.per_problem) + " 篇";
-    scale_line += " = " + std::to_string(info.articles + info.cached_articles) +
-                  " 篇题解";
-    if (info.cached_articles > 0)
-        scale_line += "（" + std::to_string(info.cached_articles) +
-                      " 篇已命中缓存，实际需抓 " + std::to_string(info.articles) +
-                      " 篇）";
+    if (has_solutions && info.problems > 0)
+    {
+        scale_line += std::to_string(info.problems) + " 道题 × 每题 ";
+        scale_line += info.per_problem_all ? std::string("all（全部）")
+                                           : std::to_string(info.per_problem) + " 篇";
+        scale_line += " = " +
+                      std::to_string(info.solution_to_fetch + info.cached_solutions) +
+                      " 篇题解";
+        if (info.cached_solutions > 0)
+            scale_line += "（" + std::to_string(info.cached_solutions) +
+                          " 篇已命中缓存，实际需抓 " +
+                          std::to_string(info.solution_to_fetch) + " 篇）";
+        if (info.standalone_articles > 0)
+            scale_line += "；";
+    }
+    if (info.standalone_articles > 0)
+    {
+        scale_line += std::to_string(info.standalone_articles) + " 篇文章";
+        if (info.cached_standalone > 0)
+            scale_line += "（" + std::to_string(info.cached_standalone) +
+                          " 篇已命中缓存，实际需抓 " +
+                          std::to_string(info.standalone_to_fetch) + " 篇）";
+    }
     if (info.list_requests > 0)
         scale_line += "；另有 " + std::to_string(info.list_requests) +
                       " 个题解列表需要获取";
@@ -206,7 +250,10 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
     }
 
     const std::string advice =
-        "题解版权归原作者，抓取频率与后果由你自行承担（后果自负）。\n"
+        std::string(info.standalone_articles > 0
+                        ? "文章与题解版权归原作者"
+                        : "题解版权归原作者") +
+        "，抓取频率与后果由你自行承担（后果自负）。\n"
         "建议：先用 --max-solutions 1 与少量题号试跑，确认可用后再扩大范围。";
     const std::string shrink =
         "可用 --max-solutions 1、--pid 或 --pid-range 缩小范围；中断后重跑会自动续传";
@@ -223,8 +270,10 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
     // ---- --yes 把确认次数减到 0：仍然重新打印风险要点后继续 ----
     if (info.confirmations <= 0)
     {
-        print_warning("[警告] 本次将抓取 " + std::to_string(info.articles) +
-                      " 篇题解（共 " + std::to_string(info.total_requests) +
+        print_warning("[警告] 本次将抓取 " +
+                      count_phrase(info.solution_to_fetch,
+                                   info.standalone_to_fetch) +
+                      "（共 " + std::to_string(info.total_requests) +
                       " 次网络请求）；--yes 已将确认次数减少 1 次，"
                       "无需确认，直接继续。");
         print_line(advice);
@@ -243,31 +292,33 @@ prompt::ConfirmResult prompt::confirm_risk(const RiskInfo &info)
         return ConfirmResult::CannotConfirm;
     }
 
+    const std::string count_text =
+        count_phrase(info.solution_to_fetch, info.standalone_to_fetch);
     const int total_confirm = info.confirmations;
     for (int i = 1; i <= total_confirm; ++i)
     {
         // 每次确认之间重新打印风险要点（不做刷屏式重复）
         if (info.level >= 5)
         {
-            print_alert("[醒目警告] 本次将抓取 " + std::to_string(info.articles) +
-                        " 篇题解，严重超出常规使用范围，不推荐这么做。");
+            print_alert("[醒目警告] 本次将抓取 " + count_text +
+                        "，严重超出常规使用范围，不推荐这么做。");
             print_line("           频繁请求可能导致账号被临时封禁，后果自负。");
         }
         else if (info.level == 4)
         {
-            print_alert("[严厉警告] 本次将抓取 " + std::to_string(info.articles) +
-                        " 篇题解，请求量较大，请确认这确实是你需要的。");
+            print_alert("[严厉警告] 本次将抓取 " + count_text +
+                        "，请求量较大，请确认这确实是你需要的。");
             print_line("           短时间内大量请求可能触发限流，甚至导致账号被临时封禁。");
         }
         else if (info.level == 3)
         {
-            print_warning("[警告] 本次将抓取 " + std::to_string(info.articles) +
-                          " 篇题解，会连续发出数百次以内的网络请求。");
+            print_warning("[警告] 本次将抓取 " + count_text +
+                          "，会连续发出数百次以内的网络请求。");
         }
         else
         {
-            print_warning("[警告] 本次将抓取 " + std::to_string(info.articles) +
-                          " 篇题解，请注意请求频率。");
+            print_warning("[警告] 本次将抓取 " + count_text +
+                          "，请注意请求频率。");
         }
         print_line(advice);
 

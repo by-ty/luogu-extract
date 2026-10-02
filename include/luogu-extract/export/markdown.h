@@ -37,6 +37,9 @@ namespace markdown
     //                    默认显示来源类标签，隐藏算法标签与难度）
     // @param solutions   题解包（nullptr 表示不导出题解）；题解与题面同文件
     // @param solution_export 题解导出的位置与开关（--solution-placement 等）
+    // @param articles    --article 按文章编号下载的文章（nullptr 表示没有）；
+    //                    文章统一置于文档最后（题解之后），级别与题解相同，
+    //                    只是没有题目跳转链接与「（所属题目）」说明
     // @return 成功返回 true
     bool export_markdown(const luogu::ExportFilter &filter,
                          const std::filesystem::path &output_path,
@@ -45,7 +48,8 @@ namespace markdown
                          const luogu::DisplayOptions &display = {},
                          const luogu::SolutionBundle *solutions = nullptr,
                          const luogu::SolutionExportOptions &solution_export = {},
-                         const luogu::ProblemSelection *preselected = nullptr);
+                         const luogu::ProblemSelection *preselected = nullptr,
+                         const luogu::ArticleBundle *articles = nullptr);
 }
 
 #endif // LUOGU_EXTRACT_MARKDOWN_H

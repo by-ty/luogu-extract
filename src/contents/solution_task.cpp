@@ -229,7 +229,59 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
         if (item.no_solution)
             ++plan.no_solution_problems;
         plan.cached_articles += item.cached;
+        plan.cached_solutions += item.cached;
+        plan.solution_to_fetch += item.to_fetch;
         plan.items.push_back(std::move(item));
+    }
+
+    // ---- --article：按文章编号下载的文章（与题目无关，统一放在文档最后）----
+    // 与题解正文完全相同的缓存判定与来源分配规则（--article-source /
+    // --article-ttl / --refresh-articles）
+    for (const auto &lid : opt.article_lids)
+    {
+        StandaloneArticlePlan item;
+        item.lid = lid;
+
+        auto usable_cache = [&](Source src, solcache::DocEntry &doc) {
+            // pid 为空：按文章下载，不校验所属题目
+            return solcache::load_doc("", lid, src, doc) && doc_cache_usable(doc, opt);
+        };
+
+        solcache::DocEntry doc;
+        if (opt.source == Source::Auto)
+        {
+            if (usable_cache(Source::Official, doc))
+            {
+                item.cached = true;
+                item.cached_source = Source::Official;
+            }
+            else if (usable_cache(Source::Save, doc))
+            {
+                item.cached = true;
+                item.cached_source = Source::Save;
+            }
+        }
+        else if (usable_cache(opt.source, doc))
+        {
+            item.cached = true;
+            item.cached_source = opt.source;
+        }
+
+        if (item.cached)
+        {
+            ++plan.cached_standalone;
+            ++plan.cached_articles;
+        }
+        else
+        {
+            // auto：原站、保存站轮流分配（与题解正文共用同一个轮转计数）
+            item.site = (opt.source == Source::Auto)
+                            ? static_cast<int>(plan.articles_to_fetch % 2)
+                            : (opt.source == Source::Save ? 1 : 0);
+            ++plan.standalone_to_fetch;
+            ++plan.articles_to_fetch;
+        }
+        plan.standalone_articles.push_back(std::move(item));
     }
 
     plan.problems = static_cast<long long>(problems.size());
@@ -379,6 +431,20 @@ luogu::SolutionView make_view(const solution::Summary &summary,
     view.source_name = solution::source_display_name(site);
     view.source_url = doc.url.empty() ? article_url_for(summary.lid) : doc.url;
     return view;
+}
+
+// --article 的文章摘要：只有编号，标题与作者等信息来自缓存或接口响应
+solution::Summary summary_of_lid(const std::string &lid)
+{
+    solution::Summary summary;
+    summary.lid = lid;
+    return summary;
+}
+
+// 任务对象是文章（按编号下载，pid 为空）还是题解（与题目绑定）
+const char *task_noun(const std::string &pid)
+{
+    return pid.empty() ? "文章" : "题解";
 }
 
 // 顺序模式：把一次抓取结果计入统计
@@ -608,7 +674,8 @@ void auto_worker(AutoContext &ctx, int site)
                 ++ctx.tasks[slot].retries;
                 ctx.tasks[slot].preferred = 1 - site;
                 ctx.queue.push_back(slot);
-                warning = std::string("    题解 ") + task.summary.lid + " 在" +
+                warning = std::string("    ") + task_noun(task.pid) + " " +
+                          task.summary.lid + " 在" +
                           (site == 0 ? "洛谷原站" : "保存站") +
                           "抓取失败，改用" + (site == 0 ? "保存站" : "洛谷原站") +
                           "重试";
@@ -646,23 +713,30 @@ void auto_worker(AutoContext &ctx, int site)
             {
                 crawler::gate_note_success(ch);
                 auto_apply_locked(ctx, slot, site, outcome);
-                ++ctx.fetched;
+                // 只有真正拿到正文（含按 --allow-partial 导出的不完整正文）才计入
+                // 「成功」，与顺序模式（apply_outcome）保持一致：重试后仍然 404 /
+                // 抓取失败的篇目只计入「不可访问 / 抓取失败」的汇总
+                if (outcome.kind == FetchOutcome::Kind::Ok ||
+                    outcome.kind == FetchOutcome::Kind::PartialExported)
+                    ++ctx.fetched;
 
                 // 跳过与失败的提示与顺序模式保持一致（不静默），
                 // 文案先攒好，出了锁再打印，避免持锁做 I/O
                 switch (outcome.kind)
                 {
                 case FetchOutcome::Kind::NotFound:
-                    warning = "    题解 " + task.summary.lid +
+                    warning = std::string("    ") + task_noun(task.pid) + " " +
+                              task.summary.lid +
                               " 不可访问（已删除或无权限），已跳过";
                     break;
                 case FetchOutcome::Kind::SkippedIncomplete:
-                    warning = "    题解 " + task.summary.lid +
+                    warning = std::string("    ") + task_noun(task.pid) + " " +
+                              task.summary.lid +
                               " 正文不完整，已跳过（可用 --allow-partial 导出）";
                     break;
                 case FetchOutcome::Kind::Failed:
-                    warning = "    题解 " + task.summary.lid + " 抓取失败：" +
-                              outcome.error;
+                    warning = std::string("    ") + task_noun(task.pid) + " " +
+                              task.summary.lid + " 抓取失败：" + outcome.error;
                     if (site == 1)
                         warning += "；可用 --article-source official 改用原站";
                     break;
@@ -679,11 +753,12 @@ void auto_worker(AutoContext &ctx, int site)
 } // namespace
 
 bool solution::crawl(const Plan &plan, const TaskOptions &opt,
-                     luogu::SolutionBundle &bundle, CrawlStats &stats,
-                     std::string &error)
+                     luogu::SolutionBundle &bundle, luogu::ArticleBundle &articles,
+                     CrawlStats &stats, std::string &error)
 {
     error.clear();
     bundle.items.clear();
+    articles.items.clear();
     stats = CrawlStats();
 
     // 启动时清理超过 1 小时的 .tmp.* 残留（进程被杀时可能留下）
@@ -692,16 +767,20 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     const bool auto_mode = (opt.source == Source::Auto);
     const int total = static_cast<int>(plan.items.size());
 
-    // 每道题一个导出桶：题解按题目顺序、列表顺序排列
-    std::vector<std::vector<luogu::SolutionView>> buckets(plan.items.size());
-    std::vector<std::vector<char>> bucket_state(plan.items.size());
-    std::vector<bool> bucket_used(plan.items.size(), false);
+    // 每道题一个导出桶：题解按题目顺序、列表顺序排列；
+    // --article 的每篇文章也各占一个桶（排在全部题目之后），
+    // 这样自动模式的调度器不需要区分「题解」与「文章」
+    const size_t problem_buckets = plan.items.size();
+    const size_t bucket_count = problem_buckets + plan.standalone_articles.size();
+    std::vector<std::vector<luogu::SolutionView>> buckets(bucket_count);
+    std::vector<std::vector<char>> bucket_state(bucket_count);
+    std::vector<bool> bucket_used(bucket_count, false);
 
     AutoContext auto_ctx;
     auto_ctx.opt = &opt;
 
     // 顺序模式下的待抓任务
-    std::vector<std::pair<size_t, size_t>> seq_tasks; // (题目下标, 篇目下标)
+    std::vector<std::pair<size_t, size_t>> seq_tasks; // (桶下标, 篇目下标)
 
     for (size_t pi = 0; pi < plan.items.size(); ++pi)
     {
@@ -806,11 +885,65 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         }
     }
 
+    // ---- 2b. --article：按文章编号下载的文章（与题目无关，排在最后）----
+    const size_t standalone_count = plan.standalone_articles.size();
+    if (standalone_count > 0)
+    {
+        stats.articles_total = static_cast<int>(standalone_count);
+        for (size_t ai = 0; ai < standalone_count; ++ai)
+        {
+            const StandaloneArticlePlan &item = plan.standalone_articles[ai];
+            const size_t bi = problem_buckets + ai;
+            std::printf("\r正在抓取文章：[%zu/%zu] %s        \n", ai + 1,
+                        standalone_count, item.lid.c_str());
+            std::fflush(stdout);
+
+            bucket_used[bi] = true;
+            buckets[bi].resize(1);
+            bucket_state[bi].assign(1, 0);
+
+            const Summary summary = summary_of_lid(item.lid);
+            if (item.cached)
+            {
+                solcache::DocEntry doc;
+                if (solcache::load_doc("", item.lid, item.cached_source, doc))
+                {
+                    buckets[bi][0] = make_view(summary, doc, item.cached_source);
+                    bucket_state[bi][0] = 1;
+                    ++stats.cached;
+                    ++stats.articles_cached;
+                    continue;
+                }
+                // 理论上不会发生（计划阶段刚判定命中）：退化为重抓
+            }
+
+            if (auto_mode)
+            {
+                AutoTask task;
+                task.bucket = bi;
+                task.pid.clear(); // 空 pid = 按文章下载（不与题目绑定）
+                task.summary = summary;
+                task.preferred = item.site;
+                auto_ctx.queue.push_back(auto_ctx.tasks.size());
+                auto_ctx.tasks.push_back(std::move(task));
+                auto_ctx.slots.emplace_back();
+                auto_ctx.slot_state.push_back(0);
+            }
+            else
+            {
+                seq_tasks.emplace_back(bi, 0);
+            }
+        }
+    }
+
     // ---- 3. 抓取正文 ----
     if (auto_mode)
     {
-        std::printf("题解正文来源：原站与保存站轮流分配、并行抓取"
-                    "（缓存命中的篇目直接使用缓存）\n");
+        // 只有文章时不说「题解正文」（文章与题解共用同一套抓取与来源规则）
+        const bool only_articles = plan.items.empty() && !plan.standalone_articles.empty();
+        std::printf("%s正文来源：原站与保存站轮流分配、并行抓取"
+                    "（缓存命中的篇目直接使用缓存）\n",
+                    only_articles ? "文章" : "题解");
         std::fflush(stdout);
 
         std::thread official_thread(auto_worker, std::ref(auto_ctx), 0);
@@ -828,7 +961,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         stats.skipped_incomplete = auto_ctx.skipped_incomplete;
         stats.incomplete_exported = auto_ctx.incomplete_exported;
 
-        // 把 slot 填回各题的桶（保持题目顺序与列表顺序）
+        // 把 slot 填回各题的桶（保持题目顺序与列表顺序），随后是各篇文章
         size_t slot = 0;
         for (size_t pi = 0; pi < plan.items.size(); ++pi)
         {
@@ -847,6 +980,22 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                 }
                 ++slot;
             }
+        }
+        for (size_t ai = 0; ai < plan.standalone_articles.size(); ++ai)
+        {
+            if (plan.standalone_articles[ai].cached)
+                continue;
+            const size_t bi = problem_buckets + ai;
+            if (auto_ctx.slot_state[slot] == 1)
+            {
+                buckets[bi][0] = auto_ctx.slots[slot];
+                bucket_state[bi][0] = 1;
+            }
+            else
+            {
+                bucket_state[bi][0] = 2;
+            }
+            ++slot;
         }
 
         if (auto_ctx.both_abandoned)
@@ -870,15 +1019,22 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     {
         for (const auto &task : seq_tasks)
         {
-            const size_t pi = task.first;
+            const size_t bi = task.first;
             const size_t ai = task.second;
-            const ProblemPlan &item = plan.items[pi];
-            const Summary &summary = item.articles[ai].summary;
-            const Source site = (item.articles[ai].site == 1) ? Source::Save
-                                                              : Source::Official;
+            // 桶下标 >= 题目数即为 --article 的文章桶
+            const bool is_article = bi >= problem_buckets;
+            StandaloneArticlePlan art; // 文章桶的计划（题目桶不用）
+            if (is_article)
+                art = plan.standalone_articles[bi - problem_buckets];
+            const std::string pid = is_article ? std::string() : plan.items[bi].pid;
+            const Summary summary = is_article ? summary_of_lid(art.lid)
+                                               : plan.items[bi].articles[ai].summary;
+            const int site_index =
+                is_article ? art.site : plan.items[bi].articles[ai].site;
+            const Source site = (site_index == 1) ? Source::Save : Source::Official;
 
             const FetchOutcome outcome =
-                fetch_one_article(item.pid, summary, site, opt);
+                fetch_one_article(pid, summary, site, opt);
 
             if (outcome.kind == FetchOutcome::Kind::Stopped)
             {
@@ -900,35 +1056,36 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
             apply_outcome(outcome, stats);
             if (outcome.kind == FetchOutcome::Kind::NotFound)
             {
-                print_warning("    题解 " + summary.lid +
-                              " 不可访问（已删除或无权限），已跳过");
-                bucket_state[pi][ai] = 2;
+                print_warning("    " + std::string(task_noun(pid)) + " " +
+                              summary.lid + " 不可访问（已删除或无权限），已跳过");
+                bucket_state[bi][ai] = 2;
                 continue;
             }
             if (outcome.kind == FetchOutcome::Kind::SkippedIncomplete)
             {
-                print_warning("    题解 " + summary.lid + " 正文不完整，已跳过"
+                print_warning("    " + std::string(task_noun(pid)) + " " +
+                              summary.lid + " 正文不完整，已跳过"
                               "（可用 --allow-partial 导出）");
-                bucket_state[pi][ai] = 2;
+                bucket_state[bi][ai] = 2;
                 continue;
             }
             if (outcome.kind == FetchOutcome::Kind::Failed)
             {
-                std::string hint = "    题解 " + summary.lid + " 抓取失败：" +
-                                   outcome.error;
+                std::string hint = "    " + std::string(task_noun(pid)) + " " +
+                                   summary.lid + " 抓取失败：" + outcome.error;
                 if (site == Source::Save)
                     hint += "；可用 --article-source official 改用原站";
                 print_warning(hint);
-                bucket_state[pi][ai] = 2;
+                bucket_state[bi][ai] = 2;
                 continue;
             }
-            buckets[pi][ai] = make_view(summary, outcome.doc, site);
-            bucket_state[pi][ai] = 1;
+            buckets[bi][ai] = make_view(summary, outcome.doc, site);
+            bucket_state[bi][ai] = 1;
         }
     }
 
-    // ---- 4. 组装导出用的题解包（跳过未成功的篇目）----
-    for (size_t pi = 0; pi < plan.items.size(); ++pi)
+    // ---- 4. 组装导出用的题解包与文章包（跳过未成功的篇目）----
+    for (size_t pi = 0; pi < problem_buckets; ++pi)
     {
         if (!bucket_used[pi])
             continue;
@@ -940,6 +1097,20 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                 set.solutions.push_back(std::move(buckets[pi][ai]));
         if (!set.solutions.empty())
             bundle.items.push_back(std::move(set));
+    }
+    for (size_t ai = 0; ai < standalone_count; ++ai)
+    {
+        const size_t bi = problem_buckets + ai;
+        if (bucket_state[bi].size() != 1)
+            continue;
+        if (bucket_state[bi][0] != 1)
+        {
+            ++stats.articles_skipped; // 不可访问 / 正文不完整 / 抓取失败
+            continue;
+        }
+        if (!plan.standalone_articles[ai].cached)
+            ++stats.articles_fetched;
+        articles.items.push_back(std::move(buckets[bi][0]));
     }
 
     // 一篇都没拿到（且没有缓存可用）时视为失败：
@@ -959,10 +1130,14 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
 std::string solution::describe_crawl_stats(const CrawlStats &stats)
 {
     std::string out = "成功 " + std::to_string(stats.fetched) + " 篇";
+    if (stats.articles_total > 0)
+        out += "（其中文章 " + std::to_string(stats.articles_fetched) + " 篇）";
     if (stats.fetched_list > 0)
         out += "，新抓题解列表 " + std::to_string(stats.fetched_list) + " 个";
     if (stats.cached > 0)
         out += "，命中缓存 " + std::to_string(stats.cached) + " 篇";
+    if (stats.articles_skipped > 0)
+        out += "，" + std::to_string(stats.articles_skipped) + " 篇文章未能导出";
     if (stats.not_modified > 0)
         out += "，304 未修改 " + std::to_string(stats.not_modified) + " 篇";
     if (stats.problems_no_solution > 0)

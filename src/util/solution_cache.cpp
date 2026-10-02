@@ -356,7 +356,9 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
                         solution::Source src, DocEntry &out)
 {
     out = DocEntry();
-    if (!safe_pid(pid) || !solution::valid_lid(lid))
+    // pid 为空表示「按文章下载」（--article）：文章编号全局唯一，缓存文件只有
+    // 一份，因此不校验所属题目，也能直接复用先前作为某题题解抓到的同一篇正文
+    if ((!pid.empty() && !safe_pid(pid)) || !solution::valid_lid(lid))
         return false;
 
     std::string text;
@@ -384,9 +386,10 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
     const std::string stored_lid = str_value(root, "lid");
     if (!stored_lid.empty() && stored_lid != lid)
         return false;
-    // 正文缓存按文章编号存放（不再按题目分目录），题目编号必须与请求一致
+    // 正文缓存按文章编号存放（不再按题目分目录），题目编号必须与请求一致；
+    // 请求方不关心所属题目时（--article 按文章下载，pid 为空）跳过该校验
     const std::string stored_pid = str_value(root, "pid");
-    if (!stored_pid.empty() && stored_pid != pid)
+    if (!pid.empty() && !stored_pid.empty() && stored_pid != pid)
         return false;
 
     out.version = 1;
@@ -417,7 +420,9 @@ bool solcache::load_doc(const std::string &pid, const std::string &lid,
 bool solcache::store_doc(const DocEntry &entry, std::string &error)
 {
     error.clear();
-    if (!safe_pid(entry.pid) || !solution::valid_lid(entry.lid))
+    // pid 为空表示按文章下载（--article）：文章与题目本就没有绑定关系
+    if ((!entry.pid.empty() && !safe_pid(entry.pid)) ||
+        !solution::valid_lid(entry.lid))
     {
         error = "题解编号或题目编号不合法，拒绝写入题解缓存";
         return false;

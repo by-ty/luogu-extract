@@ -156,13 +156,14 @@ namespace luogu
                                 const std::vector<std::string> &resolved_tags,
                                 const DisplayOptions &display = {});
 
-    // ---- 题解导出（设计 §十）----
+    // ---- 题解 / 文章导出（设计 §十）----
 
-    // 一篇已抓到的题解（导出阶段的只读视图；正文为洛谷 Markdown 原文）
+    // 一篇已抓到的文章正文（导出阶段的只读视图；正文为洛谷 Markdown 原文）。
+    // 题解是与题目一一绑定的特殊文章，两者共用同一视图
     struct SolutionView
     {
         std::string lid;
-        std::string title;         // 题解标题（未截断）
+        std::string title;         // 文章标题（未截断）
         std::string author_name;
         long long time = 0;
         int upvote = 0;
@@ -194,17 +195,31 @@ namespace luogu
         }
     };
 
-    // 题解导出的位置与开关（--solution-placement 与各 --no-solution-* 参数）
+    // 按文章下载（--article）拿到的文章；顺序与命令行给出的编号一致。
+    // 这些文章不与任何题目绑定，统一放在文档最后
+    struct ArticleBundle
+    {
+        std::vector<SolutionView> items;
+    };
+
+    // 题解 / 文章导出的位置与开关（--solution-placement 与各 --no-solution-* 参数）
     struct SolutionExportOptions
     {
         bool enabled = false;              // 是否导出题解
         bool document_end = true;          // true = document-end；false = per-problem
         bool articles_only = false;        // --solutions-only：只导出题解
+        // 是否导出题面：--article 单独使用（未给任何题目筛选参数）时为 false，
+        // 此时文档只含文章（「若无其他下载的内容，则仅下载文章并导出」）
+        bool export_problems = true;
         bool problem_to_article_link = true; // 「查看题解」按钮（仅 -L）
         bool article_to_problem_link = true; // 「返回题目」按钮（仅 -L）
-        bool article_toc = true;           // 题解标题进目录（仅 -L）
+        bool article_toc = true;           // 题解 / 文章标题进目录（仅 -L）
         bool article_meta = true;          // 显示来源与原文链接
     };
+
+    // 去掉文章标题开头与「文章：」重复的前缀（题解标题的自带前缀由
+    // strip_solution_title_prefix 处理）。只有前缀、后面没有内容时原样返回。
+    std::string strip_article_title_prefix(const std::string &title);
 
     // 去掉题解标题开头与「题解：」重复的前缀：洛谷题解的标题常自带
     // 「题解：」「题解:」「题解 」开头，直接再加前缀会出现「题解：题解：…」。
@@ -216,14 +231,19 @@ namespace luogu
     // （按 Unicode 码点计数）
     std::string solution_heading(const std::string &title);
 
+    // 文章标题统一格式「文章：<标题>」（标题自带的「文章」前缀会先去掉；
+    // 题解正文以外的文章用这个，截断规则与 solution_heading 一致）
+    std::string article_heading(const std::string &title);
+
     // 按 Unicode 码点截断（不切断多字节序列）
     std::string truncate_utf8(const std::string &text, size_t max_chars);
 
-    // 锚点名：题目 sol-problem-<PID>，题解 sol-<PID>-<lid>。
-    // 两者均由已校验的 PID 与 lid 拼成（PID 为字母数字，lid 为
-    // [a-z0-9]{6,32}），因此不存在注入风险。
+    // 锚点名：题目 sol-problem-<PID>，题解 sol-<PID>-<lid>，
+    // 按文章下载的文章 sol-art-<lid>。三者均由已校验的 PID 与 lid 拼成
+    // （PID 为字母数字，lid 为 [a-z0-9]{6,32}），因此不存在注入风险。
     std::string problem_anchor(const std::string &pid);
     std::string solution_anchor(const std::string &pid, const std::string &lid);
+    std::string article_anchor(const std::string &lid);
 }
 
 #endif // LUOGU_EXTRACT_EXPORT_COMMON_H

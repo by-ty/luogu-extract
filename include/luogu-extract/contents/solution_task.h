@@ -34,10 +34,13 @@
 
 namespace solution
 {
-    /// 题解抓取与导出的运行参数
+    /// 题解 / 文章抓取与导出的运行参数
     struct TaskOptions
     {
         Source source = Source::Official; // --article-source
+        // --article：按文章编号单独下载的文章（顺序即导出顺序；main 已校验
+        // 编号并去重）。文章与题解正文共用来源、TTL、刷新与完整性等控制选项
+        std::vector<std::string> article_lids;
         // --max-solutions：正整数表示每题取前 n 篇；< 0 表示 all（该题全部题解，
         // 不设上限）
         int max_articles = 1;
@@ -84,13 +87,30 @@ namespace solution
         std::vector<ArticlePlan> articles; // 本次处理的篇目（前 wanted 篇）
     };
 
+    /// 计划阶段：一篇按文章编号下载的文章（--article）
+    struct StandaloneArticlePlan
+    {
+        std::string lid;
+        bool cached = false;             // 已命中缓存（无需网络请求）
+        Source cached_source = Source::Official; // 命中的缓存来自哪个来源
+        // auto 模式：本篇分配到哪条通道（0 原站 / 1 保存站）；
+        // 非 auto 模式固定为所选来源对应的通道；cached 为 true 时无意义
+        int site = 0;
+    };
+
     /// 计划阶段的汇总（风险分级与延时系数的输入）
     struct Plan
     {
         std::vector<ProblemPlan> items;
+        // --article 指定的文章（顺序即导出顺序），统一放在文档最后
+        std::vector<StandaloneArticlePlan> standalone_articles;
         long long problems = 0;          // 选中题目数
-        long long articles_to_fetch = 0; // N：实际待抓正文篇数
-        long long cached_articles = 0;   // 已命中缓存的篇数
+        long long articles_to_fetch = 0; // N：实际待抓正文篇数（题解 + 文章）
+        long long cached_articles = 0;   // 已命中缓存的篇数（题解 + 文章）
+        long long solution_to_fetch = 0; // 其中题解正文待抓篇数
+        long long cached_solutions = 0;  // 其中题解正文命中缓存的篇数
+        long long standalone_to_fetch = 0; // 其中文章待抓篇数
+        long long cached_standalone = 0;   // 其中文章命中缓存的篇数
         long long list_requests = 0;     // P：需要重新获取列表的题目数
         long long total_requests = 0;    // N + P
         long long no_solution_problems = 0;
@@ -117,6 +137,7 @@ namespace solution
     /// 抓回来（列表请求本来就要发，属于 N + P 里的 P，受请求闸门控制），
     /// 这样「正文篇数」在风险确认之前就是精确值——`--max-solutions all`
     /// 没有篇数上限，必须靠它才能给出真实的抓取量与风险档位。
+    /// opt.article_lids（--article）指定的文章同样在此计入 N。
     PlanResult make_plan(const std::vector<problem::Problem> &problems,
                          const TaskOptions &opt, bool resolve_lists, Plan &plan);
 
@@ -124,27 +145,35 @@ namespace solution
     struct CrawlStats
     {
         int problems_handled = 0;      // 处理过的题目数
-        int fetched = 0;               // 本次新抓取的正文篇数
+        int fetched = 0;               // 本次新抓取的正文篇数（题解 + 文章）
         int fetched_official = 0;      // 其中取自洛谷原站的篇数
         int fetched_save = 0;          // 其中取自保存站的篇数
         int fetched_list = 0;          // 本次新抓取的列表数
-        int cached = 0;                // 命中缓存的正文篇数
+        int cached = 0;                // 命中缓存的正文篇数（题解 + 文章）
         int not_modified = 0;          // 条件请求命中 304 的正文篇数
         int failed = 0;                // 抓取失败的篇数
         int problems_no_solution = 0;  // 确实没有题解的题目数
         int skipped_inaccessible = 0;  // 不可访问（已删除/无权限/付费）的篇数
         int skipped_incomplete = 0;    // 正文不完整且未允许导出的篇数
         int incomplete_exported = 0;   // 正文不完整但按 --allow-partial 导出的篇数
+        // --article：本次处理的文章数，以及其中新抓取 / 命中缓存 / 未拿到的篇数
+        int articles_total = 0;
+        int articles_fetched = 0;
+        int articles_cached = 0;
+        int articles_skipped = 0;
         bool stopped_by_user = false;  // 用户主动停止（退出码 0）
         bool stopped_by_rate_limit = false; // 因限流中止（退出码非 0）
         std::string stop_reason;
     };
 
-    /// 抓取阶段：逐题串行抓取列表与正文，落缓存并组装导出用的题解包。
+    /// 抓取阶段：逐题串行抓取列表与正文，落缓存并组装导出用的题解包；
+    /// --article 指定的文章按同一套来源/延时/限流规则抓取，装入 articles
+    /// （顺序与命令行给出的编号一致）。
     /// @return false 表示因错误中止（error 给出中文说明）；
     ///         用户主动停止 / 限流中止不算错误，通过 stats 的标志位返回
     bool crawl(const Plan &plan, const TaskOptions &opt,
-               luogu::SolutionBundle &bundle, CrawlStats &stats, std::string &error);
+               luogu::SolutionBundle &bundle, luogu::ArticleBundle &articles,
+               CrawlStats &stats, std::string &error);
 
     /// 把抓取阶段的统计汇总成一行中文说明
     std::string describe_crawl_stats(const CrawlStats &stats);
