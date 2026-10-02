@@ -5084,6 +5084,13 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     // frametitlebackgroundcolor 指定具体颜色）。
     // 左右外边距为 0 时占满整行宽度；嵌套的折叠框在 \begin{mdframed} 处
     // 单独给出 leftmargin/rightmargin=1em，宽度略小于上一级。
+    // 标题文字左端对齐：mdframed 生成标题盒子时会用 \mdf@par@local 把
+    // \begin{mdframed} 时捕获的 \parindent（ctex 下为 2 个汉字的首行缩进）
+    // 还原进标题盒子里，标题段落因此会像正文一样自动缩进两格、比框内正文
+    // 的左边界还靠右。frametitlealignment 里的内容在标题段落开始之前执行，
+    // 把 \parindent 置零后标题即从框的左内边距（innerleftmargin=6pt）处起排，
+    // 与框内正文的左边界对齐。这只作用于标题盒子，框内正文的首行缩进仍由
+    // fold_box_latex 手动补的 \hspace{\parindent} 负责，不受影响。
     std::fputs("\\mdfdefinestyle{luogofoldbox}{%\n", out);
     std::fputs("  linewidth=1pt,\n", out);
     std::fputs("  linecolor=black,\n", out);
@@ -5098,6 +5105,10 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("  frametitlefont=\\bfseries,\n", out);
     std::fputs("  frametitlefontcolor=white,\n", out);
     std::fputs("  frametitlebackgroundcolor=black,\n", out);
+    // 标题与左端对齐：抵消 mdframed 还原进来的 \parindent（见上方注释）。
+    // 这里只能写 0pt 不能写 \z@：这段样式在 \makeatother 之后写出，
+    // 此时 @ 不是字母，\z@ 会被拆成 \z 与 @ 而报错。
+    std::fputs("  frametitlealignment={\\setlength{\\parindent}{0pt}\\relax},\n", out);
     std::fputs("  frametitlerule=false,\n", out);
     std::fputs("  frametitleaboveskip=4pt,\n", out);
     std::fputs("  frametitlebelowskip=4pt,\n", out);
