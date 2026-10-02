@@ -423,4 +423,16 @@ inline int getopt(int argc, char *const argv[], const char *optstring) noexcept
 
 } // extern "C"
 
+// 重新开始一次参数解析：同一进程内多次调用 getopt_long（每次传入不同的 argv）
+// 之前复位全局解析状态。glibc / musl 的做法是把 optind 置 0；本实现除 optind
+// 之外还保存了参数重排状态（first_nonopt / last_nonopt / nextchar），必须
+// 一并复位，否则第二次解析会把 argv[0] 当成裸参数。
+inline void getopt_reset()
+{
+    optind = 1;
+    optarg = nullptr;
+    optopt = '?';
+    detail::permute_state() = detail::PermuteState();
+}
+
 #endif // LUOGU_EXTRACT_UTIL_GETOPT_COMPAT_H

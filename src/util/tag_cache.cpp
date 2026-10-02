@@ -121,18 +121,21 @@ bool tagcache::Cache::load_from_cache_dir()
 namespace
 {
 // 持有共享缓存及加载状态；函数内 static 保证整个进程只构造（加载）一次，
-// 且 C++11 起的初始化是线程安全的。
+// 且 C++11 起的初始化是线程安全的。reset_shared_cache 走 reload()，
+// 在原对象上重新加载，因此 shared_cache() 先前返回的引用不会失效。
 struct SharedCacheHolder
 {
     tagcache::Cache cache;
     bool loaded;
 
     SharedCacheHolder() : loaded(cache.load_from_cache_dir()) {}
+
+    void reload() { loaded = cache.load_from_cache_dir(); }
 };
 
-const SharedCacheHolder &shared_holder()
+SharedCacheHolder &shared_holder()
 {
-    static const SharedCacheHolder holder;
+    static SharedCacheHolder holder;
     return holder;
 }
 } // namespace
@@ -145,4 +148,9 @@ const tagcache::Cache &tagcache::shared_cache()
 bool tagcache::shared_cache_loaded()
 {
     return shared_holder().loaded;
+}
+
+void tagcache::reset_shared_cache()
+{
+    shared_holder().reload();
 }

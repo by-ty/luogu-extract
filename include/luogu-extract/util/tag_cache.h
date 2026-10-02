@@ -59,6 +59,10 @@ namespace tagcache
 
     // tags.json 是否成功加载过（用于区分“缓存缺失”与“空缓存”）
     bool shared_cache_loaded();
+
+    // 重新从磁盘加载共享缓存（更新缓存 -U 或清理缓存 -C 之后调用）。
+    // 缓存对象原地重载，shared_cache() 之前返回的引用仍然有效。
+    void reset_shared_cache();
 }
 
 #endif // LUOGU_EXTRACT_TAG_CACHE_H
