@@ -45,29 +45,23 @@ jobs:
           - name: Windows x86_64
             os: windows-2025
             triplet: x64-windows-static
-            generator: Visual Studio 17 2022
-            arch: x64
             artifact: luogu-extract-windows-x86_64
           - name: macOS x86_64
             os: macos-15-intel
             triplet: x64-osx-static
-            generator: Ninja
             artifact: luogu-extract-macos-x86_64
           - name: macOS arm64
             os: macos-15
             triplet: arm64-osx-static
-            generator: Ninja
             artifact: luogu-extract-macos-arm64
           - name: Linux x86_64
             os: ubuntu-24.04
             triplet: x64-linux-static
-            generator: Ninja
             fully_static: "ON"
             artifact: luogu-extract-linux-x86_64
           - name: Linux arm64
             os: ubuntu-24.04-arm
             triplet: arm64-linux-static
-            generator: Ninja
             fully_static: "ON"
             artifact: luogu-extract-linux-arm64
 
@@ -189,14 +183,28 @@ jobs:
             --x-install-root="$PROJECT_DIR/vcpkg_installed" \
             --clean-after-build
 
+      - name: 准备 MSVC 环境（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw '找不到带 C++ 工具链的 Visual Studio' }
+          Write-Host "Visual Studio: $vsPath"
+          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+          cmd /c "`"$vcvars`" && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append
+            }
+          }
+          # 确认 cl.exe 已进入 PATH（Get-Command 不会设置 LASTEXITCODE，避免误判失败）
+          (Get-Command cl.exe).Source
+
       - name: 配置 CMake
         shell: bash
         run: |
           set -euo pipefail
-          args=(-S "$PROJECT_DIR" -B "$PROJECT_DIR/build" -G "${{ matrix.generator }}")
-          if [ -n "${{ matrix.arch }}" ]; then
-            args+=(-A "${{ matrix.arch }}")
-          fi
+          args=(-S "$PROJECT_DIR" -B "$PROJECT_DIR/build" -G Ninja)
           args+=(
             -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
