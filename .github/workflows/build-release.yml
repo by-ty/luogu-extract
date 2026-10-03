@@ -32,12 +32,18 @@ permissions:
   contents: read
 
 env:
+  # vcpkg 固定提交：5 个平台共用同一份端口定义
   VCPKG_COMMIT: 3aea538b2bb21a586502c67b00eb474fdd2e3098
+  # 依赖清单（vcpkg.json）或 triplet 变更时把这个数字 +1，使依赖缓存失效；
+  # 与工作流其它改动无关，避免每次改工作流都重新编译依赖
+  VCPKG_DEPS_REV: "1"
 
 jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    # 首次构建依赖（OpenSSL/curl 等）耗时较长，留足时间但避免异常时挂满 6 小时
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -90,8 +96,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $root = 'C:/vcpkg'
-          if (-not (Test-Path "$root/vcpkg.exe")) {
+          # 故意不用镜像预装的 C:\vcpkg：那是非 git 检出（vcpkg 会因此要求 manifest
+          # 里写 builtin-baseline），这里固定克隆我们指定的提交，保证与其他平台一致
+          $root = 'C:/vcpkg-ci'
+          if (-not (Test-Path "$root/.git")) {
             Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
             git init -q $root
             git -C $root remote add origin https://github.com/microsoft/vcpkg
@@ -165,7 +173,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/workflows/build-release.yml') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-${{ env.VCPKG_DEPS_REV }}
           restore-keys: |
             vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-
 
@@ -183,51 +191,45 @@ jobs:
             --x-install-root="$PROJECT_DIR/vcpkg_installed" \
             --clean-after-build
 
-      # Windows 的 MSVC 环境：用 vcvars64.bat 注入 PATH/INCLUDE/LIB 等，
-      # 供后面 Ninja 配置与编译使用（不依赖 CMake 的 Visual Studio 生成器）
-      - name: 准备 MSVC 环境（Windows）
+      # Windows 用 Visual Studio 生成器（不需要 vcvars，也不改动 PATH）：
+      # 生成器名随 VS 版本变化（17→2022、18→2026），且新生成器要求较新的 CMake，
+      # 因此取「本机 CMake 支持的 VS 生成器」与「本机已安装的 VS」的交集中版本最高者；
+      # 取不到就不传 -G，交由 CMake 选择默认生成器（Windows 上同样是 VS 生成器）。
+      - name: 选择 Visual Studio 生成器（Windows）
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          cmake --version | Select-Object -First 1
+          $supported = [regex]::Matches(((cmake --help) -join "`n"), 'Visual Studio (\d+) (\d{4})') |
+            ForEach-Object { [pscustomobject]@{ Major = [int]$_.Groups[1].Value; Name = $_.Value } } |
+            Sort-Object Major -Descending
+          Write-Host "本机 CMake 支持的 VS 生成器: $($supported.Name -join ', ')"
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
-          if (-not $vsPath) { throw '找不到带 C++ 工具链的 Visual Studio' }
-          Write-Host "Visual Studio: $vsPath"
-          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
-          if (-not (Test-Path $vcvars)) { throw "找不到 $vcvars" }
-
-          # 用临时 .bat 调用 vcvars 并输出环境，避免 PowerShell 向 cmd 传参时的引号问题
-          $bat = Join-Path $env:RUNNER_TEMP 'msvc_env.bat'
-          @(
-            '@echo off',
-            "call `"$vcvars`" >nul",
-            'if errorlevel 1 exit /b 1',
-            'set'
-          ) | Set-Content -Path $bat -Encoding ascii
-
-          $lines = & cmd.exe /c "`"$bat`""
-          if ($LASTEXITCODE -ne 0) { throw "vcvars64.bat 执行失败（退出码 $LASTEXITCODE）" }
-
-          # 同时写入当前进程（本步骤内即可自检）与 GITHUB_ENV（对后续步骤生效）
-          $count = 0
-          foreach ($line in $lines) {
-            if ($line -match '^([^=]+)=(.*)$') {
-              $name = $matches[1]
-              $value = $matches[2]
-              Set-Item -Path "Env:$name" -Value $value
-              Add-Content -Path $env:GITHUB_ENV -Value "$name=$value" -Encoding utf8
-              $count++
-            }
+          $installed = @(& $vswhere -all -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationVersion |
+            ForEach-Object { [int]($_.Split('.')[0]) })
+          if ($installed.Count -eq 0) { throw '找不到带 C++ 工具链的 Visual Studio' }
+          Write-Host "已安装的 VS 主版本: $($installed -join ', ')"
+          $pick = $supported | Where-Object { $installed -contains $_.Major } | Select-Object -First 1
+          if (-not $pick) {
+            Write-Host '::warning::没有 CMake 支持且本机已安装的 VS 生成器，改用 CMake 默认生成器'
+            exit 0
           }
-          if ($count -eq 0) { throw 'vcvars64.bat 没有输出任何环境变量' }
-          Write-Host "已导出 $count 个环境变量"
-          (Get-Command cl.exe).Source
+          Write-Host "使用生成器: $($pick.Name)"
+          Add-Content -Path $env:GITHUB_ENV -Value "LUOGU_CMAKE_GENERATOR=$($pick.Name)" -Encoding utf8
 
       - name: 配置 CMake
         shell: bash
         run: |
           set -euo pipefail
-          args=(-S "$PROJECT_DIR" -B "$PROJECT_DIR/build" -G Ninja)
+          args=(-S "$PROJECT_DIR" -B "$PROJECT_DIR/build")
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            # 探测不到生成器时用 CMake 默认（Windows 上默认同样是 VS 生成器，平台为 x64）
+            if [ -n "${LUOGU_CMAKE_GENERATOR:-}" ]; then
+              args+=(-G "$LUOGU_CMAKE_GENERATOR" -A x64)
+            fi
+          else
+            args+=(-G Ninja)
+          fi
           args+=(
             -DCMAKE_BUILD_TYPE=Release
             -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
@@ -322,6 +324,7 @@ jobs:
     name: 上传产物到 Release
     needs: build
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
