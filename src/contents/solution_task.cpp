@@ -80,6 +80,30 @@ bool list_cache_usable(const solcache::ListEntry &list, const solution::TaskOpti
     return solcache::is_fresh(list.fetched_at, opt.list_ttl_days);
 }
 
+// 由计划阶段的结果构造列表缓存条目；304 时沿用旧条目（内容以缓存为准），只刷新时间戳
+solcache::ListEntry list_entry_from_plan(const std::string &pid,
+                                         const solution::ProblemPlan &item)
+{
+    solcache::ListEntry entry;
+    entry.pid = pid;
+    entry.fetched_at = now_seconds();
+    entry.etag = item.list_etag;
+    entry.total_available = item.total_available;
+    entry.per_page = 10;
+    entry.no_solution = item.list_items.empty();
+    entry.items = item.list_items;
+    if (item.list_not_modified)
+    {
+        solcache::ListEntry old;
+        if (solcache::load_list(pid, old))
+        {
+            old.fetched_at = entry.fetched_at;
+            entry = old;
+        }
+    }
+    return entry;
+}
+
 std::string article_url_for(const std::string &lid)
 {
     return crawler::endpoints().official_base + "/article/" + lid;
@@ -94,6 +118,21 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
     plan = Plan();
     plan.problems = static_cast<long long>(problems.size());
     plan.items.reserve(problems.size());
+
+    // 计划阶段要把缓存缺失/过期的列表抓回来，每条之间都要等 --request-delay（默认数秒）；
+    // 先数一遍总数，抓取时逐条打印进度，否则这段时间界面没有任何输出，看起来像卡死
+    long long lists_to_fetch = 0;
+    if (resolve_lists)
+    {
+        for (const auto &p : problems)
+        {
+            solcache::ListEntry cached;
+            if (!(solcache::load_list(p.pid, cached) &&
+                  list_cache_usable(cached, opt)))
+                ++lists_to_fetch;
+        }
+    }
+    long long lists_fetched = 0;
 
     for (const auto &p : problems)
     {
@@ -122,6 +161,10 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
                 // 计划阶段就抓回列表（受请求闸门控制），让「待抓正文篇数」在风险确认前就是精确值
                 const int need = (opt.max_articles < 0) ? -1 : opt.max_articles;
                 const std::string etag = has_cache ? cached.etag : std::string();
+                ++lists_fetched;
+                std::printf("\r正在获取题解列表：[%lld/%lld] %s        \n",
+                            lists_fetched, lists_to_fetch, p.pid.c_str());
+                std::fflush(stdout);
                 ListFetch fetched = fetch_list(p.pid, need, etag);
 
                 // 列表接口异常（含结构异常）绝不当作「无题解」静默跳过
@@ -144,7 +187,7 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
                 item.list_not_modified = fetched.not_modified && has_cache;
                 if (item.list_not_modified)
                 {
-                    // 304：沿用缓存条目与 ETag，只会在抓取阶段刷新时间戳
+                    // 304：沿用缓存条目与 ETag，只刷新时间戳
                     item.list_items = cached.items;
                     item.list_etag = cached.etag;
                     item.total_available = cached.total_available;
@@ -155,6 +198,16 @@ solution::PlanResult solution::make_plan(const std::vector<problem::Problem> &pr
                     item.list_etag = fetched.etag;
                     item.total_available = fetched.total_available;
                 }
+
+                // 抓到即写入缓存：列表抓取发生在风险确认**之前**，若用户在确认处取消（或中途
+                // 中断、被限流停止），已抓到的列表仍然保留，重跑直接命中缓存，不必把每条列表
+                // 请求的延时再等一遍；写盘失败只告警，抓取阶段还会再兜底写一次
+                const solcache::ListEntry entry = list_entry_from_plan(p.pid, item);
+                std::string store_error;
+                if (solcache::store_list(entry, store_error))
+                    item.list_stored = true;
+                else
+                    print_warning("写入题解列表缓存失败：" + store_error);
             }
         }
 
@@ -772,28 +825,19 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
 
         if (item.list_from_network)
         {
-            // 计划阶段抓到的列表现在才落盘（确认前不改动缓存）；304 沿用缓存条目，只刷新时间戳
-            solcache::ListEntry entry;
-            entry.pid = item.pid;
-            entry.fetched_at = now_seconds();
-            entry.etag = item.list_etag;
-            entry.total_available = item.total_available;
-            entry.per_page = 10;
-            entry.no_solution = item.list_items.empty();
-            entry.items = item.list_items;
-            if (item.list_not_modified)
+            // 计划阶段抓到的列表当时就落盘了（「抓到即写」）；这里只兜底那次写盘失败的情况
+            bool stored = item.list_stored;
+            if (!stored)
             {
-                solcache::ListEntry old;
-                if (solcache::load_list(item.pid, old))
-                {
-                    old.fetched_at = entry.fetched_at;
-                    entry = old;
-                }
+                const solcache::ListEntry entry =
+                    list_entry_from_plan(item.pid, item);
+                std::string store_error;
+                if (!solcache::store_list(entry, store_error))
+                    print_warning("写入题解列表缓存失败：" + store_error);
+                else
+                    stored = true;
             }
-            std::string store_error;
-            if (!solcache::store_list(entry, store_error))
-                print_warning("写入题解列表缓存失败：" + store_error);
-            else
+            if (stored)
                 ++stats.fetched_list;
         }
 

@@ -838,7 +838,25 @@ SolutionRun run_solutions(const Options &options,
     crawler::gate_configure_channel(crawler::Channel::Save, gate_config,
                                     plan.total_requests);
 
-    // 列表请求本就要发（属于 N + P 中的 P），抓回来才能得到精确篇数
+    // 列表请求本就要发（属于 N + P 中的 P），抓回来才能得到精确篇数。
+    // 这一步在「风险确认」之前就发网络请求，且每条都要等 --request-delay：先说明要发多少条、
+    // 每条等多久、大概多久（make_plan 内部再逐条打印进度），否则接下来的几分钟界面毫无输出，
+    // 看起来就像卡死在这一步
+    if (plan.list_requests > 0)
+    {
+        const auto list_delay =
+            crawler::gate_effective_delay_ms(crawler::Channel::Official);
+        const long long list_eta = static_cast<long long>(
+            crawler::gate_effective_delay_seconds(crawler::Channel::Official) *
+            static_cast<double>(plan.list_requests));
+        std::printf("先获取 %lld 个题解列表（列表恒取原站；每条间隔 %.1f~%.1f 秒，"
+                    "预计约 %s）\n",
+                    plan.list_requests,
+                    static_cast<double>(list_delay.first) / 1000.0,
+                    static_cast<double>(list_delay.second) / 1000.0,
+                    prompt::format_duration(list_eta).c_str());
+        std::fflush(stdout);
+    }
     plan_result = solution::make_plan(selection.problems, task, true, plan);
     if (plan_result.status == solution::PlanStatus::Stopped)
     {

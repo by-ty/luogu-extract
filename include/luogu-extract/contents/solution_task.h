@@ -19,8 +19,9 @@
 // License for more details.
 
 // include/luogu-extract/contents/solution_task.h
-// 题解抓取的「计划阶段」与「抓取阶段」：计划阶段只读缓存、不访问网络
-// （resolve_lists 例外），算出待抓篇数 N 与列表请求数 P；抓取阶段逐题串行抓取。
+// 题解抓取的「计划阶段」与「抓取阶段」：计划阶段默认只读缓存、不访问网络
+// （resolve_lists 例外：把缺失/过期的列表抓回来，并「抓到即写入缓存」），算出待抓篇数 N
+// 与列表请求数 P；抓取阶段逐题串行抓取。
 #ifndef LUOGU_EXTRACT_CONTENTS_SOLUTION_TASK_H
 #define LUOGU_EXTRACT_CONTENTS_SOLUTION_TASK_H
 
@@ -70,7 +71,9 @@ namespace solution
         std::string name;
         bool list_cached = false;    // 缓存里有列表
         bool list_known = false;     // 列表已就绪（缓存可用，或计划阶段已抓取）
-        bool list_from_network = false; // 计划阶段通过网络抓到的列表（抓取阶段只落盘）
+        bool list_from_network = false; // 计划阶段通过网络抓到的列表
+        // 计划阶段抓到后是否已成功写入缓存（「抓到即写」；false 时抓取阶段兜底再写一次）
+        bool list_stored = false;
         bool list_not_modified = false; // 计划阶段条件请求命中 304
         std::string list_etag;
         std::vector<Summary> list_items;
@@ -128,7 +131,8 @@ namespace solution
     };
 
     /// 计划阶段。默认只读缓存、不发网络请求；resolve_lists 为 true 时把缺失/过期的
-    /// 列表在计划阶段就抓回来（列表请求本就是 N + P 中的 P，受请求闸门控制），
+    /// 列表在计划阶段就抓回来（列表请求本就是 N + P 中的 P，受请求闸门控制），并
+    /// **抓到即写入缓存**（风险确认处取消或中途中断后重跑可命中缓存，不必重发请求），
     /// 使风险确认前就能得到精确正文篇数（--max-solutions all 无上限，必须靠它）。
     /// opt.article_lids（--article）指定的文章同样计入 N。
     PlanResult make_plan(const std::vector<problem::Problem> &problems,
