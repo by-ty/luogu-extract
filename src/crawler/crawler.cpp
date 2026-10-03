@@ -55,6 +55,7 @@
 #include <nlohmann/json.hpp>
 #include "luogu-extract/crawler/crawler.h"
 #include "luogu-extract/util/compat.h"
+#include "luogu-extract/util/tls.h"
 
 using nlohmann::json;
 
@@ -777,6 +778,8 @@ std::string crawler::get_html(const std::string &url, derror *error)
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
 #endif
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    // curl 编译期写死的 CA 包路径来自构建机，用户机器上可能不存在，这里按系统实际路径覆盖
+    luogu::tls::apply_ca_bundle(curl);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
     set_ssrf_guard(curl);
 
@@ -894,6 +897,8 @@ crawler::derror crawler::downloadFile(const std::string &url,
     curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
 #endif
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    // 同上：显式指定本机存在的 CA 包，避免用构建机路径导致证书校验直接失败
+    luogu::tls::apply_ca_bundle(curl);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
 
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, progress_callback);

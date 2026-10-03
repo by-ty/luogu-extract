@@ -60,15 +60,19 @@ jobs:
             os: macos-15
             triplet: arm64-osx-static
             artifact: luogu-extract-macos-arm64
+          # Linux 不再使用 -static（LUOGU_EXTRACT_FULLY_STATIC）：完全静态链接 glibc 后，
+          # 一旦运行期 dlopen 了宿主机的共享库（glibc 的 NSS 模块一定会走这条路，例如
+          # nss-mdns4/nss-resolve，libcurl 解析域名时就会加载），进程里就会同时存在两份
+          # libc，宿主机 libc.so.6 的 _rtld_global_ro 与静态链接进去的那份布局/版本不一致，
+          # roundup(__static_tls_size, GLRO(dl_tls_static_align)) 除数为 0 → SIGFPE 崩溃。
+          # 第三方库仍全部静态链接（LUOGU_EXTRACT_STATIC），只让 glibc 动态。
           - name: Linux x86_64
             os: ubuntu-24.04
             triplet: x64-linux-static
-            fully_static: "ON"
             artifact: luogu-extract-linux-x86_64
           - name: Linux arm64
             os: ubuntu-24.04-arm
             triplet: arm64-linux-static
-            fully_static: "ON"
             artifact: luogu-extract-linux-arm64
 
     steps:
@@ -276,12 +280,25 @@ jobs:
           ls -l "$bin"
           if [ "$RUNNER_OS" = "Linux" ]; then
             file "$bin"
-            if ldd "$bin" > /dev/null 2>&1; then
-              echo "::error::产物仍依赖动态库："
-              ldd "$bin"
+            # glibc 必须动态链接（见 matrix 中 Linux 不设 fully_static 的说明）：完全静态链接
+            # 的 glibc 与运行期 dlopen 进来的宿主机 NSS 模块（nss-mdns4/nss-resolve 等）会形成
+            # 两份 libc，域名解析时除数为 0 直接 SIGFPE。除 glibc 家族与动态加载器之外，不允许
+            # 出现其它动态库：libcurl/libxml2/openssl/zlib/libstdc++ 都必须已静态链接进产物
+            ldd "$bin" || true
+            if ldd "$bin" 2>/dev/null | grep -Ev '^[[:space:]]*(linux-vdso\.so[^[:space:]]*|libc\.so\.6|libm\.so\.6|libpthread\.so\.0|libdl\.so\.2|[^[:space:]]*ld-linux[^[:space:]]*)[[:space:]]' | grep -q .; then
+              echo "::error::产物依赖了 glibc 之外的动态库（第三方库应静态链接）"
               exit 1
             fi
-            echo "ldd：无动态依赖（完全静态）"
+            echo "ldd：只依赖 glibc（含动态加载器），第三方库均已静态链接"
+            # 反向保护：完全静态的产物在带 nss-mdns4 / nss-resolve 等第三方 NSS 模块的发行版上
+            # 解析域名时会 SIGFPE（进程内两份 libc），必须确保 glibc 是动态链接的
+            if ! ldd "$bin" 2>/dev/null | grep -qE '^[[:space:]]*libc\.so\.6[[:space:]]'; then
+              echo "::error::产物没有动态链接 glibc：完全静态产物 + NSS 模块会在解析域名时 SIGFPE"
+              exit 1
+            fi
+            # 运行环境 glibc 下限：写进 Release 说明，便于用户判断能否直接运行
+            glibc_floor=$(objdump -T "$bin" 2>/dev/null | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV | tail -1 || true)
+            echo "glibc 版本下限：${glibc_floor:-未知}"
           else
             otool -L "$bin"
             # BSD grep 不支持 \s，这里用 POSIX 字符类；只允许 /usr/lib 与 /System/Library
@@ -290,6 +307,15 @@ jobs:
               exit 1
             fi
             echo "otool：只依赖系统库"
+          fi
+          # 构建机路径泄漏：OpenSSL 的 modules/engines 目录、CA 包探测结果等会在编译期被写死，
+          # 用户机器上并不存在。默认 TLS 不受影响（default provider 内建、CA 包由程序运行期
+          # 重新探测），但 legacy/pkcs11 等非默认 provider 会找不到，故仅告警不阻断
+          leaked=$(strings -a "$bin" | grep -E '/(home|Users)/[^[:space:]]*(runner|vcpkg)' \
+                     | grep -vE '\.(c|h|cpp|hpp|cc|md|txt|pl|sh|S)$' | sort -u | head -5 || true)
+          if [ -n "${leaked:-}" ]; then
+            echo "::warning::产物中残留构建机路径（非默认 OpenSSL provider/engine 可能找不到）"
+            echo "$leaked"
           fi
           echo "== 冒烟测试 =="
           "$bin" --version

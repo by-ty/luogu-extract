@@ -35,6 +35,7 @@
 #include "luogu-extract/util/compat.h"
 #include "luogu-extract/util/cookie.h"
 #include "luogu-extract/util/prompt.h"
+#include "luogu-extract/util/tls.h"
 
 namespace
 {
@@ -910,6 +911,8 @@ crawler::RequestResult crawler::http_get(const RequestOptions &opt, RequestClass
             curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout_sec);
             // 始终校验 TLS 证书，不提供关闭开关
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            // 句柄会被 reset 复用，故每次请求都显式指定本机 CA 包（curl 默认值是构建机路径）
+            luogu::tls::apply_ca_bundle(curl);
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
             curl_easy_setopt(curl, CURLOPT_USERAGENT, "luogu-extract/0.1");
             curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
