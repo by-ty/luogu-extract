@@ -1,0 +1,334 @@
+# SPDX-License-Identifier: LGPL-3.0-or-later
+# Copyright (C) 2026 by-ty
+#
+# This file is part of luogu-extract
+# (https://github.com/by-ty/luogu-extract), a fork of luogu-export
+# (https://github.com/sacharei/luogu-export) which is licensed under the
+# MIT License (Copyright (c) 2026 sacharei); see the "Original MIT License"
+# section in the LICENSE file.
+#
+# luogu-extract is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Lesser General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or (at
+# your option) any later version. See the LICENSE file or
+# https://www.gnu.org/licenses/lgpl-3.0.html for the full license text.
+#
+# luogu-extract is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+# or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Lesser General Public
+# License for more details.
+
+name: build-release
+
+on:
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  VCPKG_COMMIT: 3aea538b2bb21a586502c67b00eb474fdd2e3098
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x86_64
+            os: windows-2025
+            triplet: x64-windows-static
+            generator: Visual Studio 17 2022
+            arch: x64
+            artifact: luogu-extract-windows-x86_64
+          - name: macOS x86_64
+            os: macos-15-intel
+            triplet: x64-osx-static
+            generator: Ninja
+            artifact: luogu-extract-macos-x86_64
+          - name: macOS arm64
+            os: macos-15
+            triplet: arm64-osx-static
+            generator: Ninja
+            artifact: luogu-extract-macos-arm64
+          - name: Linux x86_64
+            os: ubuntu-24.04
+            triplet: x64-linux-static
+            generator: Ninja
+            fully_static: "ON"
+            artifact: luogu-extract-linux-x86_64
+          - name: Linux arm64
+            os: ubuntu-24.04-arm
+            triplet: arm64-linux-static
+            generator: Ninja
+            fully_static: "ON"
+            artifact: luogu-extract-linux-arm64
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: 安装 vcpkg（Linux / macOS）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/vcpkg"
+          if [ ! -x "$root/vcpkg" ]; then
+            rm -rf "$root"
+            git init -q "$root"
+            git -C "$root" remote add origin https://github.com/microsoft/vcpkg
+            git -C "$root" fetch -q --depth 1 origin "$VCPKG_COMMIT"
+            git -C "$root" checkout -q FETCH_HEAD
+            "$root/bootstrap-vcpkg.sh" -disableMetrics
+          fi
+          echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
+
+      - name: 安装 vcpkg（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = 'C:/vcpkg'
+          if (-not (Test-Path "$root/vcpkg.exe")) {
+            Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
+            git init -q $root
+            git -C $root remote add origin https://github.com/microsoft/vcpkg
+            git -C $root fetch -q --depth 1 origin $env:VCPKG_COMMIT
+            git -C $root checkout -q FETCH_HEAD
+            & "$root/bootstrap-vcpkg.bat" -disableMetrics
+          }
+          "VCPKG_ROOT=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: 生成 vcpkg 清单与 triplet
+        shell: bash
+        run: |
+          set -euo pipefail
+          project_dir="$PWD"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            project_dir=$(cygpath -m "$PWD")
+          fi
+          echo "PROJECT_DIR=$project_dir" >> "$GITHUB_ENV"
+
+          # 版本号以 CMakeLists.txt 的 project(... VERSION x.y.z) 为唯一来源，避免多处不一致
+          version=$(sed -nE 's/^[[:space:]]*project\([^)]*VERSION[[:space:]]+([0-9]+(\.[0-9]+)*).*/\1/p' CMakeLists.txt | head -1)
+          if [ -z "$version" ]; then
+            echo "::error::无法从 CMakeLists.txt 解析 project(... VERSION ...)"
+            exit 1
+          fi
+          echo "项目版本：$version"
+
+          if [ ! -f "$project_dir/vcpkg.json" ]; then
+            printf '%s\n' \
+              '{' \
+              '  "name": "luogu-extract",' \
+              "  \"version-string\": \"$version\"," \
+              '  "dependencies": [' \
+              '    { "name": "curl", "default-features": false, "features": ["ssl"] },' \
+              '    "libxml2",' \
+              '    "zlib",' \
+              '    "nlohmann-json"' \
+              '  ]' \
+              '}' > "$project_dir/vcpkg.json"
+          fi
+          cat "$project_dir/vcpkg.json"
+
+          triplet="${{ matrix.triplet }}"
+          arch=""; crt="dynamic"; system=""; osx_arch=""
+          case "$triplet" in
+            x64-windows-static) arch=x64;   crt=static ;;
+            x64-linux-static)   arch=x64;   system=Linux ;;
+            arm64-linux-static) arch=arm64; system=Linux ;;
+            x64-osx-static)     arch=x64;   system=Darwin; osx_arch=x86_64 ;;
+            arm64-osx-static)   arch=arm64; system=Darwin; osx_arch=arm64 ;;
+            *) echo "未知 triplet：$triplet" >&2; exit 1 ;;
+          esac
+          mkdir -p "$project_dir/.ci-triplets"
+          {
+            echo "set(VCPKG_TARGET_ARCHITECTURE $arch)"
+            echo "set(VCPKG_CRT_LINKAGE $crt)"
+            echo "set(VCPKG_LIBRARY_LINKAGE static)"
+            echo "set(VCPKG_BUILD_TYPE release)"
+            if [ -n "$system" ]; then
+              echo "set(VCPKG_CMAKE_SYSTEM_NAME $system)"
+            fi
+            if [ -n "$osx_arch" ]; then
+              echo "set(VCPKG_OSX_ARCHITECTURES $osx_arch)"
+              # 与 CMAKE_OSX_DEPLOYMENT_TARGET 保持一致，避免依赖与主程序目标版本不同
+              echo "set(VCPKG_OSX_DEPLOYMENT_TARGET 11.0)"
+            fi
+          } > "$project_dir/.ci-triplets/$triplet.cmake"
+          cat "$project_dir/.ci-triplets/$triplet.cmake"
+
+      - name: 缓存 vcpkg 依赖
+        uses: actions/cache@v6
+        with:
+          path: vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-${{ hashFiles('.github/workflows/build-release.yml') }}
+          restore-keys: |
+            vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ env.VCPKG_COMMIT }}-
+
+      - name: 安装依赖（vcpkg 静态 triplet）
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="vcpkg"
+          if [ "$RUNNER_OS" = "Windows" ]; then exe="vcpkg.exe"; fi
+          # manifest 模式：在清单所在目录执行，--x-install-root 固定安装位置便于缓存
+          cd "$PROJECT_DIR"
+          "$VCPKG_ROOT/$exe" install \
+            --triplet "${{ matrix.triplet }}" \
+            --overlay-triplets="$PROJECT_DIR/.ci-triplets" \
+            --x-install-root="$PROJECT_DIR/vcpkg_installed" \
+            --clean-after-build
+
+      - name: 配置 CMake
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(-S "$PROJECT_DIR" -B "$PROJECT_DIR/build" -G "${{ matrix.generator }}")
+          if [ -n "${{ matrix.arch }}" ]; then
+            args+=(-A "${{ matrix.arch }}")
+          fi
+          args+=(
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+            -DVCPKG_TARGET_TRIPLET="${{ matrix.triplet }}"
+            # 工具链在 configure 阶段也会解析/校验依赖，必须同样能看到自定义 triplet
+            -DVCPKG_OVERLAY_TRIPLETS="$PROJECT_DIR/.ci-triplets"
+            -DVCPKG_INSTALLED_DIR="$PROJECT_DIR/vcpkg_installed"
+            -DVCPKG_MANIFEST_MODE=ON
+            -DLUOGU_EXTRACT_STATIC=ON
+            -DLUOGU_EXTRACT_FULLY_STATIC=${{ matrix.fully_static || 'OFF' }}
+          )
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            args+=(-DCMAKE_OSX_DEPLOYMENT_TARGET=11.0)
+          fi
+          cmake "${args[@]}"
+
+      - name: 编译
+        shell: bash
+        run: cmake --build "$PROJECT_DIR/build" --config Release --parallel
+
+      - name: 收集产物
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$PROJECT_DIR/dist" "$PROJECT_DIR/package"
+          cmake --install "$PROJECT_DIR/build" --config Release --prefix "$PROJECT_DIR/dist"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            strip "$PROJECT_DIR/dist/bin/luogu-extract"
+          fi
+          # 打包目录保持扁平（可执行文件与 LICENSE 直接位于根），
+          # 避免上传/解压后多出 dist/bin/ 一层目录
+          mkdir -p "$PROJECT_DIR/package"
+          cp "$PROJECT_DIR/dist/bin/"* "$PROJECT_DIR/package/"
+          cp "$PROJECT_DIR/LICENSE" "$PROJECT_DIR/package/"
+          ls -l "$PROJECT_DIR/package"
+
+      - name: 校验静态链接（Linux / macOS）
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$PROJECT_DIR/package/luogu-extract"
+          echo "== 产物 =="
+          ls -l "$bin"
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            file "$bin"
+            if ldd "$bin" > /dev/null 2>&1; then
+              echo "::error::产物仍依赖动态库："
+              ldd "$bin"
+              exit 1
+            fi
+            echo "ldd：无动态依赖（完全静态）"
+          else
+            otool -L "$bin"
+            # BSD grep 不支持 \s，这里用 POSIX 字符类；只允许 /usr/lib 与 /System/Library
+            if otool -L "$bin" | tail -n +2 | grep -Ev '^[[:space:]]*(/usr/lib/|/System/Library/)'; then
+              echo "::error::产物依赖了非系统动态库"
+              exit 1
+            fi
+            echo "otool：只依赖系统库"
+          fi
+          echo "== 冒烟测试 =="
+          "$bin" --version
+
+      - name: 校验静态链接（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = Get-ChildItem -Path "$env:PROJECT_DIR/package" -Recurse -Filter 'luogu-extract.exe' | Select-Object -First 1
+          if (-not $bin) { throw '找不到 luogu-extract.exe' }
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -property installationPath
+          $dumpbin = Get-ChildItem "$vsPath\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          if (-not $dumpbin) { throw '找不到 dumpbin.exe' }
+          $deps = & $dumpbin.FullName /dependents $bin.FullName | Out-String
+          Write-Host $deps
+          if ($deps -match '(?i)(libcurl|libxml2|zlib1?|libssl|libcrypto|iconv)\.dll') {
+            throw '产物仍依赖第三方 DLL，静态链接失败'
+          }
+          Write-Host '== 冒烟测试 =='
+          & $bin.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw "冒烟测试失败：退出码 $LASTEXITCODE" }
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: package
+          if-no-files-found: error
+
+  release:
+    name: 上传产物到 Release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: 打包
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.release.tag_name }}"
+          assets="$PWD/release-assets"
+          mkdir -p "$assets"
+          cd artifacts
+          for dir in */; do
+            name="${dir%/}"
+            platform="${name#luogu-extract-}"
+            case "$platform" in
+              windows-*)
+                # Windows 习惯用 zip；解压后根目录即 exe 与 LICENSE
+                (cd "$name" && zip -q -r "$assets/luogu-extract-${tag}-${platform}.zip" .)
+                ;;
+              *)
+                # zip 在多数解压工具里会丢掉可执行权限，Unix 平台改用 tar.gz
+                chmod +x "$name/luogu-extract"
+                tar -czf "$assets/luogu-extract-${tag}-${platform}.tar.gz" \
+                  -C "$name" luogu-extract LICENSE
+                ;;
+            esac
+          done
+          ls -l "$assets"
+
+      - name: 上传到 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release upload "${{ github.event.release.tag_name }}" release-assets/* \
+            --repo "$GITHUB_REPOSITORY" --clobber

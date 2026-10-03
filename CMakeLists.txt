@@ -20,11 +20,29 @@
 
 cmake_minimum_required(VERSION 3.23)
 
-project(luogu-extract VERSION 0.1.0 LANGUAGES CXX)
+project(luogu-extract VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+option(LUOGU_EXTRACT_STATIC "Statically link third-party dependencies" OFF)
+option(LUOGU_EXTRACT_FULLY_STATIC "Also statically link the C/C++ runtime (Linux)" OFF)
+
+if(LUOGU_EXTRACT_STATIC)
+    if(MSVC)
+        # vcpkg 的 *-windows-static triplet 用 /MT 构建依赖，主程序必须一致
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endif()
+    if(WIN32)
+        # 静态 libcurl 时必须定义，否则头文件按 dllimport 声明导致链接失败
+        add_compile_definitions(CURL_STATICLIB)
+    endif()
+    if(UNIX AND NOT APPLE)
+        # 只让 find_library 选 .a：-static 下链接到 .so 会直接报错
+        set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+    endif()
+endif()
 
 find_package(CURL REQUIRED)
 find_package(LibXml2 REQUIRED)
@@ -56,3 +74,14 @@ target_link_libraries(luogu-extract PRIVATE
     LibXml2::LibXml2
     nlohmann_json::nlohmann_json
     ZLIB::ZLIB)
+
+if(LUOGU_EXTRACT_STATIC AND UNIX AND NOT APPLE)
+    if(LUOGU_EXTRACT_FULLY_STATIC)
+        target_link_options(luogu-extract PRIVATE -static)
+    else()
+        target_link_options(luogu-extract PRIVATE -static-libgcc -static-libstdc++)
+    endif()
+endif()
+
+include(GNUInstallDirs)
+install(TARGETS luogu-extract RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
