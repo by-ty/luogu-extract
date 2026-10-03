@@ -308,14 +308,18 @@ jobs:
             fi
             echo "otool：只依赖系统库"
           fi
-          # 构建机路径泄漏：OpenSSL 的 modules/engines 目录、CA 包探测结果等会在编译期被写死，
-          # 用户机器上并不存在。默认 TLS 不受影响（default provider 内建、CA 包由程序运行期
-          # 重新探测），但 legacy/pkcs11 等非默认 provider 会找不到，故仅告警不阻断
+          # 构建机路径残留：静态链接 OpenSSL / libxml2 时，各自的构建脚本会把 modules/engines
+          # 目录、XML catalog 路径写死成 vcpkg 的构建目录，用户机器上并不存在。它们不影响默认
+          # 功能（default provider 内建在 libcrypto 里、CA 包由程序运行期重新探测、HTML 解析不用
+          # catalog），也无法从本项目侧消除，故只写日志、不发 GitHub 告警注解，避免每次发版刷屏。
+          # 注意：不要用 OPENSSL_MODULES/OPENSSL_ENGINES 指向系统目录来「修」它——那会让静态链接的
+          # OpenSSL 加载宿主机上按另一份 libcrypto 编译的 provider，等同把共享库塞进静态进程。
           leaked=$(strings -a "$bin" | grep -E '/(home|Users)/[^[:space:]]*(runner|vcpkg)' \
-                     | grep -vE '\.(c|h|cpp|hpp|cc|md|txt|pl|sh|S)$' | sort -u | head -5 || true)
+                     | grep -vE '\.(c|h|cpp|hpp|cc|md|txt|pl|sh|S)$' \
+                     | grep -vE '/(buildtrees|packages)/' | sort -u || true)
           if [ -n "${leaked:-}" ]; then
-            echo "::warning::产物中残留构建机路径（非默认 OpenSSL provider/engine 可能找不到）"
-            echo "$leaked"
+            echo "提示：产物含 $(printf '%s\n' "$leaked" | wc -l) 处构建机路径（不影响默认 TLS / HTML 解析）："
+            printf '%s\n' "$leaked" | sed 's/^/  /'
           fi
           echo "== 冒烟测试 =="
           "$bin" --version
