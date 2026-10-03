@@ -183,6 +183,8 @@ jobs:
             --x-install-root="$PROJECT_DIR/vcpkg_installed" \
             --clean-after-build
 
+      # Windows 的 MSVC 环境：用 vcvars64.bat 注入 PATH/INCLUDE/LIB 等，
+      # 供后面 Ninja 配置与编译使用（不依赖 CMake 的 Visual Studio 生成器）
       - name: 准备 MSVC 环境（Windows）
         if: runner.os == 'Windows'
         shell: pwsh
@@ -192,12 +194,33 @@ jobs:
           if (-not $vsPath) { throw '找不到带 C++ 工具链的 Visual Studio' }
           Write-Host "Visual Studio: $vsPath"
           $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
-          cmd /c "`"$vcvars`" && set" | ForEach-Object {
-            if ($_ -match '^([^=]+)=(.*)$') {
-              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append
+          if (-not (Test-Path $vcvars)) { throw "找不到 $vcvars" }
+
+          # 用临时 .bat 调用 vcvars 并输出环境，避免 PowerShell 向 cmd 传参时的引号问题
+          $bat = Join-Path $env:RUNNER_TEMP 'msvc_env.bat'
+          @(
+            '@echo off',
+            "call `"$vcvars`" >nul",
+            'if errorlevel 1 exit /b 1',
+            'set'
+          ) | Set-Content -Path $bat -Encoding ascii
+
+          $lines = & cmd.exe /c "`"$bat`""
+          if ($LASTEXITCODE -ne 0) { throw "vcvars64.bat 执行失败（退出码 $LASTEXITCODE）" }
+
+          # 同时写入当前进程（本步骤内即可自检）与 GITHUB_ENV（对后续步骤生效）
+          $count = 0
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              $name = $matches[1]
+              $value = $matches[2]
+              Set-Item -Path "Env:$name" -Value $value
+              Add-Content -Path $env:GITHUB_ENV -Value "$name=$value" -Encoding utf8
+              $count++
             }
           }
-          # 确认 cl.exe 已进入 PATH（Get-Command 不会设置 LASTEXITCODE，避免误判失败）
+          if ($count -eq 0) { throw 'vcvars64.bat 没有输出任何环境变量' }
+          Write-Host "已导出 $count 个环境变量"
           (Get-Command cl.exe).Source
 
       - name: 配置 CMake
