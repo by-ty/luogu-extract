@@ -521,14 +521,15 @@ inline bool ends_with_cjk_sentence_end(const std::string &text)
     return tail == "？" || tail == "。" || tail == "！";
 }
 
-// 未知参数报错的补充建议（无建议时返回空串）
-inline std::string bad_option_advice(const std::string &token, int optopt,
+// 未知参数报错的补充建议（无建议时返回空串）。bad_opt 为 getopt 的 optopt 值：参数名
+// 不加 opt 前缀，避免与 getopt_compat.h 的全局 optopt 同名（MSVC C4459）
+inline std::string bad_option_advice(const std::string &token, int bad_opt,
                                      const std::vector<std::string> &long_names)
 {
-    if (optopt > 0 && optopt < 128)
+    if (bad_opt > 0 && bad_opt < 128)
     {
     // 短选项：只有确实像长选项（- 后跟着一个词）时才提示，避免无意义建议
-        const std::string name = single_dash_long_name(token, optopt);
+        const std::string name = single_dash_long_name(token, bad_opt);
         if (name.empty())
             return "";
         const std::string suggestion = suggest_long_option(long_names, name);
@@ -562,25 +563,28 @@ inline std::string bad_option_advice(const std::string &token, int optopt,
     return "";
 }
 
-// 定位出错参数原文：optopt 为出错的短选项字符（0 表示长选项）。短选项簇里未知字符不是
-// 最后一个时 optind 仍指向该簇，是最后一个时已指向下一个参数，故两个位置都要看
-inline std::string locate_bad_option(char **argv, int argc, int optind, int optopt)
+// 定位出错参数原文：bad_opt 为出错的短选项字符（0 表示长选项），即 getopt 的 optopt；
+// scan_index 为 getopt 的 optind。两者都按值传入，参数名不加 opt 前缀以免遮蔽
+// getopt_compat.h 的全局变量（MSVC C4459）。
+// 短选项簇里未知字符不是最后一个时 optind 仍指向该簇，是最后一个时已指向下一个参数，
+// 故两个位置都要看
+inline std::string locate_bad_option(char **argv, int argc, int scan_index, int bad_opt)
 {
     const auto token_at = [&](int idx) -> std::string {
         return (idx >= 0 && idx < argc) ? std::string(argv[idx]) : std::string();
     };
 
-    if (optopt > 0 && optopt < 128)
+    if (bad_opt > 0 && bad_opt < 128)
     {
-        for (int idx : {optind, optind - 1})
+        for (int idx : {scan_index, scan_index - 1})
         {
             const std::string candidate = token_at(idx);
-            if (!single_dash_long_name(candidate, optopt).empty())
+            if (!single_dash_long_name(candidate, bad_opt).empty())
                 return candidate;
         }
-        return std::string("-") + static_cast<char>(optopt);
+        return std::string("-") + static_cast<char>(bad_opt);
     }
-    return token_at(optind - 1);
+    return token_at(scan_index - 1);
 }
 
 // 长选项表：新增参数在此加一项并在 app::run 的 switch 中处理（文件作用域：展开多字符

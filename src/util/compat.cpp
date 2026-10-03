@@ -65,10 +65,9 @@ FILE *fopen(const std::filesystem::path &path, const char *mode)
 gzFile gzopen(const std::filesystem::path &path, const char *mode)
 {
 #ifdef _WIN32
-    std::wstring wmode;
-    for (const char *p = mode; *p; ++p)
-        wmode += static_cast<wchar_t>(static_cast<unsigned char>(*p));
-    return gzopen_w(path.c_str(), wmode.c_str());
+    // 只有路径要宽字符：zlib 的 gzopen_w 第二参数是窄字符 mode（1.2.11 起即如此），
+    // 传宽字符会被 MSVC 直接拒绝（C2664）
+    return gzopen_w(path.c_str(), mode);
 #else
     return ::gzopen(path.c_str(), mode);
 #endif

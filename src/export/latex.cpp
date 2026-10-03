@@ -377,7 +377,8 @@ std::string normalize_alignment(std::string s, int depth = 0)
         // 按 \\ 或 \cr 拆行：忽略花括号内与嵌套环境内部，否则内层 aligned/array 的 \\ 会被误当外层换行。
         std::vector<std::string> rows;
         std::string cur;
-        int depth = 0;
+        // 花括号深度：与外层函数的参数 depth（嵌套环境递归深度）无关，故分开命名
+        int brace_depth = 0;
         int env_depth = 0;
         size_t k = 0;
         while (k < body.size())
@@ -397,9 +398,9 @@ std::string normalize_alignment(std::string s, int depth = 0)
                 k += 5;
                 continue;
             }
-            if (body[k] == '{') ++depth;
-            else if (body[k] == '}') --depth;
-            if (depth <= 0 && env_depth == 0)
+            if (body[k] == '{') ++brace_depth;
+            else if (body[k] == '}') --brace_depth;
+            if (brace_depth <= 0 && env_depth == 0)
             {
                 if (body.compare(k, 2, "\\\\") == 0)
                 {
@@ -1920,8 +1921,10 @@ std::string sanitize_math_chunk(std::string s)
             return pre.substr(0, pre.size() - 1) + "{}" + pre.back();
         });
 
-        static const std::regex kTrailingCaret(R"((^|[^\\])([\^_])(?=\s*\$?\s*$))");
-        s = regex_transform(s, kTrailingCaret, [&](const std::smatch &m) {
+        // 与上面同名的 kTrailingCaret 作用域不同：这一遍要处理前面转换新产生的悬空 ^ / _，
+        // 故用独立名字，避免 MSVC 的 C4456（重名遮蔽）警告
+        static const std::regex kTrailingCaretFinal(R"((^|[^\\])([\^_])(?=\s*\$?\s*$))");
+        s = regex_transform(s, kTrailingCaretFinal, [&](const std::smatch &m) {
             return m[1].str() + (m[2].str() == "^" ? "\\wedge" : "\\text{\\_}");
         });
     }

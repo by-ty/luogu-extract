@@ -44,6 +44,10 @@ if(LUOGU_EXTRACT_STATIC)
     endif()
 endif()
 
+if(WIN32)
+    add_compile_definitions(NOMINMAX)
+endif()
+
 find_package(CURL REQUIRED)
 find_package(LibXml2 REQUIRED)
 find_package(nlohmann_json REQUIRED)
