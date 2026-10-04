@@ -5417,6 +5417,30 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     // 任务列表用的 \square（未勾选方框）由 amssymb 提供，而本模板不加载 amssymb；unicode-math
     // 收录的是 \mdlgwhtsquare，这里补齐别名，避免任务列表渲染成 Undefined control sequence
     std::fputs("\\providecommand{\\square}{\\mdlgwhtsquare}\n", out);
+    // LaTeX 内核把 amssymb 的 11 个符号写成了「一使用就报错」的占位命令（\not@base：Command \Box
+    // not provided in base LaTeX2e，提示改用 latexsym / amsfonts）。本模板为配合 unicode-math 不
+    // 加载 amssymb，其中 \mho / \sqsubset / \sqsupset 会被 unicode-math 覆盖成正常符号，剩下 8 个
+    // 仍是报错占位：它们在 LaTeX 里「已经有定义」，\providecommand 对它们无效，必须用 \renewcommand
+    // 顶掉。洛谷题解常把 $\Box$ 用作证毕符号，不顶掉会直接中断编译（\blacksquare 等符号同理）
+    // 取值与 KaTeX（洛谷网页的公式渲染器，见其 src/symbols.ts）一致，保证 PDF 与网页显示相同：
+    // \Box = \square = U+25A1、\Diamond = \lozenge = U+25CA、\leadsto = U+21DD、\Join = U+22C8、
+    // \lhd / \rhd / \unlhd / \unrhd = U+22B2 ~ U+22B5（正规子群与商群符号）
+    std::fputs("\\renewcommand{\\Box}{\\mdlgwhtsquare}\n", out);
+    std::fputs("\\renewcommand{\\Diamond}{\\mdlgwhtlozenge}\n", out);
+    std::fputs("\\renewcommand{\\Join}{\\bowtie}\n", out);
+    std::fputs("\\renewcommand{\\leadsto}{\\rightsquigarrow}\n", out);
+    std::fputs("\\renewcommand{\\lhd}{\\vartriangleleft}\n", out);
+    std::fputs("\\renewcommand{\\unlhd}{\\trianglelefteq}\n", out);
+    std::fputs("\\renewcommand{\\rhd}{\\vartriangleright}\n", out);
+    std::fputs("\\renewcommand{\\unrhd}{\\trianglerighteq}\n", out);
+    // \blacksquare / \lozenge / \blacklozenge / \yen 在 LaTeX 里没有定义（KaTeX 支持，洛谷题面与
+    // 题解都可能出现），与 \Box 同属方块类符号，一并补齐；\blacklozenge 是唯一一处与 KaTeX 取值不同
+    // 的符号：KaTeX 的 U+29EB 在 Latin Modern Math 里没有字形，XeTeX 会静默排成空白且不报错，
+    // 退回同形状且字体收录的 U+2666
+    std::fputs("\\providecommand{\\blacksquare}{\\mdlgblksquare}\n", out);
+    std::fputs("\\providecommand{\\lozenge}{\\mdlgwhtlozenge}\n", out);
+    std::fputs("\\providecommand{\\blacklozenge}{\\vardiamondsuit}\n", out);
+    std::fputs("\\providecommand{\\yen}{\\text{\\textyen}}\n", out);
     // amssymb 的 \circledR / \circledS 未被 unicode-math 收录，而本模板不加载 amssymb；洛谷题面
     // （KaTeX 支持这两个命令）用到时补齐为等价符号，避免 Undefined control sequence
     std::fputs("\\providecommand{\\circledR}{\\text{\\textregistered}}\n", out);
