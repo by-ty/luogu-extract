@@ -55,6 +55,9 @@ prompt::Io prompt::default_io()
     Io io;
     io.is_tty = []() { return luogu::compat::stdin_is_tty(); };
     io.read_line = [](std::string &line) -> bool {
+        // 兜底：终端若残留在 cbreak（不回显、fgets 立刻 EOF），先恢复规范模式，否则询问会
+        // 「不等待输入」直接按默认值继续（下载阶段按 S/C 的分片等待会临时切 cbreak）
+        luogu::compat::ensure_canonical_input();
         std::string value;
         if (luogu::compat::read_line(stdin, value) < 0)
             return false;

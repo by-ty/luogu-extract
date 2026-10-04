@@ -22,6 +22,7 @@
 #include "luogu-extract/contents/solution_task.h"
 
 #include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <ctime>
@@ -40,6 +41,13 @@ namespace
 // 重定向到文件/管道时不写 ANSI 转义序列
 const char *kColorYellow = luogu::compat::stdout_is_tty() ? "\033[1;33m" : "";
 const char *kColorReset = luogu::compat::stdout_is_tty() ? "\033[0m" : "";
+// 抓取进度行的配色：时间 / 提示文本 / 文章编号 / 来源各自取色
+// （来源再按站点区分：原站绿、保存站品红）
+const char *kProgressTimeColor = luogu::compat::stdout_is_tty() ? "\033[36m" : "";
+const char *kProgressTextColor = luogu::compat::stdout_is_tty() ? "\033[1m" : "";
+const char *kProgressIdColor = luogu::compat::stdout_is_tty() ? "\033[2m" : "";
+const char *kProgressOfficialColor = luogu::compat::stdout_is_tty() ? "\033[32m" : "";
+const char *kProgressSaveColor = luogu::compat::stdout_is_tty() ? "\033[35m" : "";
 
 void print_warning(const std::string &message)
 {
@@ -484,6 +492,65 @@ const char *task_noun(const std::string &pid)
     return pid.empty() ? "文章" : "题解";
 }
 
+// 进度行的时间：从开始抓取起算的真实经过时间（不是按请求数与延时算出的理论值）
+std::string elapsed_text(std::chrono::steady_clock::time_point start)
+{
+    long long secs = std::chrono::duration_cast<std::chrono::seconds>(
+                         std::chrono::steady_clock::now() - start)
+                         .count();
+    if (secs < 0)
+        secs = 0;
+    char buf[32];
+    if (secs >= 3600)
+        std::snprintf(buf, sizeof(buf), "%lld:%02lld:%02lld", secs / 3600,
+                      (secs % 3600) / 60, secs % 60);
+    else
+        std::snprintf(buf, sizeof(buf), "%02lld:%02lld", (secs % 3600) / 60,
+                      secs % 60);
+    return buf;
+}
+
+// 抓取阶段的进度行：<经过时间> 正在抓取题解：[i/N] <题号> <题目名> · <文章编号> —— 来源：<站点>
+// 三种下载方式（auto / official / save）都用同一行格式；i 只在「某篇第一次开始抓取」时递增，
+// 同一篇改派到另一站点重试时沿用原序号（retry = true，行尾标注「重试」）。
+// 题解同样标出文章编号：同一题要抓多篇时，靠编号才能分辨当前抓的是哪一篇。
+// 时间、提示文本、文章编号、来源分别着色，便于一眼区分。
+std::string fetch_progress_line(const std::string &pid, const std::string &name,
+                                const std::string &lid, size_t done, size_t total,
+                                int site, bool retry,
+                                std::chrono::steady_clock::time_point start)
+{
+    const bool is_article = pid.empty();
+    std::string head = std::string("正在抓取") + task_noun(pid) + "：[" +
+                       std::to_string(done) + "/" + std::to_string(total) + "] ";
+    if (!is_article)
+    {
+        head += pid;
+        if (!name.empty())
+            head += " " + name;
+        head += " · ";
+    }
+
+    const bool official = (site == 0);
+    std::string line = std::string(kProgressTimeColor) + "[+" + elapsed_text(start) +
+                       "]" + kColorReset;
+    line += " " + std::string(kProgressTextColor) + head + kProgressIdColor + lid +
+            kColorReset;
+    line += " " +
+            std::string(official ? kProgressOfficialColor : kProgressSaveColor) +
+            "—— 来源：" + (official ? "洛谷原站" : "洛谷保存站");
+    if (retry)
+        line += "（重试）";
+    line += kColorReset;
+    return line;
+}
+
+void print_progress(const std::string &text)
+{
+    std::printf("%s\n", text.c_str());
+    std::fflush(stdout);
+}
+
 void apply_outcome(const FetchOutcome &outcome, solution::CrawlStats &stats)
 {
     switch (outcome.kind)
@@ -525,9 +592,11 @@ struct AutoTask
 {
     size_t bucket = 0;          // 属于第几道题
     std::string pid;
+    std::string name;           // 题目名（--article 的文章为空），仅用于进度行
     solution::Summary summary;
     int preferred = 0;          // 首选通道：0 原站 / 1 保存站
     int retries = 0;            // 已因「本站点没有这篇/抓取失败」改派过几次
+    bool started = false;       // 是否已经开始抓取过（重试不再推进进度序号）
 };
 
 struct AutoContext
@@ -551,6 +620,12 @@ struct AutoContext
     int fetched = 0, fetched_official = 0, fetched_save = 0;
     int not_modified = 0, failed = 0, skipped_inaccessible = 0;
     int skipped_incomplete = 0, incomplete_exported = 0;
+
+    // 进度：分母 = 实际入队任务数（缓存命中的篇目不算），序号只在某篇**第一次**开始抓取时
+    // 递增；改派到另一站点重试沿用同一序号，所以进度不会因重试虚高
+    size_t progress_total = 0;
+    size_t progress_started = 0;
+    std::chrono::steady_clock::time_point start{}; // 开始抓取的时间点（进度行的时间基准）
 };
 
 bool auto_site_available(AutoContext &ctx, int site)
@@ -619,6 +694,7 @@ void auto_worker(AutoContext &ctx, int site)
     for (;;)
     {
         size_t slot = 0;
+        std::string progress;
         {
             std::unique_lock<std::mutex> lock(ctx.mutex);
             for (;;)
@@ -668,10 +744,22 @@ void auto_worker(AutoContext &ctx, int site)
                 ctx.queue.erase(ctx.queue.begin() +
                                 static_cast<std::ptrdiff_t>(picked));
                 ++ctx.in_flight;
+                // 开始抓取这一篇：序号只在第一次抓取时递增，改派重试沿用原序号；
+                // 文案先攒好、出锁后立即打印（就在发起请求之前）
+                AutoTask &picked_task = ctx.tasks[slot];
+                const bool retry = picked_task.started;
+                picked_task.started = true;
+                if (!retry)
+                    ++ctx.progress_started;
+                progress = fetch_progress_line(
+                    picked_task.pid, picked_task.name, picked_task.summary.lid,
+                    ctx.progress_started, ctx.progress_total, site, retry, ctx.start);
                 break;
             }
         }
 
+        if (!progress.empty())
+            print_progress(progress);
         const AutoTask task = ctx.tasks[slot];
         FetchOutcome outcome;
         try
@@ -801,7 +889,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     solcache::cleanup_stale_temp_files();
 
     const bool auto_mode = (opt.source == Source::Auto);
-    const int total = static_cast<int>(plan.items.size());
 
     // 每道题一个导出桶（题解按题目顺序、列表顺序），--article 的每篇文章也各占一桶并排在最后，使调度器不必区分「题解」与「文章」
     const size_t problem_buckets = plan.items.size();
@@ -819,9 +906,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     {
         const ProblemPlan &item = plan.items[pi];
         ++stats.problems_handled;
-        std::printf("\r正在抓取题解：[%zu/%d] %s %s        \n", pi + 1, total,
-                    item.pid.c_str(), item.name.c_str());
-        std::fflush(stdout);
 
         if (item.list_from_network)
         {
@@ -862,6 +946,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                     AutoTask task;
                     task.bucket = pi;
                     task.pid = item.pid;
+                    task.name = item.name;
                     task.summary = article.summary;
                     task.preferred = article.site;
                     auto_ctx.queue.push_back(auto_ctx.tasks.size());
@@ -886,6 +971,7 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
                     AutoTask task;
                     task.bucket = pi;
                     task.pid = item.pid;
+                    task.name = item.name;
                     task.summary = article.summary;
                     task.preferred = article.site;
                     auto_ctx.queue.push_back(auto_ctx.tasks.size());
@@ -914,9 +1000,6 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
         {
             const StandaloneArticlePlan &item = plan.standalone_articles[ai];
             const size_t bi = problem_buckets + ai;
-            std::printf("\r正在抓取文章：[%zu/%zu] %s        \n", ai + 1,
-                        standalone_count, item.lid.c_str());
-            std::fflush(stdout);
 
             bucket_used[bi] = true;
             buckets[bi].resize(1);
@@ -958,6 +1041,9 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     if (auto_mode)
     {
         const bool only_articles = plan.items.empty() && !plan.standalone_articles.empty();
+        // 进度的分母 = 实际入队的任务数（缓存命中的篇目不在其中），时间从这一刻开始计
+        auto_ctx.progress_total = auto_ctx.tasks.size();
+        auto_ctx.start = std::chrono::steady_clock::now();
         std::printf("%s正文来源：原站与保存站轮流分配、并行抓取"
                     "（缓存命中的篇目直接使用缓存）\n",
                     only_articles ? "文章" : "题解");
@@ -1033,6 +1119,10 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
     }
     else
     {
+        size_t seq_done = 0;
+        // 顺序模式（official / save）：时间同样从开始抓取起算
+        const std::chrono::steady_clock::time_point seq_start =
+            std::chrono::steady_clock::now();
         for (const auto &task : seq_tasks)
         {
             const size_t bi = task.first;
@@ -1043,11 +1133,17 @@ bool solution::crawl(const Plan &plan, const TaskOptions &opt,
             if (is_article)
                 art = plan.standalone_articles[bi - problem_buckets];
             const std::string pid = is_article ? std::string() : plan.items[bi].pid;
+            const std::string name = is_article ? std::string() : plan.items[bi].name;
             const Summary summary = is_article ? summary_of_lid(art.lid)
                                                : plan.items[bi].articles[ai].summary;
             const int site_index =
                 is_article ? art.site : plan.items[bi].articles[ai].site;
             const Source site = (site_index == 1) ? Source::Save : Source::Official;
+
+            // 顺序模式同样是「开始抓就打印」：每条之间要等一个延时，等待期间能看出当前抓的是哪篇
+            print_progress(fetch_progress_line(pid, name, summary.lid, ++seq_done,
+                                               seq_tasks.size(), site_index, false,
+                                               seq_start));
 
             FetchOutcome outcome;
             try

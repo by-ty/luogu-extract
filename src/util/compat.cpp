@@ -479,36 +479,70 @@ void sleep_ms(long ms)
 #ifndef _WIN32
 namespace
 {
+    // cbreak 状态：由所有 CbreakGuard 共享（见下）。放在命名空间里，便于 ensure_canonical_input 复用
+    std::mutex &cbreak_mutex()
+    {
+        static std::mutex m;
+        return m;
+    }
+    int &cbreak_depth()
+    {
+        static int depth = 0;
+        return depth;
+    }
+    termios &cbreak_saved()
+    {
+        static termios saved{};
+        return saved;
+    }
+
     // POSIX 终端默认规范模式（行缓冲），单键要等回车，无法「按 S 立即停止」：轮询期间临时
-    // 切到 cbreak（关 ICANON/ECHO、保留 ISIG 让 Ctrl+C 仍中断），由析构函数还原
+    // 切到 cbreak（关 ICANON/ECHO、保留 ISIG 让 Ctrl+C 仍中断），离开时还原。
+    //
+    // auto 模式下原站与保存站两条通道会**并发**等待，各自反复构造/析构本对象，所以这里必须
+    // 引用计数：第一个进入者保存原始设置并切到 cbreak，最后一个离开者才还原。若每个对象都
+    // 「进入时保存当前设置、析构时写回」，后析构的线程会把先析构者刚恢复的规范模式又覆盖成
+    // 它进入时看到的 cbreak——下载阶段结束后终端停留在 cbreak（关 ICANON/ECHO、VMIN=0），
+    // 之后的提示用 fgets 读 stdin 会立刻得到 EOF，表现为「询问不等待输入就按默认值继续」。
     class CbreakGuard
     {
     public:
         CbreakGuard()
         {
-            if (!isatty(STDIN_FILENO))
-                return;
-            if (tcgetattr(STDIN_FILENO, &saved_) != 0)
-                return;
-            termios raw = saved_;
-            raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
-            raw.c_cc[VMIN] = 0;
-            raw.c_cc[VTIME] = 0;
-            if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
-                return;
+            std::lock_guard<std::mutex> lock(cbreak_mutex());
+            if (cbreak_depth() == 0)
+            {
+                if (!isatty(STDIN_FILENO))
+                    return;
+                if (tcgetattr(STDIN_FILENO, &cbreak_saved()) != 0)
+                    return;
+                termios raw = cbreak_saved();
+                raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO));
+                raw.c_cc[VMIN] = 0;
+                raw.c_cc[VTIME] = 0;
+                if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
+                    return;
+            }
+            ++cbreak_depth();
             active_ = true;
         }
         ~CbreakGuard()
         {
-            if (active_)
-                tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
+            if (!active_)
+                return;
+            std::lock_guard<std::mutex> lock(cbreak_mutex());
+            if (--cbreak_depth() > 0)
+                return;
+            // 还原时补上 ICANON/ECHO：本类只会关掉这两个标志位，因此即使终端在上一次异常退出
+            // （Ctrl+C / 进程被杀）后残留在 cbreak，也能在这里自愈
+            cbreak_saved().c_lflag |= static_cast<tcflag_t>(ICANON | ECHO);
+            tcsetattr(STDIN_FILENO, TCSANOW, &cbreak_saved());
         }
         CbreakGuard(const CbreakGuard &) = delete;
         CbreakGuard &operator=(const CbreakGuard &) = delete;
 
     private:
         bool active_ = false;
-        termios saved_{};
     };
 } // namespace
 #endif
@@ -564,6 +598,28 @@ namespace
 #endif
     }
 } // namespace
+
+void ensure_canonical_input()
+{
+#ifdef _WIN32
+    // Windows 控制台没有 cbreak（关 ICANON/ECHO）这套机制，无需处理
+#else
+    std::lock_guard<std::mutex> lock(cbreak_mutex());
+    // 有等待正在轮询按键：此时的 cbreak 是刻意的，不要动它
+    if (cbreak_depth() > 0)
+        return;
+    if (!isatty(STDIN_FILENO))
+        return;
+    termios current{};
+    if (tcgetattr(STDIN_FILENO, &current) != 0)
+        return;
+    if ((current.c_lflag & ICANON) != 0 && (current.c_lflag & ECHO) != 0)
+        return;
+    // 终端停在 cbreak（例如上一次异常退出后残留）：恢复规范模式，否则后面的提示读不到输入
+    current.c_lflag |= static_cast<tcflag_t>(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &current);
+#endif
+}
 
 bool sleep_interruptible_ms(long ms, const std::function<bool(char)> &on_key)
 {

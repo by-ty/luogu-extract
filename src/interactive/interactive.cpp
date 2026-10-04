@@ -118,6 +118,9 @@ struct Session
     {
         std::fputs(prompt.c_str(), stdout);
         std::fflush(stdout);
+        // 兜底：终端若残留在 cbreak（例如上一次抓取被 Ctrl+C 打断），先恢复规范模式，
+        // 否则这里的读取会立刻拿到 EOF，把询问当成「输入已结束」直接退出
+        luogu::compat::ensure_canonical_input();
         std::string raw;
         if (luogu::compat::read_line(stdin, raw) < 0)
         {

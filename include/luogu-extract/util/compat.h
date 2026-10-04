@@ -129,6 +129,11 @@ namespace compat
     // 无 TTY 或 on_key 为空时退化为纯睡眠并返回 false；不使用线程，也不注册信号处理器
     bool sleep_interruptible_ms(long ms, const std::function<bool(char)> &on_key);
 
+    // 读取提示输入前的兜底：终端若停留在 cbreak（关 ICANON/ECHO 时 fgets 会立刻读到 EOF，
+    // 询问会被当成「直接回车」），先恢复规范（行缓冲）模式。有等待正在轮询按键时不动终端；
+    // 非 TTY 或已是规范模式时空操作（Windows 空操作）
+    void ensure_canonical_input();
+
     // Windows：对 stdout/stderr 启用 ENABLE_VIRTUAL_TERMINAL_PROCESSING（否则 ANSI 彩色与光标序列乱码）
     // 并把代码页设为 UTF-8；输出被重定向或启用失败时保持原样，其他平台空操作
     void init_console();
