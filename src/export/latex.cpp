@@ -2424,6 +2424,19 @@ std::string regex_transform(const std::string &s, const std::regex &re,
     return out;
 }
 
+// Markdown 链接文字 / 图片替代文字的 ECMAScript 正则片段：CommonMark 规定文字里的方括号按
+// 「平衡括号」处理，洛谷题解里常见 [题解：AT_arc080_c [ARC080E] Young Maids](url) 这种文字里
+// 再套一对 [] 的写法（题号方括号）。用 [^\]]* 匹配文字时这类链接整条都识别不出来，[](…) 会
+// 原样抄进 PDF；这里生成允许括号的片段：每层迭代多允许一层嵌套，depth 为支持的最大嵌套层数。
+// 两个分支的首字符集互不相交（[^\[\]] 与 \[），回溯是线性的。
+std::string markdown_label_regex(int depth)
+{
+    std::string inner = "[^\\[\\]]*";
+    for (int i = 0; i < depth; ++i)
+        inner = "(?:[^\\[\\]]|\\[" + inner + "\\])*";
+    return inner;
+}
+
 std::string inline_to_latex(const std::string &text);
 std::string inline_to_latex_impl(const std::string &text, std::vector<std::string> &raws,
                                  std::vector<bool> &is_math, int depth = 0);
@@ -2762,7 +2775,8 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
         });
     }
     {
-        static const std::regex re("!\\[([^\\]]*)\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
+        static const std::regex re("!\\[(" + markdown_label_regex(3) +
+                                   ")\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             const std::string alt = m[1].str();
             const std::string url = m[2].str();
@@ -2805,7 +2819,10 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
         });
     }
     {
-        static const std::regex re("\\[([^\\]]*)\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
+        // 链接文字允许带方括号（题号写法，见 markdown_label_regex）：否则
+        // [题解：AT_arc080_c [ARC080E] Young Maids](url) 这类链接会整条漏掉，原文照抄进 PDF
+        static const std::regex re("\\[(" + markdown_label_regex(3) +
+                                   ")\\]\\s*\\(\\s*([^\\s)]+)(?:\\s+[\"'][^\"']*[\"'])?\\s*\\)");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             const std::string label = m[1].str();
             // 链接文字为空（如题面里的 [](一段文字)）：Markdown 渲染后是一个看不见内容的超链接；直接输出空内容，
@@ -3491,6 +3508,25 @@ std::vector<std::pair<size_t, size_t>> group_blocks_into_chunks(
     return chunks;
 }
 
+// 框内代码块的左缩进：行号按 listings 默认画在代码框线外侧（numbersep 处），而在折叠框 / 引用框
+// 里代码盒正好贴着框内左边界，行号会越过折叠框的左边线跑到框外。这里把代码盒连同框线整体右移
+// （只给 xleftmargin，不给 framexleftmargin，框线不会跟着向左扩回），行号就落在折叠框线与代码框
+// 线之间：仍在代码框线外，但已经在折叠框线内。28pt ≈ numbersep 10pt + 4 位行号
+// （\footnotesize\ttfamily 每位约 4.2pt）再留 1pt 余量；用分组限定，不影响框外的顶层代码块
+const char *const kBoxLstSet = "\\lstset{xleftmargin=28pt}%\n";
+
+// 把框内内容包进分组并应用上面的代码块缩进（\lstset 在分组内生效）
+std::string boxed_body_latex(const std::string &content)
+{
+    std::string out = "{";
+    out += kBoxLstSet;
+    out += content;
+    if (!content.empty() && content.back() != '\n')
+        out += '\n';
+    out += "}\n";
+    return out;
+}
+
 // 折叠框渲染（mdframed 环境，样式见导言区的 \mdfdefinestyle{luogofoldbox}）：第一行是标题条
 // （底色为折叠框颜色、白色粗体字），下面是框内内容（白底黑字，字体与正文一致）。不用 tabular
 // 模拟：LaTeX 的表格是整体不可分割的盒子，超过一页的折叠框会被截断；mdframed 可以自然跨页。
@@ -3507,9 +3543,7 @@ std::string fold_box_latex(const FoldStyle &style, const std::string &title,
     // 框内图片的高度上限收紧到 0.4\textheight（默认是 \textheight）：图片（\hbox）无法被
     // 拆开，太高时一页只能放下一张、页底留下大片空白。mdframed 是分组，设置只在本框内生效
     out += "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
-    out += content;
-    if (!content.empty() && content.back() != '\n')
-        out += '\n';
+    out += boxed_body_latex(content);
     out += "\\end{mdframed}\n\n";
     return out;
 }
@@ -3520,11 +3554,27 @@ std::string quote_box_latex(const std::string &content)
 {
     std::string out;
     out += "\\begin{mdframed}[style=luogoquote]\n";
-    out += content;
-    if (!content.empty() && content.back() != '\n')
-        out += '\n';
+    out += boxed_body_latex(content);
     out += "\\end{mdframed}\n\n";
     return out;
+}
+
+// 渲染结果是否以代码块开头 / 结尾。代码块（lstlisting）的 frame=single 框线画在盒子外侧
+// （framesep 3pt + framerule 0.4pt），而嵌套折叠框 / 嵌套引用的相邻小块之间不留任何竖直间距：
+// 块首或块尾是代码时要在这一侧留出框线占的高度，否则框线会压到上一块的正文或下一块的首行上。
+// 代码围栏经 render_markdown 输出的就是 \begin{lstlisting} … \end{lstlisting}，直接看渲染结果
+bool latex_starts_with_listing(const std::string &content)
+{
+    return content.rfind("\\begin{lstlisting}", 0) == 0;
+}
+
+bool latex_ends_with_listing(const std::string &content)
+{
+    static const std::string kEnd = "\\end{lstlisting}";
+    const size_t last = content.find_last_not_of(" \t\r\n");
+    if (last == std::string::npos || last + 1 < kEnd.size())
+        return false;
+    return content.compare(last + 1 - kEnd.size(), kEnd.size(), kEnd) == 0;
 }
 
 // 嵌套区块引用的一块（引用里的引用，或折叠框里的引用）：与嵌套折叠框同理，mdframed 的嵌套
@@ -3533,14 +3583,19 @@ std::string quote_piece_latex(const std::string &content, bool first, bool last)
 {
     std::string out;
     out += "\\begin{mdframed}[style=luogoquote";
-    out += first ? ", innertopmargin=2pt" : ", innertopmargin=0pt";
-    out += last ? ", innerbottommargin=2pt" : ", innerbottommargin=0pt";
+    // 代码块的框线画在盒子外侧（见 latex_starts_with_listing）：块尾有代码时下侧要留出这段高度；
+    // 块首有代码时还要多留一点——上一块最后一行正文的下沉部分一直排到块底，只留框线本身的高度
+    // 会让框线紧贴文字
+    out += first ? ", innertopmargin=2pt"
+                 : (latex_starts_with_listing(content) ? ", innertopmargin=6pt"
+                                                       : ", innertopmargin=0pt");
+    out += last ? ", innerbottommargin=2pt"
+                : (latex_ends_with_listing(content) ? ", innerbottommargin=4pt"
+                                                    : ", innerbottommargin=0pt");
     out += ", skipabove=0pt, skipbelow=0pt]\n";
     // 小块不能跨页，框内图片高度上限与切块时的估算（18 行）保持一致
     out += "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
-    out += content;
-    if (!content.empty() && content.back() != '\n')
-        out += '\n';
+    out += boxed_body_latex(content);
     out += "\\luogofoldnoparlist\n"; // 让本块结束后不再补竖直间距
     out += "\\end{mdframed}\n";
     out += "\\luogofoldparlist\n"; // 还原开关，避免影响后面的列表/盒子
@@ -3562,14 +3617,19 @@ std::string fold_piece_latex(const FoldStyle &style, const std::string &title,
     out += first ? ", topline=true" : ", topline=false";
     out += last ? ", bottomline=true" : ", bottomline=false";
     out += ", frametitle={" + (first ? title : std::string()) + "}";
-    out += first ? ", innertopmargin=4pt" : ", innertopmargin=0pt";
-    out += last ? ", innerbottommargin=4pt" : ", innerbottommargin=0pt";
+    // 与 quote_piece_latex 同理：块首是代码块时留出代码框线占的高度加一点余量（上一块的正文会
+    // 一直排到块底），块尾是代码块时留出框线本身的高度，否则框线会压到上一块的正文或下一块的
+    // 首行上（第一块/最后一块本来就有 4pt 内边距，不必再判断）
+    out += first ? ", innertopmargin=4pt"
+                 : (latex_starts_with_listing(content) ? ", innertopmargin=6pt"
+                                                       : ", innertopmargin=0pt");
+    out += last ? ", innerbottommargin=4pt"
+                : (latex_ends_with_listing(content) ? ", innerbottommargin=4pt"
+                                                    : ", innerbottommargin=0pt");
     out += ", skipabove=0pt, skipbelow=0pt]\n";
     // 嵌套框内图片高度上限同样是 0.4\textheight，与切块时的估算（18 行）一致
     out += "\\setlength{\\luogoimagemaxheight}{0.4\\textheight}%\n";
-    out += content;
-    if (!content.empty() && content.back() != '\n')
-        out += '\n';
+    out += boxed_body_latex(content);
     out += "\\luogofoldnoparlist\n";
     out += "\\end{mdframed}\n";
     out += "\\luogofoldparlist\n";
@@ -5257,6 +5317,12 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("    columns=flexible,\n", out);
     std::fputs("    numbers=left,\n", out);
     std::fputs("    numberstyle=\\footnotesize\\ttfamily\\color{gray},\n", out);
+    // 行号保持 listings 默认样式：画在代码盒左边界外 numbersep 处，即代码框线的外侧（xleftmargin
+    // 保持 0，否则行号会被挪到框线里面）
+    // 代码框宽度：框线画在代码盒外侧（framesep 3pt + framerule 0.4pt，默认值与 \fboxsep /
+    // \fboxrule 相同），代码盒占满 \linewidth 时框线会越过折叠框右边线；xrightmargin 让出框线
+    // 本身占的宽度，框线与行号的位置都不变
+    std::fputs("    xrightmargin=\\dimexpr\\fboxsep+\\fboxrule\\relax,\n", out);
     std::fputs("    basicstyle=\\small\\ttfamily,\n", out);
     std::fputs("    rulecolor=\\color{blue},\n", out);
     // 代码块/样例里的 \end{lstlisting} 已由 lst_safe 换成等价写法，这里用 literate 排版回原文
