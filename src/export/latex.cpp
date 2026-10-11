@@ -1814,6 +1814,9 @@ std::string sanitize_math_chunk(std::string s)
             "wedgeodot", "wedgeonwedge", "wedgeq", "veebar", "veedot", "veedoublebar",
             "veeeq", "veemidvert", "veeodot", "veeonvee", "veeonwedge", "vertoverlay",
             "newcommand", "renewcommand", "providecommand", "infin", "circledR",
+            // 导言区补的兼容宏里，以短命令开头的名字要整词保留：\sect 会被拆成 \sec{}t，
+            // \supe 会被拆成 \sup{}e（长命令 \supseteq、\subset 等已在上面的前缀名单里）
+            "sect", "supe",
         };
         auto is_known = [&](const std::string &w) {
             return kKnownPrefixes.count(w) != 0 ||
@@ -5511,6 +5514,46 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     // （KaTeX 支持这两个命令）用到时补齐为等价符号，避免 Undefined control sequence
     std::fputs("\\providecommand{\\circledR}{\\text{\\textregistered}}\n", out);
     std::fputs("\\providecommand{\\circledS}{\\text{\\textcircled{S}}}\n", out);
+    // 洛谷网页用 KaTeX 渲染公式，KaTeX 认得的不少 amssymb / amsfonts 命令 LaTeX 本体并没有，而模板
+    // 为配合 unicode-math 不加载 amssymb，这些命令会直接 Undefined control sequence（P2523 的
+    // $1\thicksim n$ 就是这么炸的）。下面这一组取自「KaTeX 支持、模板里没有、且洛谷题面/题解确实会
+    // 写」的名单：取值与 KaTeX 一致（见其 src/symbols.ts 与 src/macros.ts），并逐一对过 Latin Modern
+    // Math 的字形，只保留字体确实收录的写法，避免 XeTeX 把缺字形的符号静默排成空白
+    std::fputs("\\providecommand{\\thicksim}{\\sim}\n", out);           // KaTeX: U+223C
+    std::fputs("\\providecommand{\\thickapprox}{\\approx}\n", out);     // KaTeX: U+2248
+    std::fputs("\\providecommand{\\shortmid}{\\mid}\n", out);           // KaTeX: U+2223
+    std::fputs("\\providecommand{\\shortparallel}{\\parallel}\n", out); // KaTeX: U+2225
+    std::fputs("\\providecommand{\\varpropto}{\\propto}\n", out);       // KaTeX: U+221D
+    std::fputs("\\providecommand{\\restriction}{\\upharpoonright}\n", out); // KaTeX: U+21BE
+    // \notni 不能写成 \not\ni：unicode-math 的 \not 碰上 \ni 会陷入死循环（本模板导言区的
+    // FakeBold 粗体数学版本下必现，实测 100% CPU 跑满不返回），直接取字体里就有的 U+220C——
+    // KaTeX 自己的 MathML 分支也是用这个字符
+    std::fputs("\\providecommand{\\notni}{\\mathrel{\\symbol{\"220C}}}\n", out);
+    std::fputs("\\providecommand{\\centerdot}{\\cdot}\n", out);         // KaTeX: U+22C5
+    std::fputs("\\providecommand{\\varvdots}{\\vdots}\n", out);         // KaTeX: U+22EE
+    // \dashrightarrow / \dashleftarrow（KaTeX 用 U+21E2 / U+21E0）在 Latin Modern Math 里没有字形，
+    // 用「短横 + 箭头」拼出虚线箭头的样子：\relbar 与箭头之间留一点空隙，既区别于 \rightarrow，
+    // 也不会像 \relbar\joinrel\rightarrow 那样变成 \longrightarrow 的长箭头
+    std::fputs("\\providecommand{\\dashrightarrow}{\\mathrel{{\\relbar}\\!\\!\\rightarrow}}\n", out);
+    std::fputs("\\providecommand{\\dashleftarrow}{\\mathrel{{\\leftarrow}\\!\\!{\\relbar}}}\n", out);
+    // amsfonts 的字体命令老写法（KaTeX 的 \Bbbk 内部也用 \Bbb），补成 unicode-math 的对应命令
+    std::fputs("\\providecommand{\\Bbb}{\\mathbb}\n", out);
+    std::fputs("\\providecommand{\\frak}{\\mathfrak}\n", out);
+    // KaTeX 收录的 HTML 实体名 / 老式短别名（\isin、\sdot、\diamonds 这类），补成对应符号
+    std::fputs("\\providecommand{\\bull}{\\bullet}\n", out);
+    std::fputs("\\providecommand{\\sect}{\\S}\n", out);
+    std::fputs("\\providecommand{\\alef}{\\aleph}\n", out);
+    std::fputs("\\providecommand{\\alefsym}{\\aleph}\n", out);
+    std::fputs("\\providecommand{\\weierp}{\\wp}\n", out);
+    std::fputs("\\providecommand{\\thetasym}{\\vartheta}\n", out);
+    std::fputs("\\providecommand{\\isin}{\\in}\n", out);
+    std::fputs("\\providecommand{\\plusmn}{\\pm}\n", out);
+    std::fputs("\\providecommand{\\sdot}{\\cdot}\n", out);
+    std::fputs("\\providecommand{\\sub}{\\subset}\n", out);
+    std::fputs("\\providecommand{\\diamonds}{\\diamondsuit}\n", out);
+    std::fputs("\\providecommand{\\hearts}{\\heartsuit}\n", out);
+    std::fputs("\\providecommand{\\clubs}{\\clubsuit}\n", out);
+    std::fputs("\\providecommand{\\spades}{\\spadesuit}\n", out);
     // 部分洛谷题面使用 \bold2 / \bold{x} 表示粗体数学字符，LaTeX 标准没有 \bold，补齐为 \mathbf
     // 别名，避免编译时 Undefined control sequence
     std::fputs("\\providecommand{\\bold}[1]{\\ifmmode\\mathbf{#1}\\else\\textbf{#1}\\fi}\n", out);
