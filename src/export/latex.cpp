@@ -5160,7 +5160,7 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     // 警告（书签里它也没有意义），这里在 PDF 字符串中把它定义为空
     std::fputs("\\pdfstringdefDisableCommands{\\def\\allowbreak{}}\n", out);
     std::fputs("\\usepackage[normalem]{ulem}\n", out);
-    std::fputs("\\usepackage{amsmath,amssymb}\n", out);
+    std::fputs("\\usepackage{amsmath}\n", out);
     std::fputs("\\usepackage{mathtools}\n", out);
     // unicode-math：数学字体全部改为可无限缩放的 OpenType 数学字体，修复 mathrsfs（只有固定
     // 字号）导致 \mathscr 字号被替换的问题。必须加载在 amsmath / mathtools 之后；不再加载
