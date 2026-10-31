@@ -2467,6 +2467,28 @@ std::string placeholder(size_t index)
     return std::string(1, '\x01') + "R" + std::to_string(index) + std::string(1, '\x02');
 }
 
+// 被保护的「转义美元符」\$ 的哨兵 \x01D\x02。必须用字符串拼接构造：写成字面量 "\x01D\x02" 时
+// C++ 会把 \x01D 整个当成一个十六进制转义（= 0x1D），拿到的是控制字符 0x1D 0x02，不是哨兵；
+// 这种假哨兵一旦在逐字符处理的行内代码里被打散，就会把控制字符漏进 .tex 让 TeX 报
+// "Text line contains an invalid character"（P4244 题面的 `{\$M 5000000}` 就是这么炸的）
+std::string dollar_sentinel()
+{
+    return std::string(1, '\x01') + "D" + std::string(1, '\x02');
+}
+
+// 把 \$ 哨兵还原成原文的两个字符 \ 与 $（行内代码里 Markdown 不处理反斜杠转义，要按原样显示）
+std::string restore_dollar_sentinel(std::string s)
+{
+    const std::string sentinel = dollar_sentinel();
+    size_t p = 0;
+    while ((p = s.find(sentinel, p)) != std::string::npos)
+    {
+        s.replace(p, sentinel.size(), "\\$");
+        p += 2;
+    }
+    return s;
+}
+
 // 恢复 \x01R<n>\x02 占位符（数字安全解析：内容里的畸形/超长数字不再抛异常）
 std::string restore_placeholders(const std::string &s, const std::vector<std::string> &raws)
 {
@@ -2689,7 +2711,7 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
 
     // 把 \$（转义美元符）保护起来，避免数学提取把它的 $ 当成公式分隔符
     {
-        const std::string dollar_sentinel = "\x01D\x02";
+        const std::string sentinel = dollar_sentinel();
         std::string t;
         size_t p = 0, last = 0;
         while ((p = s.find("\\$", p)) != std::string::npos)
@@ -2700,7 +2722,7 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 p += 2;
                 continue;
             }
-            t += s.substr(last, p - last) + dollar_sentinel;
+            t += s.substr(last, p - last) + sentinel;
             p += 2;
             last = p;
         }
@@ -2935,15 +2957,7 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
         result = restore_placeholders(result, raws);
     }
     // 还原被保护的 \$（转义美元符）
-    {
-        const std::string dollar_sentinel = "\x01D\x02";
-        size_t p = 0;
-        while ((p = result.find(dollar_sentinel, p)) != std::string::npos)
-        {
-            result.replace(p, dollar_sentinel.size(), "\\$");
-            p += 2;
-        }
-    }
+    result = restore_dollar_sentinel(std::move(result));
     return result;
 }
 
@@ -2960,12 +2974,16 @@ std::string inline_to_latex(const std::string &text)
 // 断点不能落在 \&、\_ 或 \textbackslash{} 这类命令中间，故必须逐字符转义后再拼接
 std::string inline_code_latex(const std::string &raw)
 {
+    // 代码段里的 \$ 要先把哨兵还原成原文的 \ 与 $ 两个字符再逐字符转义：Markdown 在代码段里不处理
+    // 反斜杠转义，洛谷页面上显示的就是「\$M 5000000}」这个样子；顺带也避免哨兵被逐字符拆开、
+    // 把 0x01/0x02 这类控制字符漏进 .tex
+    const std::string text = restore_dollar_sentinel(raw);
     std::string out = "\\texttt{";
-    for (size_t i = 0; i < raw.size();)
+    for (size_t i = 0; i < text.size();)
     {
         size_t len = 1;
-        utf8_codepoint_at(raw, i, len);
-        out += escape_latex(raw.substr(i, len));
+        utf8_codepoint_at(text, i, len);
+        out += escape_latex(text.substr(i, len));
         // \allowbreak 后跟空组而非空格：控制词后的空格会被 TeX 全部跳过，代码里的空格会消失
         out += "\\allowbreak{}";
         i += len;
@@ -4126,12 +4144,17 @@ std::string fence_to_listings_lang(std::string tag)
     return "";
 }
 
-// 把超过 limit 字符的行拆成多行：listings 的 breaklines 会先测量整行宽度，超长行（如几千位
-// 数字）总宽会超过 TeX 的 \maxdimen（~16383pt），报 "Dimension too large"；插入空格也没用
-// （测量发生在断行之前），只能物理拆行，仅影响极少数病态长行。拆行时沿 UTF-8 字符边界切断
+// 把过长的行拆成多行（沿 UTF-8 字符边界切断）。两个原因：
+//   1) listings 的 breaklines 会先测量整行宽度，超长行（如几千位数字）总宽会超过 TeX 的
+//      \maxdimen（~16383pt），报 "Dimension too large"；插入空格也没用（测量发生在断行之前）
+//   2) listings 的 columns=flexible（本模板的全局设置：中文注释要按实际字宽排版）碰上接近
+//      1000 字符的行会让 XeTeX 直接段错误——实测 900 字符稳定、1000 字符必崩，崩溃点是
+//      flush_node_list 的无限递归（样例里上千位的数字很常见，P7611 就是这么崩的）。换成
+//      columns=fixed 虽然不崩，但 breaklines 在 fixed 下不再换行、整行会被裁掉，所以只能物理
+//      拆行。取 800 字符：离 1000 的崩溃边界留一截余量，也尽量少改动原始数据
 std::string split_long_line(std::string line,
-                            size_t limit = 2500,
-                            size_t chunk = 1000)
+                            size_t limit = 800,
+                            size_t chunk = 800)
 {
     if (line.size() <= limit)
         return line;
@@ -5732,6 +5755,37 @@ void offer_missing_images(const std::vector<std::string> &candidate_urls,
                     "（\\IfFileExists）。\n");
     }
 }
+
+// 写 .tex 前清掉 TeX 读不了的控制字符：0x00-0x08、0x0B、0x0C、0x0E-0x1F 与 0x7F 在 TeX 里是
+// 「非法字符」，从文件读入时直接报 "Text line contains an invalid character" 中断编译（P4244 题面里
+// 的 `{\$M 5000000}` 就曾因 \$ 哨兵被写坏而漏出 0x1D / 0x02）。制表符与换行合法，保留；源内容里
+// 夹带的其它不可见控制字符在洛谷页面上同样不可见，一并丢弃并提示一次
+std::string strip_invalid_tex_chars(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size());
+    size_t dropped = 0;
+    for (unsigned char c : s)
+    {
+        if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') || c == 0x7F)
+        {
+            ++dropped;
+            continue;
+        }
+        out += static_cast<char>(c);
+    }
+    if (dropped)
+    {
+        static std::once_flag warned;
+        std::call_once(warned, [dropped]() {
+            std::fprintf(stderr,
+                         "警告：正文里有 %zu 个 TeX 无法处理的控制字符，已丢弃"
+                         "（源内容里夹带的不可见字符，洛谷页面上通常也不显示）。\n",
+                         dropped);
+        });
+    }
+    return out;
+}
 } // namespace
 
 bool latex::export_latex(const luogu::ExportFilter &filter,
@@ -5822,8 +5876,10 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
 
     // 写入助手：失败时统一清理临时文件（题解与题面共用）
     auto write_body = [&](const std::string &body) -> bool {
-        // 内容按字节数写出：含控制字符（缓存被篡改时）也不会被 C 字符串终止符静默截断
-        if (std::fwrite(body.data(), 1, body.size(), out) != body.size())
+        // 内容按字节数写出：含控制字符（缓存被篡改时）也不会被 C 字符串终止符静默截断；
+        // TeX 读不了的控制字符在写出前统一清掉（见 strip_invalid_tex_chars）
+        const std::string clean = strip_invalid_tex_chars(body);
+        if (std::fwrite(clean.data(), 1, clean.size(), out) != clean.size())
         {
             std::fclose(out);
             std::error_code ec;
@@ -6095,9 +6151,11 @@ bool latex::export_local_markdown(const std::filesystem::path &input_path,
         return false;
     }
 
-    // 内容按字节数写出：含控制字符（源文件异常时）也不会被 C 字符串终止符截断
+    // 内容按字节数写出：含控制字符（源文件异常时）也不会被 C 字符串终止符截断；
+    // TeX 读不了的控制字符在写出前统一清掉（见 strip_invalid_tex_chars）
     auto write_body = [&](const std::string &body) -> bool {
-        if (std::fwrite(body.data(), 1, body.size(), out) != body.size())
+        const std::string clean = strip_invalid_tex_chars(body);
+        if (std::fwrite(clean.data(), 1, clean.size(), out) != clean.size())
         {
             std::fclose(out);
             std::error_code ec;
