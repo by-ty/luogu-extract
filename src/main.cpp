@@ -80,7 +80,7 @@ struct Options
     // --doc-only：不输出封面/目录/页眉，整篇连贯输出（仅与 --local 同用）
     bool doc_only = false;
 
-    // --compile：-L 导出成功后自动执行 latexmk --xelatex
+    // --compile：-L 导出成功后自动执行 latexmk --xelatex（编译成功后再 latexmk -c 清理）
     bool compile_latex = false;
     bool no_toc_links = false;      // --no-toc-links：目录条目不带超链接（仅 -L）
     bool toc_backlinks = false;     // --toc-backlinks：页码为跳回目录的超链接（仅 -L）
@@ -270,9 +270,9 @@ const char *kUsage =
     "                        （-M 与 -L 不能同时使用；需要两种格式时请分两次执行）\n"
     "  -RD, --new-download   仅 -L 有效：下载题目时不使用之前缓存的图片，而是重新下载图片\n"
     "      --compile         仅 -L 有效：LaTeX 文档导出成功后自动在输出文件所在目录执行\n"
-    "                        latexmk --xelatex <输出文件名>.tex，等编译结束后再执行\n"
-    "                        latexmk -c <输出文件名>.tex 清理中间文件（PDF 保留）；\n"
-    "                        编译失败时提示退出码并以非零状态码结束\n"
+    "                        latexmk --xelatex <输出文件名>.tex；编译成功后再执行\n"
+    "                        latexmk -c <输出文件名>.tex 清理中间文件；\n"
+    "                        编译失败时提示退出码并以非零状态码结束（不执行 latexmk -c）\n"
     "  -C, --clean-all       清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）\n"
     "  -CIMG, --clean-images\n"
     "                        清除 <缓存目录>/images/ 下的图片缓存\n"
@@ -849,7 +849,7 @@ SolutionRun run_solutions(const Options &options,
         const long long list_eta = static_cast<long long>(
             crawler::gate_effective_delay_seconds(crawler::Channel::Official) *
             static_cast<double>(plan.list_requests));
-        std::printf("先获取 %lld 个题解列表（列表恒取原站；每条间隔 %.1f~%.1f 秒，"
+        std::printf("正在获取 %lld 个题解列表（列表恒取原站；每条间隔 %.1f~%.1f 秒，"
                     "预计约 %s）\n",
                     plan.list_requests,
                     static_cast<double>(list_delay.first) / 1000.0,
@@ -1014,9 +1014,10 @@ private:
     bool changed_ = false;
 };
 
-// --compile：-L 导出成功后依次执行 `latexmk --xelatex <输出文件名>.tex` 与 `latexmk -c`
-// （只删可再生的中间文件，保留 .pdf/.tex），工作目录切到 .tex 所在目录。命令按参数数组经
-// compat::run_command_utf8 直接执行、不过 shell，--output 的文件名含 shell 元字符也只当文件名。
+// --compile：-L 导出成功后执行 `latexmk --xelatex <输出文件名>.tex`，编译成功后再执行
+// `latexmk -c`（只删可再生的中间文件，保留 .pdf/.tex），工作目录切到 .tex 所在目录。编译
+// 失败时不清理，保留 .log 等中间文件便于排查。命令按参数数组经 compat::run_command_utf8
+// 直接执行、不过 shell，--output 的文件名含 shell 元字符也只当文件名。
 // 返回退出码（清理失败只提示，不改退出码）。
 int compile_latex_document(const std::filesystem::path &tex_path)
 {
@@ -1051,22 +1052,24 @@ int compile_latex_document(const std::filesystem::path &tex_path)
         return 1;
     }
 
-    // 无论编译成败都执行 latexmk -c 清理中间文件
+    // 编译失败：不执行 latexmk -c，保留中间文件与 .log 以便排查
+    if (status != 0)
+    {
+        printError("latexmk 编译失败" +
+                   (status > 0 ? "（退出码 " + std::to_string(status) + "）" : "") +
+                   "；请确认已安装 LaTeX 与 latexmk；已保留中间文件与编译日志"
+                   "（未执行 latexmk -c），需要清理时可手动执行：latexmk -c \"" +
+                   file_name + "\"");
+        return 1;
+    }
+
+    // 编译成功后才执行 latexmk -c 清理中间文件
     const std::vector<std::string> clean_argv = {"latexmk", "-c", file_name};
     const std::string clean_command = "latexmk -c \"" + file_name + "\"";
     std::printf("清理中间文件：%s\n", clean_command.c_str());
     std::fflush(stdout);
     std::string clean_run_error;
     const int clean_status = luogu::compat::run_command_utf8(clean_argv, clean_run_error);
-
-    if (status != 0)
-    {
-        printError("latexmk 编译失败" +
-                   (status > 0 ? "（退出码 " + std::to_string(status) + "）" : "") +
-                   "；请确认已安装 LaTeX 与 latexmk；中间文件已按 --compile 的约定"
-                   "用 latexmk -c 清理，如需保留编译日志请手动执行：" + command);
-        return 1;
-    }
 
     if (clean_status != 0)
     {
@@ -1894,7 +1897,7 @@ int app::run(const std::vector<std::string> &args_input)
     {
         printError("参数 --compile 仅在 -L（导出 LaTeX）时有效；"
                    "请与 -L 一起使用（导出完成后会自动执行 "
-                   "latexmk --xelatex <输出文件名>.tex，随后执行 latexmk -c）");
+                   "latexmk --xelatex <输出文件名>.tex，编译成功后再执行 latexmk -c）");
         return 1;
     }
 

@@ -76,7 +76,7 @@ make
 | `-M, --markdown` | 筛选并导出 Markdown（默认输出 `problems.md`） |
 | `-L, --latex` | 筛选并导出 LaTeX（默认输出 `problems.tex`） |
 | `-RD, --new-download` | 仅 `-L` 有效：下载题目时不使用之前缓存的图片，而是重新下载图片 |
-| `--compile` | 仅 `-L` 有效：LaTeX 文档导出成功后自动在输出文件所在目录执行 `latexmk --xelatex <输出文件名>.tex`，等编译结束后再执行 `latexmk -c <输出文件名>.tex` 清理中间文件（PDF 保留）；编译失败时提示退出码并以非零状态码结束 |
+| `--compile` | 仅 `-L` 有效：LaTeX 文档导出成功后自动在输出文件所在目录执行 `latexmk --xelatex <输出文件名>.tex`；编译成功后再执行 `latexmk -c <输出文件名>.tex` 清理中间文件。编译失败时提示退出码并以非零状态码结束（不执行 `latexmk -c`） |
 | `-C, --clean-all` | 清空 luogu-extract 缓存文件夹（含题目列表、标签、图片与字体缓存）。清除类参数（`-C` / `-CIMG` / `-CP` / `-CF` / `-CS` / `-CA`）只能彼此组合使用，不能与其他参数同时使用 |
 | `-CIMG, --clean-images` | 清除 `<缓存目录>/images/` 下的图片缓存。清除类参数只能彼此组合使用 |
 | `-CP, --clean-problems` | 清除题面缓存（`latest.ndjson` 与 `latest.ndjson.gz`）。清除类参数只能彼此组合使用 |
@@ -367,7 +367,7 @@ make
 | 标签字体 | 跟随正文中西文字体，随 `--set-font-body-zh-CN` / `--set-font-body-en-US` 一起变化 |
 
 > [!IMPORTANT]
-> LaTex 导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译；加上 `--compile` 可由程序在导出成功后自动执行该命令，并接着执行 `latexmk -c` 清理中间文件。
+> LaTex 导出后请使用 `latexmk --xelatex <输出文件名>.tex` 编译；加上 `--compile` 可由程序在导出成功后自动执行该命令，编译成功后程序会接着执行 `latexmk -c` 清理中间文件。若编译失败，程序会提示退出码并以非零状态码结束，同时保留中间文件与编译日志（不执行 `latexmk -c`）以便排查问题。
 
 ## 参数错误处理
 
