@@ -2114,10 +2114,12 @@ std::string escape_url(std::string s)
 // 都会提前结束环境，其后内容会被当成 LaTeX 正文编译。代码块与样例都来自不可信远程文本，故换成绝不会被
 // listings 识别的等价写法 \lx@end{lstlisting}，再由下方 \lstset 的 literate 选项排版回原文（已实测逐字一致）。
 const char *const kLstEndMarker = "\\lx@end{lstlisting}";
-const char *const kLstLiterateOption =
-    "    literate={\\\\lx@end\\{lstlisting\\}}{{\\textbackslash end\\{lstlisting\\}}}1,\n";
+// 全局 \lstset 的 literate 映射对：把占位符排版回原文。单独拆成常量便于与 literate= 前缀拼成一行
+const char *const kLstLiteratePairs =
+    "{\\\\lx@end\\{lstlisting\\}}{{\\textbackslash end\\{lstlisting\\}}}1";
+const char *const kLstLiterateOption = "    literate=";
 
-    // 把要写进 lstlisting 的文本安全化：只替换结束标记这一个字面量，其它内容逐字节保留，代码显示不受影响
+// 把要写进 lstlisting 的文本安全化：只替换结束标记这一个字面量，其它内容逐字节保留，代码显示不受影响
 std::string lst_safe(std::string s)
 {
     static const std::string kEnd = "\\end{lstlisting}";
@@ -4144,57 +4146,279 @@ std::string fence_to_listings_lang(std::string tag)
     return "";
 }
 
-// 把过长的行拆成多行（沿 UTF-8 字符边界切断）。两个原因：
-//   1) listings 的 breaklines 会先测量整行宽度，超长行（如几千位数字）总宽会超过 TeX 的
-//      \maxdimen（~16383pt），报 "Dimension too large"；插入空格也没用（测量发生在断行之前）
-//   2) listings 的 columns=flexible（本模板的全局设置：中文注释要按实际字宽排版）碰上接近
-//      1000 字符的行会让 XeTeX 直接段错误——实测 900 字符稳定、1000 字符必崩，崩溃点是
-//      flush_node_list 的无限递归（样例里上千位的数字很常见，P7611 就是这么崩的）。换成
-//      columns=fixed 虽然不崩，但 breaklines 在 fixed 下不再换行、整行会被裁掉，所以只能物理
-//      拆行。取 800 字符：离 1000 的崩溃边界留一截余量，也尽量少改动原始数据
-std::string split_long_line(std::string line,
-                            size_t limit = 800,
-                            size_t chunk = 800)
+// 判断「是否超长」时使用的列数。kListingFitColumns 按默认代码字体（Consolas；本机实测
+// 顶层约 100 列）取整，用来让「一行放得下」的代码继续保留 listings；kListingSafeWrapColumns
+// 是更宽的 Menlo / DejaVu Sans Mono 也不会越界的安全上限。90 < 行长 <= 100 的块仍用
+// listings，但会为其中的字母数字加 literate 断点：在更宽的字体上 listings 自动折行，不会
+// 被右边距裁掉；超过 100 列才整块改用伪代码块。伪代码块内部不使用这些数字，实际折行由
+// TeX 按字体和 \linewidth 在编译时完成。
+constexpr size_t kListingFitColumns = 100;
+constexpr size_t kListingSafeWrapColumns = 90;
+
+// 代码字符的显示列宽：ASCII 记 1，中文等非 ASCII 字符按 xeCJK 的满宽记 2
+size_t code_char_columns(size_t utf8_len)
 {
-    if (line.size() <= limit)
-        return line;
+    return utf8_len > 1 ? 2 : 1;
+}
+
+// 把代码行里的制表符按 listings 的 tabsize=4 展开：从当前显示列开始补到 4 的倍数。展开后
+// 的文本逐字保留（含行首缩进和连续空格），只把制表符变成空格，便于后续按列宽折行。
+std::string expand_code_tabs(const std::string &line)
+{
     std::string out;
-    out.reserve(line.size() + line.size() / chunk + 1);
-    size_t i = 0;
-    while (i < line.size())
+    out.reserve(line.size());
+    size_t column = 0;
+    for (size_t i = 0; i < line.size();)
     {
-        if (i)
-            out += '\n';
-        size_t end = i + chunk;
-        if (end < line.size())
+        if (line[i] == '\r')
         {
-            // 续字节（0b10xxxxxx）属于前一个多字节字符，顺延切点
-            while (end < line.size() &&
-                   (static_cast<unsigned char>(line[end]) & 0xC0) == 0x80)
-                ++end;
+            ++i; // 本地文件可能是 CRLF；行尾 \r 不属于代码内容
+            continue;
         }
-        out += line.substr(i, end - i);
-        i = end;
+        if (line[i] == '\t')
+        {
+            const size_t spaces = 4 - (column % 4);
+            out.append(spaces, ' ');
+            column += spaces;
+            ++i;
+            continue;
+        }
+        size_t len = 1;
+        utf8_codepoint_at(line, i, len);
+        out.append(line, i, len);
+        column += code_char_columns(len);
+        i += len;
     }
     return out;
 }
 
-// 代码块（lstlisting）：breaklines 让超长行自动换行——listings 会先测量整行
-// 宽度，超长行（如几千个括号）会生成极宽的 hbox，XeTeX 会直接崩溃。
-std::string code_block_latex(const std::string &fence_lang,
-                             const std::vector<std::string> &code_lines)
+// 一行代码展开制表符后的显示列数（不实际构造字符串，供超长行判断使用）
+size_t code_line_columns(const std::string &line)
+{
+    size_t column = 0;
+    for (size_t i = 0; i < line.size();)
+    {
+        if (line[i] == '\r')
+        {
+            ++i;
+            continue;
+        }
+        if (line[i] == '\t')
+        {
+            column += 4 - (column % 4);
+            ++i;
+            continue;
+        }
+        size_t len = 1;
+        utf8_codepoint_at(line, i, len);
+        column += code_char_columns(len);
+        i += len;
+    }
+    return column;
+}
+
+// 伪代码块里的一行文本转义：代码内容按原样显示，不解释 Markdown / LaTeX。反斜杠、花括号、
+// % # $ & _ ^ ~ 等逐个换成等价的文本命令；空格写成控制空格，避免 TeX 合并连续空格、吞掉
+// 行首缩进。每个字符后插入 \allowbreak{}，让 TeX 能按当前字号和实际行宽在任意字符边界折行：
+// 超长行因此总能填满一行，不需要在生成阶段估算字体宽度。切点由 TeX 在编译时按真实度量决定。
+std::string code_text_to_latex(const std::string &text)
+{
+    std::string out;
+    out.reserve(text.size() * 2 + 16);
+    auto break_after = [&out]() { out += "\\allowbreak{}"; };
+    for (size_t i = 0; i < text.size();)
+    {
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if (c < 0x80)
+        {
+            switch (c)
+            {
+            case ' ': out += "\\ "; break;
+            case '\\': out += "\\textbackslash{}"; break;
+            case '{': out += "\\{"; break;
+            case '}': out += "\\}"; break;
+            case '#': out += "\\#"; break;
+            case '%': out += "\\%"; break;
+            case '&': out += "\\&"; break;
+            case '_': out += "\\_"; break;
+            case '~': out += "\\textasciitilde{}"; break;
+            case '^': out += "\\textasciicircum{}"; break;
+            case '$': out += "\\$"; break;
+            case '<': out += "\\textless{}"; break;
+            case '>': out += "\\textgreater{}"; break;
+            case '\r': ++i; continue; // CRLF 的行尾 \r 不属于代码内容
+            default:
+                // 制表符 / 回车已由 expand_code_tabs 处理；其余控制字符用空格占位，
+                // 避免把非法字节直接写进 .tex
+                out += (c < 0x20 || c == 0x7F) ? ' ' : static_cast<char>(c);
+                break;
+            }
+            break_after();
+            ++i;
+            continue;
+        }
+        size_t len = 1;
+        utf8_codepoint_at(text, i, len);
+        out.append(text, i, len);
+        break_after();
+        i += len;
+    }
+    return out;
+}
+
+// 当前上下文下列宽：进入折叠框 / 引用框后 listings 的代码盒整体右移（xleftmargin=28pt），
+// 再加上容器内边距，行宽明显变窄，按嵌套层数从 base 收窄
+size_t code_block_columns(int fold_depth, int quote_depth, size_t base)
+{
+    int columns = static_cast<int>(base);
+    if (fold_depth + quote_depth > 0)
+        columns -= 6;
+    if (fold_depth > 1)
+        columns -= 4 * (fold_depth - 1);
+    if (quote_depth > 1)
+        columns -= 2 * (quote_depth - 1);
+    if (fold_depth > 0 && quote_depth > 0)
+        columns -= 2;
+    return static_cast<size_t>(std::max(columns, 8));
+}
+
+// listings 判定用列数（默认字体实际能排下的列数）与跨字体安全折行上限
+size_t code_block_fit_columns(int fold_depth, int quote_depth)
+{
+    return code_block_columns(fold_depth, quote_depth, kListingFitColumns);
+}
+
+size_t code_block_safe_columns(int fold_depth, int quote_depth)
+{
+    return code_block_columns(fold_depth, quote_depth, kListingSafeWrapColumns);
+}
+
+// 代码块里是否有行超过给定列数（超出一行就整块改用伪代码块，保证整块版式一致）
+bool code_block_has_long_line(const std::vector<std::string> &lines,
+                              size_t max_columns)
+{
+    for (const auto &line : lines)
+    {
+        if (code_line_columns(line) > max_columns)
+            return true;
+    }
+    return false;
+}
+
+// 一行里是否有 ASCII 字母或数字。listings 的 literate 断点只能安全地加在字母数字上：
+// 这些字符在 listings 里不会被当成命令/特殊字符，替换成「字符 + \allowbreak」后显示不变。
+bool code_line_has_ascii_alnum(const std::string &line)
+{
+    for (char c : line)
+    {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x80 && std::isalnum(u))
+            return true;
+    }
+    return false;
+}
+
+// 是否存在超过安全列宽、又没有字母数字可做 literate 断点的行。这种行在更宽的字体上
+// listings 无法自行折行，只能改用伪代码块。
+bool code_block_has_unbreakable_long_line(const std::vector<std::string> &lines,
+                                          size_t safe_columns)
+{
+    for (const auto &line : lines)
+    {
+        if (code_line_columns(line) > safe_columns &&
+            !code_line_has_ascii_alnum(line))
+            return true;
+    }
+    return false;
+}
+
+// 为安全列宽 < 行长 <= 实际列宽的 listings 块生成 literate 断点：在更宽的 Menlo / DejaVu
+// 字体上，listings 的 breaklines 能在任意字母数字后折行，避免整行被右边距裁掉；在默认
+// Consolas 上这些行本来就能放下，断点不会触发，显示与普通 listings 完全一致。
+std::string listing_literate_for_long_lines(const std::vector<std::string> &lines,
+                                            size_t safe_columns)
+{
+    std::set<char> chars;
+    for (const auto &line : lines)
+    {
+        if (code_line_columns(line) <= safe_columns)
+            continue;
+        for (char c : line)
+        {
+            const unsigned char u = static_cast<unsigned char>(c);
+            if (u < 0x80 && std::isalnum(u))
+                chars.insert(c);
+        }
+    }
+    if (chars.empty())
+        return "";
+    std::string lit = kLstLiteratePairs;
+    for (char c : chars)
+    {
+        const std::string ch(1, c);
+        lit += ' ';
+        lit += "{" + ch + "}{{" + ch + "\\allowbreak{}}}1";
+    }
+    return "literate=" + lit;
+}
+
+// 伪代码块的生成：每行的转义文本交给 TeX 排版。TeX 按 \luogolongcontentwidth 的实际宽度
+// 自动折行，再把折出的每个视觉行拆成独立的行盒；真实行号只画在该源行第一视觉行的左侧，
+// 续行没有行号。因为每个视觉行都是独立的一行盒，分页只发生在行与行之间，跨页时左右框线
+// 连续，折叠框 / 引用框内的 mdframed 也能像普通代码块一样正常分段。
+std::string custom_code_block_latex(const std::vector<std::string> &lines,
+                                    bool in_box)
+{
+    std::string out = "\\luogolongblockbegin\n";
+    out += in_box ? "\\luogolongboxsetup\n" : "\\luogolongtopsetup\n";
+    out += "\\luogolongtoppad\n";
+    for (size_t li = 0; li < lines.size(); ++li)
+    {
+        const std::string expanded = expand_code_tabs(lines[li]);
+        out += "\\luogolongsrcline{" + std::to_string(li + 1) + "}{" +
+               code_text_to_latex(expanded) + "}{" +
+               (li + 1 == lines.size() ? "1" : "0") + "}\n";
+    }
+    out += "\\luogolongbottompad\n";
+    out += "\\luogolongblockend\n\n";
+    return out;
+}
+
+// 普通代码块（lstlisting）：所有行都能在默认字体的一行内放下时使用，保留关键字高亮与
+// listings 自己的行号。接近列宽上限的行会额外带上 literate 断点（见上），以便换成更宽的
+// 代码字体时 listings 仍能自动折行而不是被右边距裁掉。
+std::string native_code_block_latex(const std::string &fence_lang,
+                                    const std::vector<std::string> &code_lines,
+                                    const std::string &extra_options = "")
 {
     const std::string lang = fence_to_listings_lang(fence_lang);
-    std::string out = "\\begin{lstlisting}";
+    std::string out = "\\begin{lstlisting}[";
     if (!lang.empty())
-        out += "[language=" + lang + ",breaklines=true]";
-    else
-        out += "[breaklines=true]";
-    out += "\n";
+        out += "language=" + lang + ",";
+    out += "breaklines=true";
+    if (!extra_options.empty())
+        out += "," + extra_options;
+    out += "]\n";
     for (const auto &cl : code_lines)
-        out += split_long_line(lst_safe(cl)) + "\n";
+        out += lst_safe(cl) + "\n";
     out += "\\end{lstlisting}\n\n";
     return out;
+}
+
+// 代码块入口：行长超过默认字体实际列宽（或超过安全列宽且没有可加断点的字母数字）时，
+// 整块改用伪代码块；其余维持 listings。伪代码块的实际折行宽度由 TeX 按真实版面决定。
+std::string code_block_latex(const std::string &fence_lang,
+                             const std::vector<std::string> &code_lines,
+                             int fold_depth = 0, int quote_depth = 0)
+{
+    const size_t fit_columns = code_block_fit_columns(fold_depth, quote_depth);
+    const size_t safe_columns = code_block_safe_columns(fold_depth, quote_depth);
+    if (code_block_has_long_line(code_lines, fit_columns) ||
+        code_block_has_unbreakable_long_line(code_lines, safe_columns))
+        return custom_code_block_latex(code_lines, fold_depth + quote_depth > 0);
+    return native_code_block_latex(
+        fence_lang, code_lines,
+        listing_literate_for_long_lines(code_lines, safe_columns));
 }
 
 // 按 '\n' 把字符串拆成行（不保留行尾换行；结尾换行不产生多余空行）
@@ -4215,18 +4439,23 @@ std::vector<std::string> split_lines(const std::string &content)
     return lines;
 }
 
-// 逐行处理多行内容（用于样例输入/输出）
-std::string split_long_lines(const std::string &content)
+// 样例输入/输出的代码块：普通情况沿用原来的无选项 lstlisting（全局 \lstset 已启用
+// breaklines 等），出现超长行时与题面代码围栏一样改用伪代码块。样例总是位于顶层，
+// 因此使用 top-level 的框线几何。
+std::string sample_code_block_latex(const std::string &content)
 {
-    std::string out;
-    bool first = true;
-    for (const auto &line : split_lines(content))
-    {
-        if (!first)
-            out += '\n';
-        first = false;
-        out += split_long_line(line);
-    }
+    const std::vector<std::string> lines = split_lines(content);
+    const size_t fit_columns = code_block_fit_columns(0, 0);
+    const size_t safe_columns = code_block_safe_columns(0, 0);
+    if (code_block_has_long_line(lines, fit_columns) ||
+        code_block_has_unbreakable_long_line(lines, safe_columns))
+        return custom_code_block_latex(lines, false);
+    const std::string literate =
+        listing_literate_for_long_lines(lines, safe_columns);
+    std::string out = literate.empty() ? "\\begin{lstlisting}\n"
+                                       : "\\begin{lstlisting}[" + literate + "]\n";
+    out += lst_safe(content);
+    out += "\n\\end{lstlisting}\n\n";
     return out;
 }
 
@@ -4271,7 +4500,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
         {
             if (is_fence_closer(line, fence, fence_len))
             {
-                out += code_block_latex(fence_lang, code_lines);
+                out += code_block_latex(fence_lang, code_lines, fold_depth, quote_depth);
                 fence = 0;
                 fence_len = 0;
                 fence_lang.clear();
@@ -4859,7 +5088,7 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
     // 自动补齐，绝不因为缺少收尾标记而丢内容。折叠框的开合标签成对生成，显示公式与代码围栏
     // 在扫描到结尾时统一输出，epigraph 先补横线与署名；env_stack 从栈顶弹出即最内层先闭合
     if (fence)
-        out += code_block_latex(fence_lang, code_lines);
+        out += code_block_latex(fence_lang, code_lines, fold_depth, quote_depth);
 
     while (!env_stack.empty())
     {
@@ -4996,14 +5225,12 @@ std::string latex::problem_to_latex(const problem::Problem &p, const Options &op
     for (const auto &s : p.samples)
     {
         out += "\\subsection*{输入输出样例 \\#" + std::to_string(sample_no) + "}\n\n";
+        // 样例输入/输出也是代码块：能放下时用 listings，出现超长行时与题面里的代码围栏一样
+        // 改用伪代码块（见 code_block_latex），保证每行都完整可见、行号只标在真实行首
         out += "\\subsubsection*{输入 \\#" + std::to_string(sample_no) + "}\n\n";
-        out += "\\begin{lstlisting}\n" +
-               lst_safe(split_long_lines(s.first)) +
-               "\n\\end{lstlisting}\n\n";
+        out += sample_code_block_latex(s.first);
         out += "\\subsubsection*{输出 \\#" + std::to_string(sample_no) + "}\n\n";
-        out += "\\begin{lstlisting}\n" +
-               lst_safe(split_long_lines(s.second)) +
-               "\n\\end{lstlisting}\n\n";
+        out += sample_code_block_latex(s.second);
         ++sample_no;
     }
 
@@ -5353,8 +5580,119 @@ void write_preamble(FILE *out, const latex::Options &opt, bool doc_only)
     std::fputs("    rulecolor=\\color{blue},\n", out);
     // 代码块/样例里的 \end{lstlisting} 已由 lst_safe 换成等价写法，这里用 literate 排版回原文
     std::fputs(kLstLiterateOption, out);
+    std::fputs(kLstLiteratePairs, out);
+    std::fputs(",\n", out);
     std::fputs("}\n", out);
 
+    // ---- 超长行的「伪代码块」 ----
+    // 超长行的伪代码块不在生成阶段估算列数：把转义后的代码整行交给 TeX，按当前字号、
+    // 代码字体和实际 \luogolongcontentwidth 自动折行，再把每个视觉行拆成一个独立行盒。
+    // 这样每行都能写满实际可用宽度；真实行号只画在源行第一视觉行左侧，续行不画行号。
+    // 因为分页单位是单行盒，mdframed 折叠框 / 引用框内也能正常跨页，框线逐行连续。
+    // 框线位置、行号列宽、字体与 listings 的 frame=single / numbers=left 对齐：顶层 frame
+    // 左线在 -3.4pt，折叠框/引用框内按 xleftmargin=28pt 右移，行号距代码盒 10pt。
+    std::fputs("\\newlength{\\luogolongwidth}\n", out);
+    std::fputs("\\newlength{\\luogolongnumcolwidth}\n", out);
+    std::fputs("\\newlength{\\luogolongnumgap}\n", out);
+    std::fputs("\\newlength{\\luogolongframegap}\n", out);
+    std::fputs("\\newlength{\\luogolongcontentwidth}\n", out);
+    std::fputs("\\newlength{\\luogolongframewidth}\n", out);
+    std::fputs("\\newlength{\\luogolongrulewidth}\n", out);
+    std::fputs("\\setlength{\\luogolongnumgap}{6.6pt}\n", out);
+    std::fputs("\\setlength{\\luogolongframegap}{3pt}\n", out);
+    std::fputs("\\setlength{\\luogolongrulewidth}{0.4pt}\n", out);
+    std::fputs("\\newcommand{\\luogolongtopsetup}{%\n", out);
+    std::fputs("  \\setlength{\\luogolongwidth}{\\dimexpr\\linewidth+40pt\\relax}%\n", out);
+    std::fputs("  \\setlength{\\luogolongnumcolwidth}{30pt}%\n", out);
+    std::fputs("  \\setlength{\\luogolongcontentwidth}{\\dimexpr\\linewidth-3.4pt\\relax}%\n", out);
+    std::fputs("  \\setlength{\\luogolongframewidth}{\\dimexpr\\luogolongcontentwidth+6.8pt\\relax}%\n", out);
+    std::fputs("  \\setlength{\\leftskip}{-40pt}%\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\newcommand{\\luogolongboxsetup}{%\n", out);
+    std::fputs("  \\setlength{\\luogolongwidth}{\\linewidth}%\n", out);
+    std::fputs("  \\setlength{\\luogolongnumcolwidth}{18pt}%\n", out);
+    std::fputs("  \\setlength{\\luogolongcontentwidth}{\\dimexpr\\linewidth-31.4pt\\relax}%\n", out);
+    std::fputs("  \\ifdim\\luogolongcontentwidth<1em\\setlength{\\luogolongcontentwidth}{1em}\\fi\n", out);
+    std::fputs("  \\setlength{\\luogolongframewidth}{\\dimexpr\\luogolongcontentwidth+6.8pt\\relax}%\n", out);
+    std::fputs("  \\setlength{\\leftskip}{0pt}%\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\newbox\\luogolongpara\n", out);
+    std::fputs("\\newbox\\luogolongline\n", out);
+    std::fputs("\\newbox\\luogolongtmp\n", out);
+    std::fputs("\\newbox\\luogolonghbox\n", out);
+    std::fputs("\\newcommand{\\luogolongnum}[1]{%\n", out);
+    std::fputs("  \\llap{\\makebox[0pt][r]{\\footnotesize\\ttfamily\\color{gray}#1}\\hspace{10pt}}}\n", out);
+    std::fputs("\\newcommand{\\luogolongvrule}{{\\color{blue}\\vrule width\\luogolongrulewidth\n", out);
+    std::fputs("  height\\ht\\strutbox depth\\dp\\strutbox}}\n", out);
+    std::fputs("\\newcommand{\\luogolongrow}[3]{%\n", out);
+    std::fputs("  \\nointerlineskip\n", out);
+    std::fputs("  \\noindent\\hbox to \\luogolongwidth{%\n", out);
+    std::fputs("    \\makebox[\\luogolongnumcolwidth][r]{#1}%\n", out);
+    std::fputs("    \\kern\\luogolongnumgap\n", out);
+    std::fputs("    \\luogolongvrule\n", out);
+    std::fputs("    \\kern\\luogolongframegap\n", out);
+    std::fputs("    \\hbox to \\luogolongcontentwidth{\\strut\\smash{#2}}%\n", out);
+    std::fputs("    \\kern\\luogolongframegap\n", out);
+    std::fputs("    \\luogolongvrule\n", out);
+    std::fputs("  }%\n", out);
+    std::fputs("  \\par\\ifnum#3=1 \\nobreak\\else\\penalty0\\fi\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\newcommand{\\luogolongtoppad}{%\n", out);
+    std::fputs("  \\nointerlineskip\n", out);
+    std::fputs("  \\noindent\\hbox to \\luogolongwidth{%\n", out);
+    std::fputs("    \\makebox[\\luogolongnumcolwidth][r]{}%\n", out);
+    std::fputs("    \\kern\\luogolongnumgap\n", out);
+    std::fputs("    \\rlap{\\raisebox{3pt}{\\color{blue}\\rule{\\luogolongframewidth}{\\luogolongrulewidth}}}%\n", out);
+    std::fputs("    {\\color{blue}\\vrule width\\luogolongrulewidth height3pt depth0pt}%\n", out);
+    std::fputs("    \\kern\\luogolongframegap\n", out);
+    std::fputs("    \\hbox to \\luogolongcontentwidth{}%\n", out);
+    std::fputs("    \\kern\\luogolongframegap\n", out);
+    std::fputs("    {\\color{blue}\\vrule width\\luogolongrulewidth height3pt depth0pt}%\n", out);
+    std::fputs("  }%\n", out);
+    std::fputs("  \\par\\nobreak\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\newcommand{\\luogolongbottompad}{%\n", out);
+    std::fputs("  \\nointerlineskip\n", out);
+    std::fputs("  \\noindent\\hbox to \\luogolongwidth{%\n", out);
+    std::fputs("    \\makebox[\\luogolongnumcolwidth][r]{}%\n", out);
+    std::fputs("    \\kern\\luogolongnumgap\n", out);
+    std::fputs("    \\rlap{\\raisebox{-3.4pt}{\\color{blue}\\rule{\\luogolongframewidth}{\\luogolongrulewidth}}}%\n", out);
+    std::fputs("    {\\color{blue}\\vrule width\\luogolongrulewidth height0pt depth3pt}%\n", out);
+    std::fputs("    \\kern\\luogolongframegap\n", out);
+    std::fputs("    \\hbox to \\luogolongcontentwidth{}%\n", out);
+    std::fputs("    \\kern\\luogolongframegap\n", out);
+    std::fputs("    {\\color{blue}\\vrule width\\luogolongrulewidth height0pt depth3pt}%\n", out);
+    std::fputs("  }%\n", out);
+    std::fputs("  \\par\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\newcommand{\\luogolongsrcline}[3]{%\n", out);
+    std::fputs("  \\setbox\\luogolongpara=\\vbox{%\n", out);
+    std::fputs("    \\hsize\\luogolongcontentwidth \\linewidth\\luogolongcontentwidth\n", out);
+    std::fputs("    \\small\\ttfamily\\raggedright\n", out);
+    std::fputs("    \\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n", out);
+    std::fputs("    \\setlength{\\leftskip}{0pt}\\setlength{\\rightskip}{0pt plus 1fil}%\n", out);
+    std::fputs("    \\noindent\\luogolongnum{#1}\\strut#2\\par}%\n", out);
+    std::fputs("  \\begingroup\n", out);
+    std::fputs("  \\splittopskip=0pt\\relax \\splitmaxdepth=\\maxdimen\\relax \\vbadness=10000\n", out);
+    std::fputs("  \\loop\n", out);
+    std::fputs("    \\ifvoid\\luogolongpara\\else\n", out);
+    std::fputs("      \\setbox\\luogolongline=\\vsplit\\luogolongpara to \\ht\\strutbox\n", out);
+    std::fputs("      \\setbox\\luogolongtmp=\\vbox{%\n", out);
+    std::fputs("        \\unvbox\\luogolongline\n", out);
+    std::fputs("        \\unskip\\unpenalty\n", out);
+    std::fputs("        \\global\\setbox\\luogolonghbox=\\lastbox}%\n", out);
+    std::fputs("      \\def\\luogolonglast{0}%\n", out);
+    std::fputs("      \\ifvoid\\luogolongpara \\ifnum#3=1 \\def\\luogolonglast{1}\\fi\\fi\n", out);
+    std::fputs("      \\luogolongrow{}{\\box\\luogolonghbox}{\\luogolonglast}%\n", out);
+    std::fputs("    \\repeat\n", out);
+    std::fputs("  \\endgroup}\n", out);
+    std::fputs("\\newcommand{\\luogolongblockbegin}{%\n", out);
+    std::fputs("  \\par\\addvspace{\\medskipamount}\\begingroup\n", out);
+    std::fputs("  \\setlength{\\parindent}{0pt}\\setlength{\\parskip}{0pt}%\n", out);
+    std::fputs("  \\setlength{\\rightskip}{0pt}%\n", out);
+    std::fputs("  \\small\\ttfamily\\hbadness=10000\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\newcommand{\\luogolongblockend}{\\par\\endgroup\\addvspace{\\medskipamount}}\n", out);
         // 当前 TeX Live 的 listings 没有这些语言，手动补上，否则 \begin{lstlisting}[language=Rust]
         // 会报 "Couldn't load requested language"
     std::fputs("\\lstdefinelanguage{Rust}{\n", out);
