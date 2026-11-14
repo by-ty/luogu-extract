@@ -67,11 +67,11 @@ const char *kColorRed    = luogu::compat::stderr_is_tty() ? "\033[1;31m" : "";
 const char *kColorGreen  = luogu::compat::stdout_is_tty() ? "\033[1;32m" : "";
 const char *kColorYellow = luogu::compat::stderr_is_tty() ? "\033[1;33m" : "";
 
-// worker 并发打印，用互斥锁避免输出交错
+// worker 并发打印：使用进程级控制台输出锁，与题解/文章抓取线程的进度行共用，
+// 否则两处输出会交错（Windows 控制台并发写入时可能丢行）
 std::mutex &print_mutex()
 {
-    static std::mutex m;
-    return m;
+    return luogu::compat::console_output_mutex();
 }
 
 void print_error(const std::string &message)
@@ -649,8 +649,10 @@ static void print_progress_line(const char *prefix, long long downloaded, long l
     if (total <= 0)
         return;
     const int cur = static_cast<int>(downloaded * 100 / total);
-    printf("\r%s%3d %%\033[K", prefix, cur);
-    fflush(stdout);
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "\r%s%3d %%\033[K", prefix, cur);
+    // 与其它线程共用输出锁，整行一次写出，避免与题解/文章进度行交错
+    luogu::compat::write_stdout(buf);
 }
 
 void default_progress(const std::string &url, long long downloaded, long long total)

@@ -96,7 +96,7 @@ article::Article::Article(std::string html)
 
     if (html.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
     {
-        std::fprintf(stderr, "HTML 内容过大，无法解析\n");
+        luogu::compat::write_stderr("HTML 内容过大，无法解析\n");
         return;
     }
 
@@ -146,7 +146,7 @@ article::Article::Article(std::string html)
         if (!data.contains("data") || !data["data"].is_object() ||
             !data["data"].contains("article"))
         {
-            std::fprintf(stderr, "题解页面结构不符合预期（找不到 data.article）\n");
+            luogu::compat::write_stderr("题解页面结构不符合预期（找不到 data.article）\n");
             return;
         }
         std::string parse_error;
@@ -154,7 +154,7 @@ article::Article::Article(std::string html)
     }
     catch (const std::exception &e)
     {
-        std::fprintf(stderr, "解析 JSON 失败：%s\n", e.what());
+        luogu::compat::write_stderr(std::string("解析 JSON 失败：") + e.what() + "\n");
     }
 }
 

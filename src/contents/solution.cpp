@@ -42,8 +42,8 @@ const char *kColorReset = luogu::compat::stdout_is_tty() ? "\033[0m" : "";
 
 void print_warning(const std::string &message)
 {
-    std::printf("%s%s%s\n", kColorYellow, message.c_str(), kColorReset);
-    std::fflush(stdout);
+    // 该函数会在 auto 模式的两个抓取线程里被调用：与进度行共用输出锁
+    luogu::compat::write_stdout(std::string(kColorYellow) + message + kColorReset + "\n");
 }
 
 std::string str_value(const json &obj, const char *key, const std::string &fallback = "")

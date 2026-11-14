@@ -96,7 +96,6 @@ struct GateState
     std::string rate_limit_reason;
 
     std::mutex mutex;
-    std::mutex print;
 
     GateState()
     {
@@ -129,19 +128,14 @@ auto with_channel(crawler::Channel ch, Fn &&fn) -> decltype(fn(std::declval<Chan
 
 void print_error(const std::string &message)
 {
-    GateState &s = state();
-    std::lock_guard<std::mutex> lock(s.print);
-    std::fflush(stdout);
-    std::fprintf(stderr, "%s错误：%s %s\n", kColorRed, kColorReset, message.c_str());
+    // 与两个抓取线程的进度行共用进程级输出锁，避免错误信息插进进度行
+    luogu::compat::write_stderr(std::string(kColorRed) + "错误：" + kColorReset + " " +
+                               message + "\n");
 }
 
 void print_line(const std::string &message)
 {
-    GateState &s = state();
-    std::lock_guard<std::mutex> lock(s.print);
-    std::fflush(stdout);
-    std::printf("%s\n", message.c_str());
-    std::fflush(stdout);
+    luogu::compat::write_stdout(message + "\n");
 }
 
 double effective_scale(ChannelState &st)

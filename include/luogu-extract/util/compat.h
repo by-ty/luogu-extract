@@ -29,6 +29,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <zlib.h>
@@ -130,6 +131,18 @@ namespace compat
 
     // 标准错误是否终端；需与 stdout 分开判断（stdout 重定向到文件时错误信息仍应带颜色）
     bool stderr_is_tty();
+
+    // 控制台输出的进程级互斥量：auto 模式下原站与保存站两条通道并行抓取，两个工作线程
+    // 会同时打印进度行 / 警告。Windows 控制台对并发写入的处理并不可靠（写入可能交错或
+    // 丢失），且多字节 UTF-8 与 ANSI 转义序列被从中间切开时整段文字都会被吞掉；因此所有
+    // 可能被并发调用的 stdout/stderr 输出都必须先取这把锁，把「整段文本 + 换行」一次写出
+    // 并 flush 后再释放。stdout 与 stderr 共用同一把锁，二者同到控制台时也不会互相穿插。
+    std::mutex &console_output_mutex();
+
+    // 线程安全地向 stdout / stderr 写一整段文本（调用方负责带换行）并 flush。
+    // 内部会在 console_output_mutex() 保护下完成写入，绝不与并发输出交错。
+    void write_stdout(const std::string &text);
+    void write_stderr(const std::string &text);
 
     // 睡眠指定毫秒（仅用于极短的分片睡眠，返回后不补足剩余时间）
     void sleep_ms(long ms);

@@ -51,11 +51,9 @@ const char *kProgressSaveColor = luogu::compat::stdout_is_tty() ? "\033[35m" : "
 
 void print_warning(const std::string &message)
 {
-    // auto 模式下两个工作线程都会打印，用互斥锁避免输出交错
-    static std::mutex warn_mutex;
-    std::lock_guard<std::mutex> lock(warn_mutex);
-    std::printf("%s%s%s\n", kColorYellow, message.c_str(), kColorReset);
-    std::fflush(stdout);
+    // auto 模式下两个工作线程都会打印：与进度行共用同一把输出锁，
+    // 由 compat::write_stdout 一次性写完并 flush，避免交错 / 丢行
+    luogu::compat::write_stdout(std::string(kColorYellow) + message + kColorReset + "\n");
 }
 
 long long now_seconds() { return static_cast<long long>(std::time(nullptr)); }
@@ -547,8 +545,10 @@ std::string fetch_progress_line(const std::string &pid, const std::string &name,
 
 void print_progress(const std::string &text)
 {
-    std::printf("%s\n", text.c_str());
-    std::fflush(stdout);
+    // 必须与另一站点的进度行 / 警告串行化：Windows 控制台把多线程并发写入
+    // 当成互不相关的字节流，ANSI 转义序列或 UTF-8 多字节字符被切开时会吞掉
+    // 后续文字（表现为保存站那一行没有「—— 来源：洛谷保存站」）
+    luogu::compat::write_stdout(text + "\n");
 }
 
 void apply_outcome(const FetchOutcome &outcome, solution::CrawlStats &stats)

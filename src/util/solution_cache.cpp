@@ -40,14 +40,15 @@ const char *kColorReset = luogu::compat::stderr_is_tty() ? "\033[0m" : "";
 
 void print_error(const std::string &message)
 {
-    std::fflush(stdout);
-    std::fprintf(stderr, "%s错误：%s %s\n", kColorRed, kColorReset, message.c_str());
+    // 缓存写入发生在 auto 模式的工作线程里，与进度行共用输出锁
+    luogu::compat::write_stderr(std::string(kColorRed) + "错误：" + kColorReset + " " +
+                               message + "\n");
 }
 
 void print_warning(const std::string &message)
 {
-    std::fflush(stdout);
-    std::fprintf(stderr, "%s警告：%s %s\n", kColorYellow, kColorReset, message.c_str());
+    luogu::compat::write_stderr(std::string(kColorYellow) + "警告：" + kColorReset + " " +
+                               message + "\n");
 }
 
 // PID 白名单：只允许字母、数字、下划线；拼接文件名前再校验一次，杜绝路径穿越

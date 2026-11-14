@@ -470,6 +470,51 @@ bool stderr_is_tty()
 #endif
 }
 
+std::mutex &console_output_mutex()
+{
+    // 进程内唯一：auto 模式下两个抓取线程、图片下载线程与主线程都通过它串行化输出
+    static std::mutex mutex;
+    return mutex;
+}
+
+namespace
+{
+// 在已持有 console_output_mutex() 的前提下，把整段文本写完并 flush。
+// fwrite 以文本模式写控制台时可能只写入一部分（例如缓冲区边界），这里循环补齐，
+// 保证一行文字不会只写出前半截；写失败时停止，避免死循环。
+void write_all(FILE *stream, const std::string &text)
+{
+    if (!text.empty())
+    {
+        size_t written = 0;
+        while (written < text.size())
+        {
+            const size_t n = std::fwrite(text.data() + written, 1,
+                                         text.size() - written, stream);
+            if (n == 0)
+                break;
+            written += n;
+        }
+    }
+    std::fflush(stream);
+}
+} // namespace
+
+void write_stdout(const std::string &text)
+{
+    std::lock_guard<std::mutex> lock(console_output_mutex());
+    write_all(stdout, text);
+}
+
+void write_stderr(const std::string &text)
+{
+    std::lock_guard<std::mutex> lock(console_output_mutex());
+    // 先 flush stdout：stdout 与 stderr 共用同一控制台时，保证已经写出的进度行
+    // 排在错误/警告之前（原 print_error / print_warning 的行为）
+    std::fflush(stdout);
+    write_all(stderr, text);
+}
+
 void sleep_ms(long ms)
 {
     if (ms <= 0)
