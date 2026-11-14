@@ -4465,6 +4465,30 @@ std::string sample_code_block_latex(const std::string &content)
 // 整段按普通文本转义输出（转义后不可能执行任何命令）
 const int kMaxBlockDepth = 32;
 
+// $$...$$ 中若直接写了自带换行/编号的显示公式环境（洛谷题解常见 align），不能再套一层
+// \[...\]，否则 amsmath 报 "Erroneous nesting of equation structures"。
+// 只有整段公式恰好是该环境（允许首尾空白）时才判定为真，其余内容仍按普通显示公式处理。
+bool is_display_math_environment(const std::string &math)
+{
+    static const std::set<std::string> kDisplayEnvs = {
+        "align", "align*", "alignat", "alignat*", "flalign", "flalign*",
+        "gather", "gather*", "multline", "multline*", "equation",
+        "equation*", "eqnarray", "eqnarray*", "displaymath",
+    };
+    const std::string body = trim(math);
+    if (body.compare(0, 7, "\\begin{") != 0)
+        return false;
+    const size_t name_end = body.find('}', 7);
+    if (name_end == std::string::npos)
+        return false;
+    const std::string name = body.substr(7, name_end - 7);
+    if (kDisplayEnvs.find(name) == kDisplayEnvs.end())
+        return false;
+    const std::string end_tag = "\\end{" + name + "}";
+    return body.size() >= end_tag.size() &&
+           body.compare(body.size() - end_tag.size(), end_tag.size(), end_tag) == 0;
+}
+
 // 把一段 markdown / HTML 文本转换为 LaTeX（块级处理）。折叠框 / 区块引用需要把框内内容整体
 // 放进盒子里，因此按嵌套层递归调用自身：fold_depth / quote_depth 为当前所在的折叠框、
 // 区块引用嵌套层数（0 = 不在其中）；box_para_indent 表示本层内容的第一个段落是否需要手动补
@@ -4593,7 +4617,13 @@ std::string render_markdown(const std::string &markdown, int fold_depth,
             for (const auto &mline : split_lines(math))
                 if (!trim(mline).empty())
                     ml.push_back(trim(mline));
-            out += "\\[\n" + sanitize_math(join_strings(ml, "\n")) + "\n\\]\n\n";
+            const std::string math_latex = sanitize_math(join_strings(ml, "\n"));
+            // align/equation 等自带显示模式的环境直接输出，不能再套 \[...\]，否则
+            // amsmath 报 "Erroneous nesting of equation structures"
+            if (is_display_math_environment(math_latex))
+                out += math_latex + "\n\n";
+            else
+                out += "\\[\n" + math_latex + "\n\\]\n\n";
             continue;
         }
 

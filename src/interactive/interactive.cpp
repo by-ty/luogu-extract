@@ -119,10 +119,12 @@ struct Session
         std::fputs(prompt.c_str(), stdout);
         std::fflush(stdout);
         // 兜底：终端若残留在 cbreak（例如上一次抓取被 Ctrl+C 打断），先恢复规范模式，
-        // 否则这里的读取会立刻拿到 EOF，把询问当成「输入已结束」直接退出
+        // 否则这里的读取会立刻拿到 EOF，把询问当成「输入已结束」直接退出。
+        // 终端输入由 read_line_interactive 自行行编辑：退格按 UTF-8 字符的显示宽度擦除，
+        // 方向键可移动光标并在行中间插入/删除。
         luogu::compat::ensure_canonical_input();
         std::string raw;
-        if (luogu::compat::read_line(stdin, raw) < 0)
+        if (luogu::compat::read_line_interactive(raw) < 0)
         {
             out.clear();
             print_line();

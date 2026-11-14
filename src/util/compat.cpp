@@ -23,6 +23,7 @@
 
 #include <cstring>
 #include <cerrno>
+#include <csignal>
 #include <cstdlib>
 #include <mutex>
 #include <cwchar>
@@ -618,6 +619,697 @@ void ensure_canonical_input()
     // 终端停在 cbreak（例如上一次异常退出后残留）：恢复规范模式，否则后面的提示读不到输入
     current.c_lflag |= static_cast<tcflag_t>(ICANON | ECHO);
     tcsetattr(STDIN_FILENO, TCSANOW, &current);
+#endif
+}
+
+namespace
+{
+#ifndef _WIN32
+    // 行编辑期间的终端模式：关闭行缓冲与回显，保留输出处理（OPOST/ONLCR）。
+    // ISIG 也一并关闭：Ctrl+C 由编辑循环自己处理——先恢复终端再重新抛出 SIGINT，
+    // 避免进程被信号终止后把用户的终端留在「无回显、非规范」状态。
+    class InteractiveInputMode
+    {
+    public:
+        bool enter()
+        {
+            if (tcgetattr(STDIN_FILENO, &saved_) != 0)
+                return false;
+            termios raw = saved_;
+            raw.c_lflag &= static_cast<tcflag_t>(~(ICANON | ECHO | ISIG | IEXTEN));
+            raw.c_cc[VMIN] = 1;
+            raw.c_cc[VTIME] = 0;
+            if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0)
+                return false;
+            active_ = true;
+            return true;
+        }
+        ~InteractiveInputMode() { restore(); }
+        void restore()
+        {
+            if (!active_)
+                return;
+            active_ = false;
+            tcsetattr(STDIN_FILENO, TCSANOW, &saved_);
+        }
+        InteractiveInputMode() = default;
+        InteractiveInputMode(const InteractiveInputMode &) = delete;
+        InteractiveInputMode &operator=(const InteractiveInputMode &) = delete;
+
+    private:
+        termios saved_{};
+        bool active_ = false;
+    };
+
+    bool read_stdin_byte(unsigned char &out)
+    {
+        for (;;)
+        {
+            unsigned char ch = 0;
+            const ssize_t n = ::read(STDIN_FILENO, &ch, 1);
+            if (n == 1)
+            {
+                out = ch;
+                return true;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            return false;
+        }
+    }
+
+    // 带超时读一个字节：只用于 ESC 之后判断转义序列是否还有后续字节
+    bool read_stdin_byte_timeout(unsigned char &out, int timeout_ms)
+    {
+        struct pollfd pfd;
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        int ready = 0;
+        do
+        {
+            ready = ::poll(&pfd, 1, timeout_ms);
+        } while (ready < 0 && errno == EINTR);
+        if (ready <= 0 || !(pfd.revents & POLLIN))
+            return false;
+        return read_stdin_byte(out);
+    }
+
+    // 方向键等 ESC 序列对应的行编辑动作；无对应功能的键（Up/Down 等）返回 None
+    enum class EditAction
+    {
+        None,
+        CursorLeft,
+        CursorRight,
+        Home,
+        End,
+        Delete,
+        Backspace,
+    };
+
+    // 解析 ESC 之后的转义序列；无法识别或没有后续字节时一律忽略
+    EditAction read_escape_action()
+    {
+        unsigned char ch = 0;
+        if (!read_stdin_byte_timeout(ch, 60))
+            return EditAction::None; // 单独按 ESC：忽略
+        if (ch == '[')
+        {
+            std::string params;
+            for (;;)
+            {
+                if (!read_stdin_byte_timeout(ch, 60))
+                    return EditAction::None;
+                // CSI 的参数字节为 0x20~0x3F，最终字节为 0x40~0x7E
+                if (ch >= 0x40 && ch <= 0x7E)
+                {
+                    switch (ch)
+                    {
+                    case 'D':
+                        return EditAction::CursorLeft;
+                    case 'C':
+                        return EditAction::CursorRight;
+                    case 'H':
+                        return EditAction::Home;
+                    case 'F':
+                        return EditAction::End;
+                    case '~':
+                    {
+                        // 形如 ESC [ 3 ~：第一个参数字段是键码
+                        int code = 0;
+                        for (size_t i = 0; i < params.size(); ++i)
+                        {
+                            if (params[i] < '0' || params[i] > '9')
+                                break;
+                            code = code * 10 + (params[i] - '0');
+                        }
+                        if (code == 1 || code == 7)
+                            return EditAction::Home;
+                        if (code == 4 || code == 8)
+                            return EditAction::End;
+                        if (code == 3)
+                            return EditAction::Delete;
+                        return EditAction::None;
+                    }
+                    default:
+                        return EditAction::None;
+                    }
+                }
+                if (ch < 0x20 || ch > 0x3F)
+                    return EditAction::None;
+                if (params.size() < 16)
+                    params.push_back(static_cast<char>(ch));
+            }
+        }
+        if (ch == 'O')
+        {
+            if (!read_stdin_byte_timeout(ch, 60))
+                return EditAction::None;
+            switch (ch)
+            {
+            case 'D':
+                return EditAction::CursorLeft;
+            case 'C':
+                return EditAction::CursorRight;
+            case 'H':
+                return EditAction::Home;
+            case 'F':
+                return EditAction::End;
+            default:
+                return EditAction::None;
+            }
+        }
+        if (ch == 0x7F || ch == 0x08)
+            return EditAction::Backspace; // 部分终端把 Option+Backspace 发成 ESC DEL
+        // 其余（Alt+字符等）一并丢弃
+        return EditAction::None;
+    }
+
+    bool utf8_is_continuation(unsigned char ch)
+    {
+        return (ch & 0xC0) == 0x80;
+    }
+
+    // 首字节对应的 UTF-8 序列长度；ASCII 与非法首字节返回 1
+    size_t utf8_expected_length(unsigned char first)
+    {
+        if ((first & 0xE0) == 0xC0)
+            return 2;
+        if ((first & 0xF0) == 0xE0)
+            return 3;
+        if ((first & 0xF8) == 0xF0)
+            return 4;
+        return 1;
+    }
+
+    // 字符在终端中占的列数：组合字符 0 列，东亚宽字符/全角与 emoji 2 列，其余 1 列
+    int utf8_codepoint_width(unsigned int cp)
+    {
+        if ((cp >= 0x0300 && cp <= 0x036F) ||
+            (cp >= 0x1AB0 && cp <= 0x1AFF) ||
+            (cp >= 0x1DC0 && cp <= 0x1DFF) ||
+            (cp >= 0x20D0 && cp <= 0x20FF) ||
+            (cp >= 0xFE00 && cp <= 0xFE0F) ||
+            (cp >= 0xFE20 && cp <= 0xFE2F) ||
+            (cp >= 0x200B && cp <= 0x200F))
+            return 0;
+        if ((cp >= 0x1100 && cp <= 0x115F) ||
+            (cp >= 0x2E80 && cp <= 0x303E) ||
+            (cp >= 0x3041 && cp <= 0x33FF) ||
+            (cp >= 0x3400 && cp <= 0x4DBF) ||
+            (cp >= 0x4E00 && cp <= 0x9FFF) ||
+            (cp >= 0xA000 && cp <= 0xA4CF) ||
+            (cp >= 0xA960 && cp <= 0xA97F) ||
+            (cp >= 0xAC00 && cp <= 0xD7A3) ||
+            (cp >= 0xF900 && cp <= 0xFAFF) ||
+            (cp >= 0xFE10 && cp <= 0xFE19) ||
+            (cp >= 0xFE30 && cp <= 0xFE6F) ||
+            (cp >= 0xFF00 && cp <= 0xFF60) ||
+            (cp >= 0xFFE0 && cp <= 0xFFE6) ||
+            (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+            (cp >= 0x20000 && cp <= 0x3FFFD))
+            return 2;
+        return 1;
+    }
+
+    struct Utf8Step
+    {
+        size_t end; // 下一个字符的起始字节位置
+        int width;  // 在终端中占的列数
+    };
+
+    // 解码从 start 开始的一个 UTF-8 字符；不是完整合法的序列时按单字节、1 列处理
+    Utf8Step utf8_step(const std::string &text, size_t start)
+    {
+        const unsigned char first = static_cast<unsigned char>(text[start]);
+        const size_t need = utf8_expected_length(first);
+        if (need == 1)
+            return {start + 1, first < 0x80 ? utf8_codepoint_width(first) : 1};
+        if (start + need > text.size())
+            return {start + 1, 1};
+
+        unsigned int cp = 0;
+        if (need == 2)
+            cp = first & 0x1F;
+        else if (need == 3)
+            cp = first & 0x0F;
+        else
+            cp = first & 0x07;
+        for (size_t i = 1; i < need; ++i)
+        {
+            const unsigned char b = static_cast<unsigned char>(text[start + i]);
+            if (!utf8_is_continuation(b))
+                return {start + 1, 1};
+            cp = (cp << 6) | (b & 0x3F);
+        }
+        return {start + need, utf8_codepoint_width(cp)};
+    }
+
+    // 光标位置 pos（字符边界）之前那个字符的起始字节位置
+    size_t utf8_prev_boundary(const std::string &text, size_t pos)
+    {
+        if (pos == 0)
+            return 0;
+        size_t i = pos - 1;
+        size_t continuation = 0;
+        while (i > 0 && continuation < 3 &&
+               utf8_is_continuation(static_cast<unsigned char>(text[i])))
+        {
+            --i;
+            ++continuation;
+        }
+        const Utf8Step step = utf8_step(text, i);
+        return step.end == pos ? i : pos - 1;
+    }
+
+    // [begin, end) 这段文本在终端中占的总列数（begin/end 须为字符边界）
+    int text_width(const std::string &text, size_t begin, size_t end)
+    {
+        int width = 0;
+        size_t i = begin;
+        while (i < end)
+        {
+            const Utf8Step step = utf8_step(text, i);
+            width += step.width;
+            i = step.end;
+        }
+        return width;
+    }
+
+    void echo_bytes(const char *data, size_t size)
+    {
+        if (size == 0)
+            return;
+        std::fwrite(data, 1, size, stdout);
+        std::fflush(stdout);
+    }
+
+    // 交互式行编辑器：维护 UTF-8 文本与光标字节位置；所有修改都按完整字符及其
+    // 显示宽度处理，支持在行中间插入、删除与左右移动光标
+    class InteractiveLineEditor
+    {
+    public:
+        bool empty() const { return line_.empty(); }
+        const std::string &text() const { return line_; }
+
+        void insert(const std::string &ch)
+        {
+            if (ch.empty())
+                return;
+            if (cursor_ == line_.size())
+            {
+                line_ += ch;
+                cursor_ = line_.size();
+                echo_bytes(ch.data(), ch.size());
+                return;
+            }
+            const int old_prefix = prefix_width();
+            const int old_total = total_width();
+            line_.insert(cursor_, ch);
+            cursor_ += ch.size();
+            redraw_after_edit(old_prefix, old_total);
+        }
+
+        void backspace()
+        {
+            if (cursor_ == 0)
+                return;
+            if (cursor_ == line_.size())
+            {
+                // 行尾删除：只擦除最后一个字符，避免整行重绘
+                const size_t start = utf8_prev_boundary(line_, cursor_);
+                const int width = utf8_step(line_, start).width;
+                line_.erase(start);
+                cursor_ = line_.size();
+                erase_columns(width);
+                return;
+            }
+            const int old_prefix = prefix_width();
+            const int old_total = total_width();
+            const size_t start = utf8_prev_boundary(line_, cursor_);
+            line_.erase(start, cursor_ - start);
+            cursor_ = start;
+            redraw_after_edit(old_prefix, old_total);
+        }
+
+        void delete_forward()
+        {
+            if (cursor_ >= line_.size())
+                return;
+            const int old_prefix = prefix_width();
+            const int old_total = total_width();
+            const Utf8Step step = utf8_step(line_, cursor_);
+            line_.erase(cursor_, step.end - cursor_);
+            redraw_after_edit(old_prefix, old_total);
+        }
+
+        void move_left()
+        {
+            if (cursor_ == 0)
+                return;
+            const size_t start = utf8_prev_boundary(line_, cursor_);
+            const int width = utf8_step(line_, start).width;
+            for (int i = 0; i < width; ++i)
+                std::fputc('\b', stdout);
+            std::fflush(stdout);
+            cursor_ = start;
+        }
+
+        void move_right()
+        {
+            if (cursor_ >= line_.size())
+                return;
+            const Utf8Step step = utf8_step(line_, cursor_);
+            if (step.width > 0)
+            {
+                std::fprintf(stdout, "\033[%dC", step.width);
+                std::fflush(stdout);
+            }
+            cursor_ = step.end;
+        }
+
+        void move_home()
+        {
+            const int width = prefix_width();
+            for (int i = 0; i < width; ++i)
+                std::fputc('\b', stdout);
+            std::fflush(stdout);
+            cursor_ = 0;
+        }
+
+        void move_end()
+        {
+            const int width = text_width(line_, cursor_, line_.size());
+            if (width > 0)
+            {
+                std::fprintf(stdout, "\033[%dC", width);
+                std::fflush(stdout);
+            }
+            cursor_ = line_.size();
+        }
+
+        void kill_line()
+        {
+            if (line_.empty())
+                return;
+            const int old_prefix = prefix_width();
+            const int old_total = total_width();
+            line_.clear();
+            cursor_ = 0;
+            redraw_after_edit(old_prefix, old_total);
+        }
+
+        void kill_to_end()
+        {
+            if (cursor_ >= line_.size())
+                return;
+            const int old_prefix = prefix_width();
+            const int old_total = total_width();
+            line_.erase(cursor_);
+            redraw_after_edit(old_prefix, old_total);
+        }
+
+        void delete_word()
+        {
+            if (cursor_ == 0)
+                return;
+            const int old_prefix = prefix_width();
+            const int old_total = total_width();
+            size_t begin = cursor_;
+            while (begin > 0)
+            {
+                const size_t prev = utf8_prev_boundary(line_, begin);
+                if (line_[prev] != ' ' && line_[prev] != '\t')
+                    break;
+                begin = prev;
+            }
+            while (begin > 0)
+            {
+                const size_t prev = utf8_prev_boundary(line_, begin);
+                if (line_[prev] == ' ' || line_[prev] == '\t')
+                    break;
+                begin = prev;
+            }
+            if (begin == cursor_)
+                return;
+            line_.erase(begin, cursor_ - begin);
+            cursor_ = begin;
+            redraw_after_edit(old_prefix, old_total);
+        }
+
+    private:
+        int prefix_width() const { return text_width(line_, 0, cursor_); }
+        int total_width() const { return text_width(line_, 0, line_.size()); }
+
+        // 在光标处擦除 width 列（行尾删除使用）
+        static void erase_columns(int width)
+        {
+            for (int i = 0; i < width; ++i)
+                std::fputc('\b', stdout);
+            for (int i = 0; i < width; ++i)
+                std::fputc(' ', stdout);
+            for (int i = 0; i < width; ++i)
+                std::fputc('\b', stdout);
+            std::fflush(stdout);
+        }
+
+        // 整行重绘：先回到输入起点，写入新文本，必要时用空格擦掉旧行更长的部分，
+        // 再左移到新光标位置。old_prefix / old_total 取自修改前的光标与行宽。
+        void redraw_after_edit(int old_prefix, int old_total)
+        {
+            const int new_prefix = prefix_width();
+            const int new_total = total_width();
+            for (int i = 0; i < old_prefix; ++i)
+                std::fputc('\b', stdout);
+            echo_bytes(line_.data(), line_.size());
+            const int end_width = old_total > new_total ? old_total : new_total;
+            for (int i = new_total; i < end_width; ++i)
+                std::fputc(' ', stdout);
+            std::fflush(stdout);
+            for (int i = 0; i < end_width - new_prefix; ++i)
+                std::fputc('\b', stdout);
+            std::fflush(stdout);
+        }
+
+        std::string line_;
+        size_t cursor_ = 0;
+    };
+#endif
+} // namespace
+
+long long read_line_interactive(std::string &out)
+{
+    out.clear();
+    // 只有输入输出都是终端时才接管行编辑：输出被重定向时走规范模式，保留终端自身回显
+    if (!stdin_is_tty() || !stdout_is_tty())
+        return read_line(stdin, out);
+    std::fflush(stdout);
+
+#ifdef _WIN32
+    const HANDLE handle = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD console_mode = 0;
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE ||
+        !GetConsoleMode(handle, &console_mode))
+        return read_line(stdin, out);
+
+    // 交给控制台原生宽字符行编辑：中文、退格、方向键与 IME 都由 conhost 处理，
+    // 取回的是 UTF-16，再自行转成 UTF-8（避免 CP_UTF8 控制台输入的已知问题）
+    std::wstring line;
+    bool got_line = false;
+    wchar_t buffer[4096];
+    for (;;)
+    {
+        DWORD got = 0;
+        if (!ReadConsoleW(handle, buffer,
+                          static_cast<DWORD>(sizeof(buffer) / sizeof(buffer[0])),
+                          &got, nullptr))
+            break; // Ctrl+C（ENABLE_PROCESSED_INPUT）或输入被关闭：有内容按末行处理
+        if (got == 0)
+            break;
+        line.append(buffer, buffer + got);
+        if (line.size() >= 2 && line[line.size() - 2] == L'\r' &&
+            line[line.size() - 1] == L'\n')
+        {
+            line.resize(line.size() - 2);
+            got_line = true;
+            break;
+        }
+        if (!line.empty() && line.back() == L'\n')
+        {
+            line.pop_back();
+            got_line = true;
+            break;
+        }
+    }
+    out = wide_to_utf8(line.data(), line.size());
+    if (got_line)
+        return static_cast<long long>(out.size()); // 空行也是有效的输入（返回 0）
+    return out.empty() ? -1 : static_cast<long long>(out.size());
+#else
+    // 上一次可能在下载等待里停在 cbreak：先恢复规范模式，保存的才是正常现场
+    ensure_canonical_input();
+
+    InteractiveLineEditor editor;
+    bool interrupted = false;
+    bool reached_eof = false;
+    {
+        InteractiveInputMode mode;
+        if (!mode.enter())
+            return read_line(stdin, out);
+
+        for (;;)
+        {
+            unsigned char ch = 0;
+            if (!read_stdin_byte(ch))
+            {
+                reached_eof = true;
+                break; // 输入流结束
+            }
+
+            if (ch == '\r' || ch == '\n')
+            {
+                echo_bytes("\n", 1);
+                break;
+            }
+            if (ch == 0x7F || ch == 0x08) // Backspace / Ctrl+H
+            {
+                editor.backspace();
+                continue;
+            }
+            if (ch == 0x03) // Ctrl+C：恢复终端后重新抛出 SIGINT
+            {
+                echo_bytes("^C\n", 3);
+                interrupted = true;
+                break;
+            }
+            if (ch == 0x04) // Ctrl+D：空行表示输入结束，否则删除光标处字符
+            {
+                if (editor.empty())
+                    return -1;
+                editor.delete_forward();
+                continue;
+            }
+            if (ch == 0x01) // Ctrl+A：行首
+            {
+                editor.move_home();
+                continue;
+            }
+            if (ch == 0x02) // Ctrl+B：光标左移
+            {
+                editor.move_left();
+                continue;
+            }
+            if (ch == 0x05) // Ctrl+E：行尾
+            {
+                editor.move_end();
+                continue;
+            }
+            if (ch == 0x06) // Ctrl+F：光标右移
+            {
+                editor.move_right();
+                continue;
+            }
+            if (ch == 0x0B) // Ctrl+K：删除光标到行尾
+            {
+                editor.kill_to_end();
+                continue;
+            }
+            if (ch == 0x15) // Ctrl+U：删除整行
+            {
+                editor.kill_line();
+                continue;
+            }
+            if (ch == 0x17) // Ctrl+W：删除光标前的一个单词
+            {
+                editor.delete_word();
+                continue;
+            }
+            if (ch == 0x1B) // ESC：解析方向键、Home/End、Delete 等转义序列
+            {
+                switch (read_escape_action())
+                {
+                case EditAction::CursorLeft:
+                    editor.move_left();
+                    break;
+                case EditAction::CursorRight:
+                    editor.move_right();
+                    break;
+                case EditAction::Home:
+                    editor.move_home();
+                    break;
+                case EditAction::End:
+                    editor.move_end();
+                    break;
+                case EditAction::Delete:
+                    editor.delete_forward();
+                    break;
+                case EditAction::Backspace:
+                    editor.backspace();
+                    break;
+                case EditAction::None:
+                    break;
+                }
+                continue;
+            }
+            if (ch == 0x1A) // Ctrl+Z：恢复终端后暂停，继续运行时重新进入行编辑
+            {
+                mode.restore();
+                std::raise(SIGTSTP);
+                mode.enter();
+                continue;
+            }
+            if (ch == 0x1C) // Ctrl+\：恢复终端后按原本的 SIGQUIT 处置继续
+            {
+                mode.restore();
+                std::raise(SIGQUIT);
+                mode.enter();
+                continue;
+            }
+            if (ch == '\t')
+            {
+                // 不跟踪制表位，按一个空格处理（字段值随后会被 trim，语义不变）
+                editor.insert(" ");
+                continue;
+            }
+            if (ch < 0x20) // 其余 C0 控制字符：忽略
+                continue;
+
+            // 一次读齐一个完整的 UTF-8 字符再交给编辑器，避免逐字节插入时把半个
+            // 字符与后面的文字误当成一个多字节序列
+            std::string sequence(1, static_cast<char>(ch));
+            const size_t need = utf8_expected_length(ch);
+            bool incomplete = false;
+            for (size_t i = 1; i < need; ++i)
+            {
+                unsigned char next = 0;
+                if (!read_stdin_byte(next))
+                {
+                    incomplete = true;
+                    break;
+                }
+                sequence.push_back(static_cast<char>(next));
+            }
+            editor.insert(sequence);
+            if (incomplete)
+            {
+                reached_eof = true;
+                break;
+            }
+        }
+    }
+
+    if (interrupted)
+    {
+        // 终端已恢复；按进程原本的 SIGINT 处置继续（默认处置即终止进程）
+        std::raise(SIGINT);
+        return -1;
+    }
+
+    if (reached_eof && editor.empty())
+        return -1; // 与 read_line 一致：EOF 且无内容视为输入结束
+
+    out = editor.text();
+    return static_cast<long long>(out.size());
 #endif
 }
 

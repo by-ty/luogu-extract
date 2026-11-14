@@ -82,6 +82,15 @@ namespace compat
     // 读一行（不含末尾换行），替代 POSIX getline：返回字符数，EOF 且无内容返回 -1
     long long read_line(FILE *in, std::string &out);
 
+    // 读交互式终端的一行（UTF-8，不含末尾换行），返回字节数，EOF 且无内容返回 -1。
+    // 与 read_line 的区别：标准输入与标准输出都是终端时由程序自行行编辑——退格删除
+    // 一个完整的 UTF-8 字符并按显示宽度擦除（中文占两列），左右方向键、Home/End、
+    // Delete 等可移动光标并在行中间插入/删除，Up/Down 等无对应功能的键及转义序列
+    // 不会被写进输入；这避免了 macOS 与部分 Linux 终端的规范模式退格按字节删除、
+    // 只擦一列，导致中文只剩半个字符。Windows 用 ReadConsoleW 交给控制台原生宽字符
+    // 行编辑（退格、方向键天然可用）；非终端输入（管道、重定向）退化为 read_line。
+    long long read_line_interactive(std::string &out);
+
     // 过滤 C0 控制字符（保留 \t \n \r）与 DEL：JSON 里的 \u0000 等会静默截断 C 字符串或破坏 LaTeX
     std::string strip_control_chars(std::string s);
 
